@@ -33,9 +33,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: org
+        uses: actions/checkout@v7
 
       - name: Clone Sonetto-Data from GitLab
         run: |
@@ -73,7 +71,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
@@ -81,7 +79,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Cache cargo index
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
@@ -89,7 +87,7 @@ jobs:
             ${{ runner.os }}-cargo-git-
 
       - name: Cache target directory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target
           key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
@@ -142,19 +140,19 @@ jobs:
           tar -czf ..\muipserver-${{ matrix.artifact_name }}.tar.gz muipserver.exe config.toml data
 
       - name: Upload gameserver artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gameserver-${{ matrix.artifact_name }}
           path: gameserver-${{ matrix.artifact_name }}.tar.gz
 
       - name: Upload sdkserver artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sdkserver-${{ matrix.artifact_name }}
           path: sdkserver-${{ matrix.artifact_name }}.tar.gz
 
       - name: Upload muipserver artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: muipserver-${{ matrix.artifact_name }}
           path: muipserver-${{ matrix.artifact_name }}.tar.gz
@@ -169,7 +167,7 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -185,7 +183,7 @@ jobs:
           fi
 
       - name: Create or Update Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           name: ${{ steps.release_info.outputs.is_tag == 'true' && steps.release_info.outputs.tag_name || 'Latest Build' }}
