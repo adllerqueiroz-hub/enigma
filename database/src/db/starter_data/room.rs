@@ -3,12 +3,7 @@ use std::collections::BTreeMap;
 
 pub async fn load_starter_room(tx: &mut Transaction<'_, Sqlite>, user_id: i64) -> sqlx::Result<()> {
     let tables = configs::get();
-    let room_level = tables
-        .room_level
-        .iter()
-        .map(|level| level.level)
-        .min()
-        .unwrap_or_default();
+    let room_level = tables.initial_room_level();
 
     sqlx::query(
         "INSERT INTO user_room_state (user_id, room_level, last_reset_time)

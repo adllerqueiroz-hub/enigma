@@ -85,10 +85,10 @@ pub fn expire_after_owner_action(
     let expires = match super::subscriber_kind(subscriber) {
         Some(BuffActKind::DodgeSpecSkill) => true,
         Some(BuffActKind::DodgeDamageType) => configured_owner_attack_expiry(subscriber.buff_id),
-        _ => false,
+        _ => return None,
     };
     if !expires {
-        return None;
+        return Some(Vec::new());
     }
     let BattleEvent::AllyAction(action) = event else {
         return Some(Vec::new());
@@ -384,5 +384,41 @@ mod tests {
                 BuffCommand::ExpireAction(_)
             ))]
         ));
+    }
+
+    #[test]
+    fn counted_damage_type_dodge_is_a_supported_noop_on_owner_action() {
+        crate::test_support::init_config();
+        let subscriber = BuffActSubscriber {
+            owner_uid: 10,
+            source_uid: 10,
+            buff_uid: 20,
+            buff_id: 90201,
+            team_type: 1,
+            owner_alive: true,
+            amount: 1,
+            key: SubscriptionKey::new(
+                EventKind::AllyAction,
+                DefinitionKey::new(507, "DodgeSpecSkill2"),
+            ),
+            act_type: "DodgeSpecSkill2".to_owned(),
+            effect_time: 207,
+            effect_condition: 0,
+            args: vec![1, 2, 3],
+            raw: "507#1#2#3".to_owned(),
+        };
+
+        assert!(
+            expire_after_owner_action(
+                &subscriber,
+                &BattleEvent::AllyAction(ActionEvent {
+                    source_uid: 10,
+                    is_attack: true,
+                    ..Default::default()
+                })
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 }

@@ -179,7 +179,7 @@ pub async fn ensure_tasks_for_type(
 
     match task_type {
         TaskType::Daily => {
-            for task in tables.task_daily.iter().filter(|task| task.is_online != 0) {
+            for task in tables.online_daily_tasks() {
                 ensure_task(
                     pool,
                     NewTask::new(user_id, task_type.id(), task.id, task.activity_id, 0),
@@ -188,7 +188,7 @@ pub async fn ensure_tasks_for_type(
             }
         }
         TaskType::Weekly => {
-            for task in tables.task_weekly.iter().filter(|task| task.is_online != 0) {
+            for task in tables.online_weekly_tasks() {
                 ensure_task(
                     pool,
                     NewTask::new(user_id, task_type.id(), task.id, task.activity_id, 0),
@@ -206,7 +206,7 @@ pub async fn ensure_tasks_for_type(
             }
         }
         TaskType::Novice => {
-            for task in tables.task_guide.iter().filter(|task| task.is_online != 0) {
+            for task in tables.online_guide_tasks() {
                 ensure_task(
                     pool,
                     NewTask::new(user_id, task_type.id(), task.id, 0, task.min_type_id),
@@ -215,7 +215,7 @@ pub async fn ensure_tasks_for_type(
             }
         }
         TaskType::Room => {
-            for task in tables.task_room.iter().filter(|task| task.is_online != 0) {
+            for task in tables.online_room_tasks() {
                 ensure_task(pool, NewTask::new(user_id, task_type.id(), task.id, 0, 0)).await?;
             }
         }
@@ -241,7 +241,7 @@ pub async fn ensure_tasks_for_type(
             .await?;
         }
         TaskType::Season => {
-            for task in tables.task_season.iter().filter(|task| task.is_online != 0) {
+            for task in tables.online_season_tasks() {
                 ensure_task(
                     pool,
                     NewTask::new(
@@ -979,27 +979,22 @@ fn login_task_targets(bp_id: Option<i32>) -> Vec<LoginTaskTarget> {
 
     targets.extend(
         tables
-            .task_daily
-            .iter()
-            .filter(|task| task.is_online != 0 && task.listener_type == "LoginDays")
+            .online_daily_tasks()
+            .filter(|task| task.listener_type == "LoginDays")
             .map(|task| LoginTaskTarget::new(TaskType::Daily, task.id, task.max_progress)),
     );
     targets.extend(
         tables
-            .task_weekly
-            .iter()
-            .filter(|task| task.is_online != 0 && task.listener_type == "LoginDays")
+            .online_weekly_tasks()
+            .filter(|task| task.listener_type == "LoginDays")
             .map(|task| LoginTaskTarget::new(TaskType::Weekly, task.id, task.max_progress)),
     );
 
     if let Some(bp_id) = bp_id {
         targets.extend(
             tables
-                .bp_task
-                .iter()
-                .filter(|task| {
-                    task.bp_id == bp_id && task.is_online != 0 && task.listener_type == "LoginDays"
-                })
+                .battle_pass_tasks(bp_id)
+                .filter(|task| task.is_online != 0 && task.listener_type == "LoginDays")
                 .map(|task| LoginTaskTarget::new(TaskType::BattlePass, task.id, task.max_progress)),
         );
         targets.extend(
@@ -1378,13 +1373,9 @@ pub fn current_battle_pass_id() -> Option<i32> {
             bp.bp_id,
             bp.activity_id,
             tables
-                .bp_task
-                .iter()
-                .any(|task| task.bp_id == bp.bp_id && task.is_online != 0),
-            tables
-                .bp_lv_bonus
-                .iter()
-                .any(|bonus| bonus.bp_id == bp.bp_id),
+                .battle_pass_tasks(bp.bp_id)
+                .any(|task| task.is_online != 0),
+            tables.battle_pass_bonuses(bp.bp_id).next().is_some(),
         )
     }))
 }
@@ -1407,8 +1398,5 @@ fn pick_current_battle_pass_id(
 
 pub fn current_battle_pass() -> Option<&'static config::bp::Bp> {
     let bp_id = current_battle_pass_id()?;
-    config::configs::get()
-        .bp
-        .iter()
-        .find(|bp| bp.bp_id == bp_id)
+    config::configs::get().battle_pass(bp_id)
 }

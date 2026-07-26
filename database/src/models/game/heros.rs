@@ -1095,48 +1095,33 @@ impl HeroModel<HeroData> for UserHeroModel {
 
         let character = game_data
             .character
-            .iter()
-            .find(|c| c.id == hero_id && c.id != 3029 && c.id != 9998) //npc
+            .get(hero_id)
+            .filter(|character| character.id != 3029 && character.id != 9998) // npc
             .ok_or_else(|| sqlx::Error::RowNotFound)?;
 
         let hero_skin = character.skin_id;
         let rare = character.rare as usize;
 
         let level = game_data
-            .character_level
-            .iter()
-            .filter(|s| s.hero_id == hero_id)
-            .min_by_key(|s| s.level)
-            .map(|stats| stats.level)
+            .starting_character_level(hero_id)
+            .map(|row| row.level)
             .ok_or_else(|| anyhow!("hero {hero_id} has no character_level config"))?;
 
-        let min_ranks = game_data
-            .character_rank
-            .iter()
-            .filter(|s| s.hero_id == hero_id)
-            .min_by_key(|s| s.rank);
-
-        let min_rank = min_ranks
-            .map(|rank| rank.rank)
+        let min_rank = game_data
+            .starting_character_rank(hero_id)
+            .map(|row| row.rank)
             .ok_or_else(|| anyhow!("hero {hero_id} has no character_rank config"))?;
 
         let default_skin = game_data
-            .skin
-            .iter()
-            .filter(|s| s.character_id != 0)
-            .filter(|s| s.character_id == hero_id)
-            .min_by_key(|s| s.id)
-            .map(|s| s.id)
+            .default_character_skin(hero_id)
+            .map(|row| row.id)
             .unwrap_or(hero_skin);
 
         let (destiny_rank, destiny_level, destiny_stone, red_dot_type) = (0, 0, 0, 0);
 
         let starting_talent = game_data
-            .character_talent
-            .iter()
-            .filter(|t| t.hero_id == hero_id && t.talent_id == 1)
-            .map(|t| t.talent_id)
-            .next()
+            .character_talent(hero_id, 1)
+            .map(|row| row.talent_id)
             .unwrap_or(1);
 
         sqlx::query(
@@ -1183,14 +1168,10 @@ impl HeroModel<HeroData> for UserHeroModel {
         .execute(&mut **tx)
         .await?;
 
-        let character_voices: Vec<&config::character_voice::CharacterVoice> = game_data
-            .character_voice
-            .iter()
-            .filter(|v| v.hero_id == hero_id)
-            .filter(|t| t.r#type == 9 || t.r#type == 11)
-            .collect();
-
-        for voice in &character_voices {
+        for voice in game_data
+            .character_voices(hero_id)
+            .filter(|row| row.r#type == 9 || row.r#type == 11)
+        {
             sqlx::query("INSERT INTO hero_voices (hero_uid, voice_id) VALUES (?, ?)")
                 .bind(hero_uid)
                 .bind(voice.audio)
@@ -1207,16 +1188,10 @@ impl HeroModel<HeroData> for UserHeroModel {
         .execute(&mut **tx)
         .await?;
 
-        let talent_config = game_data
-            .character_talent
-            .iter()
-            .find(|t| t.hero_id == hero_id && t.talent_id == 1);
+        let talent_config = game_data.character_talent(hero_id, 1);
 
         if let Some(talent) = talent_config {
-            let talent_scheme = game_data
-                .talent_scheme
-                .iter()
-                .find(|s| s.talent_id == talent.talent_id && s.talent_mould == talent.talent_mould);
+            let talent_scheme = game_data.talent_scheme(talent.talent_id, talent.talent_mould);
 
             if let Some(scheme) = talent_scheme {
                 let cubes: Vec<(i32, i32, i32, i32)> = scheme
@@ -1276,9 +1251,7 @@ impl HeroModel<HeroData> for UserHeroModel {
                 && talent_config.is_some()
                 && let Some(talent) = talent_config
             {
-                let talent_scheme = game_data.talent_scheme.iter().find(|s| {
-                    s.talent_id == talent.talent_id && s.talent_mould == talent.talent_mould
-                });
+                let talent_scheme = game_data.talent_scheme(talent.talent_id, talent.talent_mould);
 
                 if let Some(scheme) = talent_scheme {
                     let cubes: Vec<(i32, i32, i32, i32)> = scheme
@@ -1982,9 +1955,7 @@ impl HeroModel<HeroData> for UserHeroModel {
         let game_data = config::configs::get();
 
         let talent_scheme = game_data
-            .talent_scheme
-            .iter()
-            .find(|s| s.talent_id == talent_id && s.talent_mould == talent_mould)
+            .talent_scheme(talent_id, talent_mould)
             .ok_or_else(|| {
                 tracing::error!(
                     "Talent scheme not found for talent {} mould {}",
@@ -2122,14 +2093,10 @@ impl HeroModel<HeroData> for UserHeroModel {
         let hero_data = self.get(hero_id).await?;
         let game_data = config::configs::get();
 
-        let style_cost = game_data
-            .talent_style_cost
-            .iter()
-            .find(|s| s.hero_id == hero_id && s.style_id == style)
-            .ok_or_else(|| {
-                tracing::error!("Style cost not found for hero {} style {}", hero_id, style);
-                anyhow::anyhow!("Style cost not found")
-            })?;
+        let style_cost = game_data.talent_style_cost(hero_id, style).ok_or_else(|| {
+            tracing::error!("Style cost not found for hero {} style {}", hero_id, style);
+            anyhow::anyhow!("Style cost not found")
+        })?;
 
         let mut cost_items = Vec::new();
         let mut cost_currencies = Vec::new();

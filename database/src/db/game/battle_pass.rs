@@ -570,11 +570,9 @@ fn capped_score_delta(bp_id: i32, current_score: i32, score_delta: i32) -> i32 {
 
 fn max_score(bp_id: i32) -> Option<i32> {
     let tables = config::configs::get();
-    let bp = tables.bp.iter().find(|bp| bp.bp_id == bp_id)?;
+    let bp = tables.battle_pass(bp_id)?;
     let max_level = tables
-        .bp_lv_bonus
-        .iter()
-        .filter(|bonus| bonus.bp_id == bp_id)
+        .battle_pass_bonuses(bp_id)
         .map(|bonus| bonus.level)
         .max()?;
     Some(max_level * bp.exp_level_up.max(1))

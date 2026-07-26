@@ -234,19 +234,15 @@ impl EquipmentModel<Equipment> for UserEquipmentModel {
                 1005 => exp_per_equip += 10000,
                 _ => {
                     if eat_equipment.level == 1 {
-                        if let Some(lv2_cost) = game_data
-                            .equip_strengthen_cost
-                            .iter()
-                            .find(|c| c.rare == eat_equip_data.rare && c.level == 2)
+                        if let Some(lv2_cost) =
+                            game_data.equip_strengthen_cost(eat_equip_data.rare, 2)
                         {
                             exp_per_equip += lv2_cost.exp;
                         }
                     } else {
                         for lvl in 2..=eat_equipment.level {
-                            if let Some(cost) = game_data
-                                .equip_strengthen_cost
-                                .iter()
-                                .find(|c| c.rare == eat_equip_data.rare && c.level == lvl)
+                            if let Some(cost) =
+                                game_data.equip_strengthen_cost(eat_equip_data.rare, lvl)
                             {
                                 exp_per_equip += cost.exp;
                             }
@@ -280,9 +276,7 @@ impl EquipmentModel<Equipment> for UserEquipmentModel {
         let rare = target_equip_data.rare;
 
         let max_level = game_data
-            .equip_break_cost
-            .iter()
-            .find(|e| e.rare == rare && e.break_level == target.break_lv)
+            .equip_break_cost(rare, target.break_lv)
             .map(|e| e.level)
             .unwrap_or(60);
 
@@ -298,9 +292,7 @@ impl EquipmentModel<Equipment> for UserEquipmentModel {
         while target.level < max_level {
             let next_level = target.level + 1;
             let exp_required = game_data
-                .equip_strengthen_cost
-                .iter()
-                .find(|e| e.rare == rare && e.level == next_level)
+                .equip_strengthen_cost(rare, next_level)
                 .map(|c| c.exp)
                 .unwrap_or(999999);
 

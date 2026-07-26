@@ -3,18 +3,21 @@ members = [
     "common",
     "protocol",
     "database",
+    "logic",
     "gameserver",
     "sdkserver",
     "battle",
     "battle_check",
     "muipserver",
     "config",
+    "config_codegen",
     "battle_preview",
 ]
 default-members = [
     "common",
     "protocol",
     "database",
+    "logic",
     "gameserver",
     "sdkserver",
     "battle",
@@ -78,6 +81,7 @@ sqlx = { version = "0.8.6", features = [
 
 common = { path = "common" }
 database = { path = "database" }
+logic = { path = "logic" }
 protocol = { path = "protocol" }
 config = { path = "config" }
 battle = { path = "battle" }

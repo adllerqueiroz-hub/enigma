@@ -1267,10 +1267,5 @@ pub async fn claim_room_theme_bonus_in_transaction(
 }
 
 fn default_room_level() -> i32 {
-    config::configs::get()
-        .room_level
-        .iter()
-        .map(|level| level.level)
-        .min()
-        .unwrap_or_default()
+    config::configs::get().initial_room_level()
 }

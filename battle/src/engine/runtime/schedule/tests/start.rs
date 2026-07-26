@@ -97,7 +97,7 @@ fn opening_cards_exist_before_card_setup_rules_run() {
 }
 
 #[test]
-fn opening_raw_deal_can_exceed_the_composed_hand_limit() {
+fn opening_raw_deal_uses_surplus_cards_to_refill_composed_slots() {
     init_config();
     let entity = |uid, position, first, second| FightEntityInfo {
         uid: Some(uid),
@@ -148,6 +148,15 @@ fn opening_raw_deal_can_exceed_the_composed_hand_limit() {
     .unwrap();
 
     assert_eq!(dealt, raw_deal);
+    assert_eq!(
+        managers
+            .card
+            .refilled()
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>(),
+        vec![400, 200]
+    );
     assert_eq!(managers.card.normal_hand_len(), 5);
     assert_eq!(
         managers

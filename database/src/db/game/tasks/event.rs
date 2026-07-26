@@ -184,32 +184,23 @@ fn event_task_targets(event: TaskEvent, bp_id: Option<i32>) -> Vec<TaskTarget> {
 
     targets.extend(
         tables
-            .task_daily
-            .iter()
-            .filter(|task| {
-                task.is_online != 0 && event.matches(&task.listener_type, &task.listener_param)
-            })
+            .online_daily_tasks()
+            .filter(|task| event.matches(&task.listener_type, &task.listener_param))
             .map(|task| TaskTarget::new(TaskType::Daily, task.id, task.max_progress)),
     );
     targets.extend(
         tables
-            .task_weekly
-            .iter()
-            .filter(|task| {
-                task.is_online != 0 && event.matches(&task.listener_type, &task.listener_param)
-            })
+            .online_weekly_tasks()
+            .filter(|task| event.matches(&task.listener_type, &task.listener_param))
             .map(|task| TaskTarget::new(TaskType::Weekly, task.id, task.max_progress)),
     );
 
     if let Some(bp_id) = bp_id {
         targets.extend(
             tables
-                .bp_task
-                .iter()
+                .battle_pass_tasks(bp_id)
                 .filter(|task| {
-                    task.bp_id == bp_id
-                        && task.is_online != 0
-                        && event.matches(&task.listener_type, &task.listener_param)
+                    task.is_online != 0 && event.matches(&task.listener_type, &task.listener_param)
                 })
                 .map(|task| TaskTarget::new(TaskType::BattlePass, task.id, task.max_progress)),
         );

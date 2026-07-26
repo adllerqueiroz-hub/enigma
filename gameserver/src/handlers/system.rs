@@ -1,7 +1,8 @@
 use crate::{
     error::AppError,
-    logic::{critter, player_info, session},
+    logic::{critter, player_info},
     net::{context::ConnectionContext, packet::ClientPacket},
+    session,
 };
 use prost::Message;
 use sonettobuf::{CmdId, CritterInfoPush, RenameRequest, UpdateTaskPush};

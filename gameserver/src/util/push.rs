@@ -280,7 +280,7 @@ pub async fn send_trade_order_red_dot(
         crate::types::red_dot_id::RedDotId::TradeOrderFulfillable.id(),
         vec![0],
         true,
-        crate::player::red_dot::trade_order_red_dot_value(ctx.state.db, player_id).await?,
+        crate::logic::red_dot::trade_order_red_dot_value(ctx.state.db, player_id).await?,
         0,
     )
     .await

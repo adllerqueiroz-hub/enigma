@@ -1,7 +1,7 @@
 use crate::{
     error::AppError,
-    logic::tower_compose,
     net::{context::ConnectionContext, packet::ClientPacket},
+    tower_compose,
 };
 use prost::Message;
 use sonettobuf::{CmdId, TowerComposeGetInfoRequest, TowerComposeSetModsRequest};

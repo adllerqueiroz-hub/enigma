@@ -88,10 +88,15 @@ fn opening_push_keeps_composed_cards_and_refills_the_vacated_slot() {
             .filter_map(|card| card.skill_id)
             .collect::<Vec<_>>()
     };
-
-    assert_eq!(skills(&round.team_a_cards1), skills(&opening));
+    assert_eq!(
+        skills(&round.team_a_cards1),
+        vec![200, 100, 200, 100, 100, 200]
+    );
     assert_eq!(skills(&push.card_group), vec![200, 100, 200, 101, 200]);
-    assert_eq!(skills(&push.deal_card_group), skills(&opening));
+    assert_eq!(
+        skills(&push.deal_card_group),
+        vec![200, 100, 200, 100, 100, 200]
+    );
     assert_eq!(push.card_group, runtime.managers.card.hand());
     assert!(round.fight_step.iter().any(|step| {
         step.act_effect.iter().any(|effect| {
@@ -99,6 +104,294 @@ fn opening_push_keeps_composed_cards_and_refills_the_vacated_slot() {
                 == Some(sonettobuf::effect_type_enum::EffectType::Cardscompose as i32)
         })
     }));
+}
+
+#[test]
+fn teaching_card_opening_replaces_only_the_initial_random_draw() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        episode_id: Some(10002),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    model_id: Some(100102),
+                    position: Some(1),
+                    current_hp: Some(100),
+                    skill_group1: vec![30250111, 30250112, 30250113],
+                    skill_group2: vec![30250121, 30250122, 30250123],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-2),
+                    model_id: Some(100101),
+                    position: Some(2),
+                    current_hp: Some(100),
+                    skill_group1: vec![30230111, 30230112, 30230113],
+                    skill_group2: vec![30230121, 30230122, 30230123],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut determinism = RoundDeterminism::with_seed(9);
+    determinism.enqueue_card_draws(vec![CardInfo {
+        uid: Some(-2),
+        skill_id: Some(30230121),
+        ..Default::default()
+    }]);
+    let mut runtime = BattleRuntime::new(fight);
+
+    let round = runtime.start_round_with_determinism(determinism).unwrap();
+
+    assert!(runtime.determinism.has_queued_card_draw());
+    assert_eq!(
+        runtime
+            .managers
+            .card
+            .refilled()
+            .iter()
+            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![(-2, 30230121), (-1, 30250121)]
+    );
+    assert_eq!(
+        round
+            .team_a_cards1
+            .iter()
+            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![
+            (-1, 30250121),
+            (-1, 30250121),
+            (-1, 30250121),
+            (-2, 30230111),
+            (-2, 30230111),
+            (-2, 30230121),
+            (-1, 30250121),
+        ]
+    );
+    assert_eq!(
+        runtime
+            .card_info_push()
+            .card_group
+            .iter()
+            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![
+            (-1, 30250122),
+            (-1, 30250121),
+            (-2, 30230112),
+            (-2, 30230121),
+            (-1, 30250121),
+        ]
+    );
+}
+
+#[test]
+fn teaching_card_round_refill_replays_the_live_tutorial_operations() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(1002),
+        episode_id: Some(10002),
+        version: Some(7),
+        max_round: Some(20),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    model_id: Some(100102),
+                    position: Some(1),
+                    current_hp: Some(10_000),
+                    skill_group1: vec![30250111, 30250112, 30250113],
+                    skill_group2: vec![30250121, 30250122, 30250123],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-2),
+                    model_id: Some(100101),
+                    position: Some(2),
+                    current_hp: Some(10_000),
+                    skill_group1: vec![30230111, 30230112, 30230113],
+                    skill_group2: vec![30230121, 30230122, 30230123],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-3),
+                model_id: Some(100104),
+                position: Some(1),
+                current_hp: Some(100_000),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+    runtime
+        .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
+        .unwrap();
+
+    runtime
+        .advance_round(sonettobuf::BeginRoundRequest {
+            opers: vec![
+                sonettobuf::BeginRoundOper {
+                    oper_type: Some(1),
+                    param1: Some(5),
+                    param2: Some(2),
+                    ..Default::default()
+                },
+                sonettobuf::BeginRoundOper {
+                    oper_type: Some(2),
+                    param1: Some(1),
+                    to_id: Some(-3),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+    let skills = |cards: &[CardInfo]| {
+        cards
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        skills(runtime.managers.card.refilled()),
+        vec![30250111, 30230111, 30230111, 30250121]
+    );
+    assert_eq!(
+        skills(runtime.managers.card.hand()),
+        vec![30230112, 30230121, 30250111, 30230112, 30250121]
+    );
+}
+
+#[test]
+fn teaching_card_opening_composes_the_complete_configured_deal() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        episode_id: Some(10003),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                model_id: Some(100109),
+                position: Some(1),
+                current_hp: Some(100),
+                skill_group1: vec![30230111, 30230112, 30230113],
+                skill_group2: vec![30230121, 30230122, 30230123],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+
+    let round = runtime.build_start_round_from_schedule().unwrap();
+
+    assert_eq!(round.team_a_cards1.len(), 7);
+    assert_eq!(
+        runtime
+            .card_info_push()
+            .card_group
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>(),
+        vec![30230122, 30230112, 30230122, 30230111]
+    );
+}
+
+#[test]
+fn teaching_card_refill_follows_the_configured_draws_after_tutorial_plays() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(1001),
+        episode_id: Some(10001),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    model_id: Some(100102),
+                    position: Some(1),
+                    current_hp: Some(100),
+                    skill_group1: vec![30250111, 30250112, 30250113],
+                    skill_group2: vec![30250121, 30250122, 30250123],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-2),
+                    model_id: Some(100101),
+                    position: Some(2),
+                    current_hp: Some(100),
+                    skill_group1: vec![30230111, 30230112, 30230113],
+                    skill_group2: vec![30230121, 30230122, 30230123],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+    runtime
+        .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
+        .unwrap();
+    let skills = |cards: &[CardInfo]| {
+        cards
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        skills(runtime.managers.card.hand()),
+        vec![30230111, 30230121, 30250111, 30250121, 30230111]
+    );
+    for hand_index in [4, 3] {
+        runtime
+            .managers
+            .execute_card(crate::engine::manager::card::CardCommand::Play(
+                crate::engine::manager::card::CardPlay {
+                    origin: crate::engine::manager::card::CARD_PLAY_ORIGIN,
+                    hand_index,
+                    target_uid: None,
+                    chosen_skill_id: None,
+                    choice: None,
+                    recorded_skill: None,
+                },
+            ))
+            .unwrap();
+    }
+    let pool = crate::engine::skill::target::TargetPool::from_fight(&runtime.fight);
+    schedule::run_round_refill(
+        &mut runtime.managers,
+        &pool,
+        &runtime.catalog,
+        &mut runtime.determinism,
+        crate::engine::skill::target::TargetContext {
+            battle_id: 1001,
+            current_round: 1,
+            ..Default::default()
+        },
+        5,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(
+        skills(runtime.managers.card.hand()),
+        vec![30230111, 30230121, 30250111, 30230121, 30250111]
+    );
 }
 
 #[test]

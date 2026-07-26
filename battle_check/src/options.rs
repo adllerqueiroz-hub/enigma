@@ -10,6 +10,7 @@ pub(crate) struct Options {
     pub(crate) destiny_rank: Option<i32>,
     pub(crate) coverage_plan: bool,
     pub(crate) include_plan: bool,
+    pub(crate) simulate_opening: bool,
     pub(crate) explain: bool,
 }
 
@@ -21,6 +22,7 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
             "--help" | "-h" => {
                 println!(
                     "battle_check [--hero ID]... [--episode ID] [--explain]\n\
+                     battle_check --episode ID --simulate-opening\n\
                      battle_check --coverage-plan [--hero ID]...\n\
                      battle_check --include-plan [--hero ID]...\n\
                      [--psychube ID --psychube-level LEVEL]\n\
@@ -39,6 +41,10 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
             }
             "--include-plan" => {
                 options.include_plan = true;
+                continue;
+            }
+            "--simulate-opening" => {
+                options.simulate_opening = true;
                 continue;
             }
             "--hero" | "--episode" | "--psychube" | "--psychube-level" | "--destiny-stone"
@@ -75,6 +81,9 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Optio
         bail!(
             "--coverage-plan and --include-plan support optional heroes but not episodes or equipment selections"
         );
+    }
+    if options.simulate_opening && options.episode_id.is_none() {
+        bail!("--simulate-opening requires --episode");
     }
     if options.hero_ids.is_empty()
         && (options.psychube_id.is_some()
@@ -158,5 +167,13 @@ mod tests {
         .unwrap();
         assert!(include_plan.include_plan);
         assert_eq!(include_plan.hero_ids, vec![3117]);
+
+        let simulation = parse_args(
+            ["--episode", "10002", "--simulate-opening"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(simulation.simulate_opening);
     }
 }

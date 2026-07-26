@@ -43,22 +43,17 @@ pub async fn load_tower_info(tx: &mut Transaction<'_, Sqlite>, user_id: i64) -> 
         .unwrap_or(1);
     for boss in tables.tower_assist_boss.iter() {
         let level = tables
-            .tower_assist_develop
-            .iter()
-            .filter(|row| row.boss_id == boss.boss_id)
+            .tower_assist_development(boss.boss_id)
             .map(|row| row.level)
             .min()
             .unwrap_or(1);
         let talent_point: i32 = tables
-            .tower_assist_develop
-            .iter()
-            .filter(|row| row.boss_id == boss.boss_id && row.level <= level)
+            .tower_assist_development(boss.boss_id)
+            .filter(|row| row.level <= level)
             .map(|row| row.talent_point)
             .sum();
         let use_talent_plan = tables
-            .tower_talent_plan
-            .iter()
-            .filter(|row| row.boss_id == boss.boss_id)
+            .tower_talent_plans(boss.boss_id)
             .map(|row| row.plan_id)
             .min()
             .unwrap_or(1);

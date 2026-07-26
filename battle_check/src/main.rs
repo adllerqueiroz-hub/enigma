@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use battle::engine::skill::effect::SkillEffectCatalog;
 
 mod coverage;
+mod opening;
 mod options;
 mod scan;
 mod wire_evidence;
@@ -36,6 +37,9 @@ fn main() -> Result<()> {
     if let Some(episode_id) = options.episode_id {
         scan::collect_episode_roots(episode_id, db, &mut skills, &mut report)?;
         println!("episode={episode_id}");
+        if options.simulate_opening {
+            opening::print(episode_id)?;
+        }
     }
 
     let mut catalog = SkillEffectCatalog::from_roots(db, skills.iter().map(|skill| skill.id), []);

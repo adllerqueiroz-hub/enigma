@@ -32,6 +32,80 @@ pub fn hand_size_from_count(characters: usize) -> usize {
     }
 }
 
+pub fn configured_opening_deal(fight: &Fight) -> Result<Option<Vec<CardInfo>>, String> {
+    let Some(config) = teaching_card_config(fight) else {
+        return Ok(None);
+    };
+    let cards = resolve_configured_cards(fight, &config.opening_cards)?;
+    if cards.is_empty() {
+        return Err("teaching-card opening deal is empty".into());
+    }
+    Ok(Some(cards))
+}
+
+pub fn configured_refill_draws(fight: &Fight) -> Result<Vec<CardInfo>, String> {
+    let Some(config) = teaching_card_config(fight) else {
+        return Ok(Vec::new());
+    };
+    resolve_configured_cards(fight, &config.refill_cards)
+}
+
+fn teaching_card_config(fight: &Fight) -> Option<&config::teaching_card::TeachingCard> {
+    if crate::engine::fight::versions::round_start_setup_layout(fight.version.unwrap_or_default())
+        != Some(crate::engine::fight::versions::RoundStartSetupLayout::Version7)
+    {
+        return None;
+    }
+    config::try_get()?
+        .teaching_card
+        .get(fight.episode_id.unwrap_or_default())
+}
+
+fn resolve_configured_cards(fight: &Fight, entries: &str) -> Result<Vec<CardInfo>, String> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let attacker = fight
+        .attacker
+        .as_ref()
+        .ok_or_else(|| "teaching-card battle has no attacker team".to_string())?;
+    entries
+        .split('|')
+        .map(|entry| {
+            let mut fields = entry.split('#');
+            let model_id = fields
+                .next()
+                .and_then(|value| value.parse::<i32>().ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| format!("invalid teaching-card owner `{entry}`"))?;
+            let group = fields
+                .next()
+                .and_then(|value| value.parse::<u8>().ok())
+                .filter(|value| matches!(value, 1 | 2))
+                .ok_or_else(|| format!("invalid teaching-card skill group `{entry}`"))?;
+            if fields.next().is_some() {
+                return Err(format!("invalid teaching-card entry `{entry}`"));
+            }
+            let entity = attacker
+                .entitys
+                .iter()
+                .find(|entity| {
+                    entity.model_id == Some(model_id) && entity.current_hp.unwrap_or(1) > 0
+                })
+                .ok_or_else(|| format!("teaching-card owner {model_id} is not in the fight"))?;
+            let skill_id = match group {
+                1 => entity.skill_group1.first(),
+                2 => entity.skill_group2.first(),
+                _ => unreachable!(),
+            }
+            .copied()
+            .ok_or_else(|| format!("teaching-card owner {model_id} has no skill group {group}"))?;
+            card_for(entity, Some(skill_id))
+                .ok_or_else(|| format!("invalid teaching-card skill {skill_id}"))
+        })
+        .collect()
+}
+
 pub fn draw_bag(fight: &Fight) -> Vec<CardInfo> {
     let candidates =
         crate::engine::manager::card::pool::normal_player_candidate_pool_with(fight, |_| false);
@@ -271,6 +345,133 @@ mod tests {
         assert_eq!(
             bag.iter().filter(|card| card.skill_id == Some(201)).count(),
             8
+        );
+    }
+
+    #[test]
+    fn configured_opening_deals_resolve_every_tracked_model_and_skill_group() {
+        crate::test_support::init_config();
+        let cases = [
+            (
+                10001,
+                vec![
+                    entity(-1, 100102, 1, &[30250111], &[30250121]),
+                    entity(-2, 100101, 2, &[30230111], &[30230121]),
+                ],
+                vec![
+                    (-2, 30230111),
+                    (-2, 30230121),
+                    (-1, 30250111),
+                    (-1, 30250121),
+                    (-2, 30230111),
+                ],
+            ),
+            (
+                10002,
+                vec![
+                    entity(-1, 100102, 1, &[30250111], &[30250121]),
+                    entity(-2, 100101, 2, &[30230111], &[30230121]),
+                ],
+                vec![
+                    (-1, 30250121),
+                    (-1, 30250121),
+                    (-1, 30250121),
+                    (-2, 30230111),
+                    (-2, 30230111),
+                    (-2, 30230121),
+                    (-1, 30250121),
+                ],
+            ),
+            (
+                10003,
+                vec![entity(-1, 100109, 1, &[1091], &[1092])],
+                vec![
+                    (-1, 1092),
+                    (-1, 1092),
+                    (-1, 1091),
+                    (-1, 1091),
+                    (-1, 1092),
+                    (-1, 1092),
+                    (-1, 1091),
+                ],
+            ),
+            (
+                10101,
+                vec![entity(-1, 3028, 1, &[281], &[282])],
+                vec![
+                    (-1, 282),
+                    (-1, 281),
+                    (-1, 281),
+                    (-1, 282),
+                    (-1, 282),
+                    (-1, 281),
+                ],
+            ),
+        ];
+        for (episode_id, entitys, expected) in cases {
+            let fight = Fight {
+                episode_id: Some(episode_id),
+                version: Some(7),
+                attacker: Some(FightTeam {
+                    entitys,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let deal = configured_opening_deal(&fight).unwrap().unwrap();
+
+            assert_eq!(
+                deal.iter()
+                    .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn configured_opening_deals_do_not_change_version_six_replays() {
+        crate::test_support::init_config();
+        let fight = Fight {
+            episode_id: Some(10002),
+            version: Some(6),
+            attacker: Some(FightTeam {
+                entitys: vec![
+                    entity(-1, 100102, 1, &[30250111], &[30250121]),
+                    entity(-2, 100101, 2, &[30230111], &[30230121]),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(configured_opening_deal(&fight).unwrap().is_none());
+        assert!(configured_refill_draws(&fight).unwrap().is_empty());
+    }
+
+    #[test]
+    fn configured_refill_draws_resolve_through_the_same_card_groups() {
+        crate::test_support::init_config();
+        let fight = Fight {
+            episode_id: Some(10001),
+            version: Some(7),
+            attacker: Some(FightTeam {
+                entitys: vec![
+                    entity(-1, 100102, 1, &[30250111], &[30250121]),
+                    entity(-2, 100101, 2, &[30230111], &[30230121]),
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_refill_draws(&fight)
+                .unwrap()
+                .iter()
+                .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+                .collect::<Vec<_>>(),
+            vec![(-2, 30230121), (-1, 30250111)]
         );
     }
 

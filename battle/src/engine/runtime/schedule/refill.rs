@@ -26,6 +26,7 @@ pub fn run_round_refill(
         hand_size,
         team_type,
         RefillStage::AfterActions,
+        Vec::new(),
     )
 }
 
@@ -47,6 +48,7 @@ pub(super) fn run_round_start_refill(
         hand_size,
         team_type,
         RefillStage::RoundStart,
+        Vec::new(),
     )
 }
 
@@ -57,7 +59,7 @@ pub(super) fn run_opening_hand_refill(
     determinism: &mut RoundDeterminism,
     context: TargetContext,
     hand_size: usize,
-    team_type: i32,
+    opening_draws: Vec<sonettobuf::CardInfo>,
 ) -> Result<DrainResult, DrainError> {
     run_card_refill(
         managers,
@@ -66,8 +68,9 @@ pub(super) fn run_opening_hand_refill(
         determinism,
         context,
         hand_size,
-        team_type,
+        1,
         RefillStage::Opening,
+        opening_draws,
     )
 }
 
@@ -81,7 +84,9 @@ fn run_card_refill(
     hand_size: usize,
     team_type: i32,
     stage: RefillStage,
+    opening_draws: Vec<sonettobuf::CardInfo>,
 ) -> Result<DrainResult, DrainError> {
+    let mut opening_draws = opening_draws.into_iter();
     let mut result = DrainResult::default();
     let origin = CommandOrigin {
         domain: RuleDomain::Lifecycle,
@@ -163,7 +168,7 @@ fn run_card_refill(
                     < hand_size
             }
         };
-        if !needs_normal_card && ready_special.is_empty() {
+        if !needs_normal_card && ready_special.is_empty() && opening_draws.len() == 0 {
             break;
         }
         let ready_ultimates = pool
@@ -197,13 +202,18 @@ fn run_card_refill(
                 candidates.push(ready.clone());
             }
         }
-        let card = if determinism.has_queued_card_draw() {
-            determinism.draw_cards(&candidates, 1).pop()
+        let (card, configured_opening) = if let Some(card) = opening_draws.next() {
+            (Some(card), true)
+        } else if determinism.has_queued_card_draw() {
+            (determinism.draw_cards(&candidates, 1).pop(), false)
         } else {
-            ready_ultimates
-                .first()
-                .cloned()
-                .or_else(|| determinism.draw_cards(&candidates, 1).pop())
+            (
+                ready_ultimates
+                    .first()
+                    .cloned()
+                    .or_else(|| determinism.draw_cards(&candidates, 1).pop()),
+                false,
+            )
         };
         let Some(card) = card else {
             break;
@@ -221,7 +231,7 @@ fn run_card_refill(
         {
             continue;
         }
-        if !needs_normal_card && !is_ultimate {
+        if !needs_normal_card && !is_ultimate && !configured_opening {
             continue;
         }
         let refill = drain::run(
@@ -234,8 +244,8 @@ fn run_card_refill(
                 CardCommand::RefillOne(CardRefillOne {
                     origin,
                     card,
-                    consume_draw_pile: !is_ultimate,
-                    consume_deck: !is_ultimate && !is_device,
+                    consume_draw_pile: stage != RefillStage::Opening && !is_ultimate,
+                    consume_deck: stage != RefillStage::Opening && !is_ultimate && !is_device,
                 }),
             ))],
         )?;

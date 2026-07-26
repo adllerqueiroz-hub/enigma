@@ -113,20 +113,29 @@ impl BattleRuntime {
             .iter()
             .filter(|card| !card.temp_card.unwrap_or_default())
             .count();
-        let drawn = self.determinism.draw_cards(
-            &available_player_cards(&self.fight, &self.managers),
-            opening_hand_size,
-        );
-        let opening_hand = if drawn.len() == opening_hand_size {
-            drawn
+        let opening_deal = if let Some(configured) =
+            crate::engine::manager::card::start::configured_opening_deal(&self.fight)?
+        {
+            configured
         } else {
-            player_deck.clone()
+            let drawn = self.determinism.draw_cards(
+                &available_player_cards(&self.fight, &self.managers),
+                opening_hand_size,
+            );
+            if drawn.len() == opening_hand_size {
+                drawn
+            } else {
+                player_deck.clone()
+            }
         };
+        self.determinism.enqueue_card_draws(
+            crate::engine::manager::card::start::configured_refill_draws(&self.fight)?,
+        );
         let opening_pool = crate::engine::skill::target::TargetPool::from_fight(&self.fight);
         let opening_team_cards = crate::engine::mechanic::card::CardMechanic.special_team_cards(
             &opening_pool,
             &self.managers,
-            &opening_hand,
+            &opening_deal,
         );
         let draw_pile = crate::engine::manager::card::start::draw_bag(&self.fight);
         let deck_num = crate::engine::manager::card::start::deck_size(&self.fight);
@@ -141,7 +150,7 @@ impl BattleRuntime {
             .map_err(|error| format!("{error:?}"))?;
         let (steps, mut visible_cards) = self.build_start_schedule(
             CardSetup {
-                hand: opening_hand,
+                hand: opening_deal,
                 draw_pile,
                 deck_num,
             },

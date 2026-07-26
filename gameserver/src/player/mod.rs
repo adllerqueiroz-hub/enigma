@@ -1,18 +1,13 @@
-pub mod activity;
 pub mod battle;
-pub mod collection;
-pub mod red_dot;
 pub mod state;
-pub mod tasks;
 
-pub use activity::ActivityManager;
 pub use battle::BattleManager;
-pub use collection::CollectionManager;
-pub use red_dot::RedDotManager;
+use logic::{
+    activity::ActivityManager, collection::CollectionManager, inventory::InventoryManager,
+    red_dot::RedDotManager, task::TaskManager,
+};
 pub use state::PlayerState;
-pub use tasks::TaskManager;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Player {
     pub id: i64,
@@ -20,6 +15,7 @@ pub struct Player {
     pub activity: ActivityManager,
     pub battle: BattleManager,
     pub collection: CollectionManager,
+    pub inventory: InventoryManager,
     pub red_dot: RedDotManager,
     pub tasks: TaskManager,
 }
@@ -32,6 +28,7 @@ impl Player {
             activity: ActivityManager::new(id),
             battle: BattleManager::default(),
             collection: CollectionManager::new(id),
+            inventory: InventoryManager::new(id),
             red_dot: RedDotManager::new(id),
             tasks: TaskManager::new(id),
         }

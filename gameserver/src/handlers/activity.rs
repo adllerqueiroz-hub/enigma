@@ -1,7 +1,7 @@
 use crate::{
     error::AppError,
+    logic::activity,
     net::{context::ConnectionContext, packet::ClientPacket},
-    player::activity,
     types::{material_get_approach::MaterialGetApproach, red_dot_id::RedDotId},
     util::{push, task_events},
 };

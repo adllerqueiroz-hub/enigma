@@ -408,12 +408,7 @@ fn display_name(db: &config::GameDB, primary: &str, fallback: &str, id: i32) -> 
     [primary, fallback]
         .into_iter()
         .find(|value| !value.trim().is_empty())
-        .map(|value| {
-            db.language_en
-                .get(value)
-                .unwrap_or(value)
-                .to_owned()
-        })
+        .map(|value| db.language_en.get(value).unwrap_or(value).to_owned())
         .unwrap_or_else(|| id.to_string())
 }
 

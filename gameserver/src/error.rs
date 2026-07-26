@@ -23,6 +23,9 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 
+    #[error("Game logic error: {0}")]
+    Logic(#[from] logic::LogicError),
+
     #[error("User is not logged in")]
     NotLoggedIn,
 
@@ -96,6 +99,15 @@ impl AppError {
             | Self::BannerExpired => Reply(InvalidOperation),
             Self::InsufficientItems => Reply(InsufficientItems),
             Self::InsufficientCurrency => Reply(InsufficientResources),
+            Self::Logic(logic::LogicError::InvalidRequest) => Reply(ParameterError),
+            Self::Logic(
+                logic::LogicError::HeroNotFound
+                | logic::LogicError::BannerNotFound
+                | logic::LogicError::BannerNotYetActive
+                | logic::LogicError::BannerExpired,
+            ) => Reply(InvalidOperation),
+            Self::Logic(logic::LogicError::InsufficientItems) => Reply(InsufficientItems),
+            Self::Logic(logic::LogicError::InsufficientCurrency) => Reply(InsufficientResources),
             Self::Cmd(_) | Self::NotLoggedIn | Self::MissingPlayerId => {
                 Reconnect(ServiceUnavailable)
             }
@@ -103,6 +115,7 @@ impl AppError {
             | Self::Packet(_)
             | Self::Serde(_)
             | Self::Database(_)
+            | Self::Logic(_)
             | Self::Custom(_)
             | Self::InvalidBattleCheckpoint(_) => Reconnect(ServerError),
         }

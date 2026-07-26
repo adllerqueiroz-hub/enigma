@@ -216,7 +216,7 @@ impl ItemModel<PowerItem> for UserItemModel {
         let now = common::time::ServerTime::now_ms();
         let game_data = config::configs::get();
 
-        let power_item_config = game_data.power_item.iter().find(|p| p.id == item_id);
+        let power_item_config = game_data.power_item.get(item_id);
         let expire_time = if let Some(config) = power_item_config {
             match config.expire_type {
                 0 => 0,
@@ -319,7 +319,7 @@ impl ItemModel<InsightItem> for UserItemModel {
         let now = common::time::ServerTime::now_ms();
         let game_data = config::configs::get();
 
-        let insight_config = game_data.insight_item.iter().find(|i| i.id == item_id);
+        let insight_config = game_data.insight_item.get(item_id);
         let expire_time = if let Some(config) = insight_config {
             let hours = config.expire_hours as i64;
             ((now / 1000) + (hours * 60 * 60)) as i32

@@ -349,6 +349,7 @@ pub mod task_season;
 pub mod task_type;
 pub mod task_weekly;
 pub mod task_weekwalk;
+pub mod teaching_card;
 pub mod test_server_task;
 pub mod tower_assist_attribute;
 pub mod tower_assist_boss;
@@ -739,6 +740,7 @@ pub struct GameDB {
     pub task_type: task_type::TaskTypeTable,
     pub task_weekly: task_weekly::TaskWeeklyTable,
     pub task_weekwalk: task_weekwalk::TaskWeekwalkTable,
+    pub teaching_card: teaching_card::TeachingCardTable,
     pub test_server_task: test_server_task::TestServerTaskTable,
     pub tower_assist_attribute: tower_assist_attribute::TowerAssistAttributeTable,
     pub tower_assist_boss: tower_assist_boss::TowerAssistBossTable,
@@ -1827,6 +1829,9 @@ impl GameDB {
         let task_weekwalk = task_weekwalk::TaskWeekwalkTable::load(
             &format!("{}/task_weekwalk.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load task_weekwalk.json: {}", e))?;
+        let teaching_card = teaching_card::TeachingCardTable::load(
+            &format!("{}/teaching_card.json", data_dir)
+        ).map_err(|e| anyhow::anyhow!("Failed to load teaching_card.json: {}", e))?;
         let test_server_task = test_server_task::TestServerTaskTable::load(
             &format!("{}/test_server_task.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load test_server_task.json: {}", e))?;
@@ -2289,6 +2294,7 @@ impl GameDB {
             task_type,
             task_weekly,
             task_weekwalk,
+            teaching_card,
             test_server_task,
             tower_assist_attribute,
             tower_assist_boss,

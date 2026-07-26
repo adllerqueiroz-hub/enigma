@@ -492,6 +492,7 @@ pub fn run_start(
     }
     let mut card_setup = Some(card_setup);
     let mut dealt_cards = None;
+    let mut opening_draws = Vec::new();
     let owner_uids = pool
         .attacker_main
         .iter()
@@ -595,6 +596,19 @@ pub fn run_start(
                 .filter(|card| card_mechanic.counts_toward_hand_limit(card, managers, pool))
                 .count();
             let hand_size = card_mechanic.normal_hand_limit(hand_size, managers, pool);
+            let mut normal_cards = 0;
+            setup.hand.retain(|card| {
+                if !card_mechanic.counts_toward_hand_limit(card, managers, pool) {
+                    return true;
+                }
+                normal_cards += 1;
+                if normal_cards <= hand_size {
+                    true
+                } else {
+                    opening_draws.push(card.clone());
+                    false
+                }
+            });
             if free_deal_count < hand_size {
                 setup
                     .hand
@@ -816,9 +830,13 @@ pub fn run_start(
             context,
             crate::engine::mechanic::card::CardMechanic
                 .normal_hand_limit(hand_size, managers, pool),
-            1,
+            opening_draws,
         )?,
     );
+    dealt_cards
+        .as_mut()
+        .expect("start schedule has one CardSetup stage")
+        .extend_from_slice(managers.card.refilled());
     if managers.card.hand_limit_bonus() != 0 {
         append(
             &mut result,

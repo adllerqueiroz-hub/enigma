@@ -523,6 +523,50 @@ mod tests {
         let built = super::super::build_fight(&pool, 1, 10002, 1002, false, &fight_group, None)
             .await
             .unwrap();
+        let mut runtime = crate::engine::runtime::BattleRuntime::new(built.fight.clone());
+        let round = runtime.start_round().unwrap();
+        let cards = runtime.card_info_push();
+        let deal = round
+            .team_a_cards1
+            .iter()
+            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deal,
+            vec![
+                (-1, 30250121),
+                (-1, 30250121),
+                (-1, 30250121),
+                (-2, 30230111),
+                (-2, 30230111),
+                (-2, 30230121),
+                (-1, 30250121),
+            ]
+        );
+        assert_eq!(
+            cards
+                .deal_card_group
+                .iter()
+                .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+                .collect::<Vec<_>>(),
+            deal
+        );
+        let opening = cards
+            .card_group
+            .into_iter()
+            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            opening,
+            vec![
+                (-1, 30250122),
+                (-1, 30250121),
+                (-2, 30230112),
+                (-2, 30230121),
+                (-1, 30250121),
+            ]
+        );
+        assert_eq!(opening[4], opening[1]);
         let attacker = built.fight.attacker.unwrap();
         let defender = built.fight.defender.unwrap();
 

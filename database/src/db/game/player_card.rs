@@ -52,11 +52,7 @@ pub async fn get_player_card_info(pool: &SqlitePool, user_id: i64) -> Result<Pla
     )
     .await?;
     let tables = config::configs::get();
-    let max_faith = tables
-        .friendless
-        .iter()
-        .map(|level| level.friendliness)
-        .sum();
+    let max_faith = tables.max_faith();
     info.max_faith_hero_count = count_i32_at_least(
         pool,
         "SELECT COUNT(DISTINCT hero_id) FROM heroes WHERE user_id = ? AND faith >= ?",
@@ -64,12 +60,7 @@ pub async fn get_player_card_info(pool: &SqlitePool, user_id: i64) -> Result<Pla
         max_faith,
     )
     .await?;
-    let max_level = tables
-        .character_level
-        .iter()
-        .map(|level| level.level)
-        .max()
-        .unwrap_or_default();
+    let max_level = tables.max_character_level();
     info.hero_max_level_count = count_i32_at_least(
         pool,
         "SELECT COUNT(DISTINCT hero_id) FROM heroes WHERE user_id = ? AND level >= ?",
