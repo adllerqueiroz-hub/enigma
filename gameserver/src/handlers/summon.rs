@@ -9,7 +9,7 @@ use prost::Message;
 use sonettobuf::CmdId;
 use sonettobuf::{
     ChooseEnhancedPoolHeroRequest, ChooseMultiUpHeroRequest, GetSummonProgressRewardsRequest,
-    PopUpRecommendWindowRequest, SummonQueryTokenRequest, SummonRequest,
+    PopUpRecommendWindowRequest, SummonQueryTokenRequest, SummonRequest, UpdateGuidePush,
 };
 
 pub async fn on_get_summon_info(
@@ -76,7 +76,16 @@ pub async fn on_summon(ctx: &mut ConnectionContext, req: ClientPacket) -> Result
     let msg = SummonRequest::decode(&req.data[..])?;
     let pool_id = msg.pool_id.ok_or(AppError::InvalidRequest)?;
     let count = msg.count.unwrap_or(1);
-    let (reply, changed, _, _) = summon::summon(ctx.state.db, player_id, pool_id, count).await?;
+    let completion = summon::summon(
+        ctx.state.db,
+        player_id,
+        pool_id,
+        msg.guide_id,
+        msg.step_id,
+        count,
+    )
+    .await?;
+    let changed = completion.changed;
 
     push::send_item_change_push(
         ctx,
@@ -91,6 +100,15 @@ pub async fn on_summon(ctx: &mut ConnectionContext, req: ClientPacket) -> Result
     push::send_hero_update_push(ctx, player_id, changed.hero_ids.clone()).await?;
     push::send_skin_gain_pushes(ctx, &changed.skin_gains, None).await?;
     push::send_bp_score_update_pushes(ctx, &changed.bp_scores).await?;
+    if let Some(guide_info) = completion.guide_info {
+        ctx.notify(
+            CmdId::UpdateGuidePushCmd,
+            UpdateGuidePush {
+                guide_infos: vec![guide_info],
+            },
+        )
+        .await?;
+    }
     task_events::notify(
         ctx,
         player_id,
@@ -100,7 +118,8 @@ pub async fn on_summon(ctx: &mut ConnectionContext, req: ClientPacket) -> Result
         },
     )
     .await?;
-    ctx.send_reply(CmdId::SummonCmd, reply, 0, req.up_tag).await
+    ctx.send_reply(CmdId::SummonCmd, completion.reply, 0, req.up_tag)
+        .await
 }
 
 pub async fn on_choose_enhanced_pool_hero(

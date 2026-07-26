@@ -6,14 +6,14 @@ use flate2::{Compression, read::GzEncoder};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sonettobuf::{
-    BeginRoundReply, BeginRoundRequest, CardInfoPush, FightReason, FightRoundOperRecord,
-    ReconnectFightReply, RedealCardInfoPush, StartDungeonReply, StartDungeonRequest,
-    UseClothSkillOperRecord, UseClothSkillReply, UseClothSkillRequest, fight_reason,
+    AutoRoundReply, AutoRoundRequest, BeginRoundReply, BeginRoundRequest, CardInfoPush,
+    FightReason, FightRoundOperRecord, ReconnectFightReply, RedealCardInfoPush, StartDungeonReply,
+    StartDungeonRequest, UseClothSkillOperRecord, UseClothSkillReply, UseClothSkillRequest,
+    fight_reason,
 };
 use sqlx::SqlitePool;
 use std::io::Read;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct BattleManager {
     pub active: Option<ActiveBattle>,
@@ -85,6 +85,10 @@ pub struct ActiveBattle {
 }
 
 impl ActiveBattle {
+    pub fn plan_auto_round(&self, request: &AutoRoundRequest) -> AutoRoundReply {
+        self.runtime.plan_auto_round(request)
+    }
+
     pub fn use_cloth_skill(
         &mut self,
         request: UseClothSkillRequest,

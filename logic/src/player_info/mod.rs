@@ -227,7 +227,7 @@ pub async fn rename(
     Ok((
         RenameReply {
             can_rename: Some(true),
-            ext_rename: Some(1),
+            ext_rename: Some(0),
         },
         snapshot(db, player_id).await?,
     ))

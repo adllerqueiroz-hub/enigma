@@ -45,6 +45,22 @@ pub struct BattleRuntime {
 }
 
 impl BattleRuntime {
+    /// Plans client auto-battle operations without mutating authoritative state.
+    pub fn plan_auto_round(
+        &self,
+        request: &sonettobuf::AutoRoundRequest,
+    ) -> sonettobuf::AutoRoundReply {
+        crate::engine::auto_battle::plan(
+            request,
+            &self.fight,
+            &self.managers,
+            &self.catalog,
+            &self.round_state,
+            &self.determinism,
+            self.conduit_operations(),
+        )
+    }
+
     /// Evaluates the current terminal or wave outcome from manager-owned state.
     pub fn outcome(&self) -> BattleOutcome {
         let pool = crate::engine::skill::target::TargetPool::from_fight(&self.fight);

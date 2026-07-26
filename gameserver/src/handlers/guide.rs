@@ -27,13 +27,6 @@ pub async fn on_finish_guide(
     let completion =
         guide::finish_guide(ctx.state.db, player_id, msg.guide_id, msg.step_id).await?;
 
-    ctx.notify(
-        CmdId::UpdateGuidePushCmd,
-        UpdateGuidePush {
-            guide_infos: vec![completion.guide_info],
-        },
-    )
-    .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -46,6 +39,13 @@ pub async fn on_finish_guide(
         ctx.notify(CmdId::UpdateHeroGroupSnapshotPushCmd, snapshot)
             .await?;
     }
+    ctx.notify(
+        CmdId::UpdateGuidePushCmd,
+        UpdateGuidePush {
+            guide_infos: vec![completion.guide_info],
+        },
+    )
+    .await?;
     ctx.send_reply(CmdId::FinishGuideCmd, completion.reply, 0, req.up_tag)
         .await
 }

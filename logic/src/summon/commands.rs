@@ -131,16 +131,10 @@ pub async fn summon(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,
+    guide_id: Option<i32>,
+    step_id: Option<i32>,
     count: i32,
-) -> Result<
-    (
-        SummonReply,
-        reward::AppliedRewards,
-        Vec<u32>,
-        Vec<(i32, i32)>,
-    ),
-    AppError,
-> {
+) -> Result<SummonCompletion, AppError> {
     validate_summon_count(count)?;
     let tables = config::configs::get();
     let pool_cfg = tables
@@ -170,18 +164,41 @@ pub async fn summon(
         pity_6,
         up_guaranteed,
     };
-    let pool = build_gacha_pool(pool_id, sp_pool.as_ref())?;
-    let rules = GachaRules::from_pool(pool_cfg)?;
-    let results = {
+    let teaching = guide_id
+        .zip(step_id)
+        .filter(|_| count == 1)
+        .and_then(|(guide_id, step_id)| {
+            tables
+                .teaching_summon
+                .get(guide_id)
+                .filter(|rule| rule.step_id == step_id && rule.pool_id == pool_id)
+        });
+    let results = if let Some(teaching) = teaching {
+        let progress = guides::get_guide_progress(db, player_id, teaching.id)
+            .await?
+            .filter(|progress| progress.step_id == teaching.previous_step_id)
+            .ok_or(AppError::InvalidRequest)?;
+        gacha.pity_6 = gacha.pity_6.saturating_add(1);
+        (
+            vec![GachaResult {
+                hero_id: teaching.hero_id,
+            }],
+            Some(progress.step_id),
+        )
+    } else {
+        let pool = build_gacha_pool(pool_id, sp_pool.as_ref())?;
+        let rules = GachaRules::from_pool(pool_cfg)?;
         let mut rng = rand::rng();
-        if count == 10 {
+        let results = if count == 10 {
             gacha.ten_pull(&rules, &pool, &mut rng)
         } else {
             vec![gacha.single_pull(&rules, &pool, &mut rng, false)]
-        }
+        };
+        (results, None)
     };
     let completed_newbie_pool = is_newbie_pool
         && results
+            .0
             .iter()
             .any(|result| is_newbie_six_star(pool_id, result.hero_id));
 
@@ -201,7 +218,7 @@ pub async fn summon(
 
     let mut tx = db.begin().await?;
     let consumed = reward::consume(&mut tx, player_id, &cost).await?;
-    for result in results {
+    for result in results.0 {
         let grant = heroes
             .grant_hero_in_transaction(&mut tx, result.hero_id)
             .await?;
@@ -247,6 +264,25 @@ pub async fn summon(
     {
         return Err(AppError::InvalidRequest);
     }
+    let guide_info = if let (Some(teaching), Some(expected_step)) = (teaching, results.1) {
+        if !guides::update_guide_progress_in_transaction(
+            &mut tx,
+            player_id,
+            teaching.id,
+            Some(expected_step),
+            teaching.step_id,
+        )
+        .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        Some(GuideInfo {
+            guide_id: teaching.id,
+            step_id: teaching.step_id,
+        })
+    } else {
+        None
+    };
     summon::increment_summon_count(&mut tx, player_id, pool_id, count).await?;
     summon::record_summon(
         &mut tx,
@@ -273,14 +309,19 @@ pub async fn summon(
         .currency_ids
         .extend(consumed.currency_ids.iter().copied());
 
-    Ok((
-        SummonReply {
+    Ok(SummonCompletion {
+        reply: SummonReply {
             summon_result: reply_results,
         },
         changed,
-        consumed.item_ids,
-        consumed.currency_ids,
-    ))
+        guide_info,
+    })
+}
+
+pub struct SummonCompletion {
+    pub reply: SummonReply,
+    pub changed: reward::AppliedRewards,
+    pub guide_info: Option<GuideInfo>,
 }
 
 pub(super) fn is_newbie_pool(pool: &config::summon_pool::SummonPool) -> bool {

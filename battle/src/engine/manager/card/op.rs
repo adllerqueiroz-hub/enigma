@@ -28,6 +28,10 @@ impl CardOpType {
             _ => Self::Unknown,
         }
     }
+
+    pub const fn id(self) -> i32 {
+        self as i32
+    }
 }
 
 impl From<i32> for CardOpType {

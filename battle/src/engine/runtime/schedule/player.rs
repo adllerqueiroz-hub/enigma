@@ -294,7 +294,7 @@ struct QueuedPlayerAction {
     prelude: Vec<RuleOp>,
 }
 
-pub(super) fn card_skill_is_blocked(
+pub(crate) fn card_skill_is_blocked(
     managers: &BattleManagers,
     catalog: &SkillEffectCatalog,
     owner_uid: i64,

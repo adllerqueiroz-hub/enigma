@@ -1,9 +1,12 @@
 use super::{
     GachaRules, is_newbie_pool, is_newbie_six_star, pop_up_recommend_window, progress_rewards,
-    validate_summon_count,
+    summon as perform_summon, validate_summon_count,
 };
 use crate::reward::{self, RewardSet};
-use database::{db::game::summon, models::game::heros::UserHeroModel};
+use database::{
+    db::game::{guides, summon},
+    models::game::{heros::UserHeroModel, items::UserItemModel},
+};
 use sqlx::SqlitePool;
 
 #[test]
@@ -32,6 +35,88 @@ fn summon_count_is_exactly_one_or_ten() {
     for count in [0, 2, 9, 11] {
         assert!(validate_summon_count(count).is_err());
     }
+}
+
+#[tokio::test]
+async fn teaching_summon_uses_captured_result_and_advances_guide() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (26, 'teaching-summon', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO guide_progress (user_id, guide_id, step_id) VALUES (26, 103, 0)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO items (user_id, item_id, quantity) VALUES (26, 140001, 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let completion = perform_summon(&pool, 26, 2, Some(103), Some(8), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(completion.reply.summon_result[0].hero_id, Some(3023));
+    assert_eq!(completion.guide_info.map(|info| info.step_id), Some(8));
+    assert_eq!(
+        guides::get_guide_progress(&pool, 26, 103)
+            .await
+            .unwrap()
+            .unwrap()
+            .step_id,
+        8
+    );
+    assert_eq!(
+        summon::get_gacha_state(&pool, 26, 2).await.unwrap(),
+        Some((1, false))
+    );
+    assert!(
+        UserHeroModel::new(26, pool.clone())
+            .get_hero(3023)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        UserItemModel::new(26, pool)
+            .get_item(140001)
+            .await
+            .unwrap()
+            .unwrap()
+            .quantity,
+        0
+    );
+}
+
+#[tokio::test]
+async fn ordinary_summon_still_uses_the_pool_without_advancing_a_guide() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (27, 'ordinary-summon', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO items (user_id, item_id, quantity) VALUES (27, 140001, 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let completion = perform_summon(&pool, 27, 2, None, None, 1).await.unwrap();
+    let hero_id = completion.reply.summon_result[0].hero_id.unwrap();
+
+    assert!(completion.guide_info.is_none());
+    assert!(UserHeroModel::new(27, pool).get_hero(hero_id).await.is_ok());
 }
 
 #[tokio::test]

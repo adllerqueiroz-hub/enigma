@@ -351,6 +351,55 @@ impl TargetResolver {
         let targets = redirect_taunted_single_target(targets, source_uid, pool, context);
         redirect_mock_taunted_single_target(targets, source_uid, pool, context)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_primary_candidates(
+        request: &TargetRequest,
+        skill_id: i32,
+        source_uid: i64,
+        pool: &TargetPool,
+        determinism: &RoundDeterminism,
+        managers: Option<&BattleManagers>,
+        context: TargetContext,
+    ) -> Vec<i64> {
+        let targets_enemy = targets_enemy(request.code).or_else(|| {
+            matches!(target_rule(request.code), Some(TargetRule::SelectedTarget)).then_some(
+                context.active_skill_is_attack
+                    || context.active_skill_effect_tag
+                        == crate::engine::skill::effect::catalog::SkillEffectTag::Debuff as i32,
+            )
+        });
+        let mut resolved = Vec::new();
+        for runtime_target_uid in pool.entities().filter_map(|entity| {
+            let source_team = pool.team_type(source_uid)?;
+            let target_team = pool.team_type(entity.uid)?;
+            targets_enemy
+                .is_none_or(|enemy| (source_team != target_team) == enemy)
+                .then_some(entity.uid)
+        }) {
+            let mut determinism = determinism.clone();
+            let targets = Self::resolve_action_targets(
+                request,
+                skill_id,
+                source_uid,
+                pool,
+                &mut determinism,
+                managers,
+                TargetContext {
+                    runtime_target_uid,
+                    ..context
+                },
+            );
+            if let Some(target_uid) = targets
+                .into_iter()
+                .find(|target_uid| pool.entity(*target_uid).is_some())
+                && !resolved.contains(&target_uid)
+            {
+                resolved.push(target_uid);
+            }
+        }
+        resolved
+    }
 }
 
 fn redirect_taunted_single_target(

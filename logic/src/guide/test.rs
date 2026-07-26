@@ -20,7 +20,12 @@ async fn finish_guide_persists_step() {
     let configured_step = config::configs::get()
         .guide_step
         .iter()
-        .find(|step| story_requirement(&step.action).is_none())
+        .find(|step| {
+            story_requirement(&step.action).is_none()
+                && config::configs::get().guide_step.iter().any(|later| {
+                    later.id == step.id && later.step_id > step.step_id && later.key_step != 0
+                })
+        })
         .unwrap();
     let guide_id = configured_step.id;
     let expected_step_id = configured_step.step_id;
@@ -79,6 +84,13 @@ async fn prologue_guide_grants_apple_after_story_once() {
         .unwrap();
 
     let heroes = UserHeroModel::new(8, pool.clone());
+    assert_eq!(
+        get_guide_info(&pool, 8).await.unwrap().guide_infos,
+        [GuideInfo {
+            guide_id: 101,
+            step_id: 0,
+        }]
+    );
     assert!(heroes.get_all_heroes().await.unwrap().is_empty());
     assert!(matches!(
         finish_guide(&pool, 8, 101, 84).await,
@@ -93,6 +105,8 @@ async fn prologue_guide_grants_apple_after_story_once() {
     let completion = finish_guide(&pool, 8, 101, 84).await.unwrap();
     let apple = heroes.get_hero(3028).await.unwrap();
     assert_eq!(completion.rewards.hero_ids, [3028]);
+    assert_eq!(completion.rewards.item_ids, [140001]);
+    assert_eq!(completion.guide_info.step_id, -1);
     assert_eq!(
         completion
             .group_snapshot

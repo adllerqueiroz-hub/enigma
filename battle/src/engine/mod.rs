@@ -1,3 +1,4 @@
+pub mod auto_battle;
 pub mod buff;
 pub mod damage;
 pub mod diagnostics;

@@ -60,7 +60,7 @@ impl CardMechanic {
         .max(0)
     }
 
-    fn ultimate_ready(&self, managers: &BattleManagers, entity: &TargetEntity) -> bool {
+    pub fn ultimate_ready(&self, managers: &BattleManagers, entity: &TargetEntity) -> bool {
         if entity.ex_skill <= 0 {
             return false;
         }

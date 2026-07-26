@@ -108,10 +108,10 @@ mod resolution;
 mod settlement;
 mod start;
 
+pub(crate) use player::card_skill_is_blocked;
 pub use player::*;
 use player::{
-    ActiveActionRequest, card_play_resource_delta, card_skill_is_blocked, run_active_action,
-    run_card_composition_rewards,
+    ActiveActionRequest, card_play_resource_delta, run_active_action, run_card_composition_rewards,
 };
 use refill::run_opening_hand_refill;
 pub use refill::*;

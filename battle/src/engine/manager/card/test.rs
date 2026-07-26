@@ -1,4 +1,46 @@
 use super::*;
+use rand::{SeedableRng, rngs::StdRng};
+use sonettobuf::{Fight, FightEntityInfo, FightTeam};
+
+#[test]
+fn enemy_ai_uses_ready_ultimates_and_falls_back_to_basic_skills() {
+    let fight = |ex_point, ex_skill| Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                model_id: Some(100),
+                current_hp: Some(100),
+                ex_point: Some(ex_point),
+                ex_skill,
+                skill_group1: vec![100],
+                skill_group2: vec![200],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut ready_rng = StdRng::seed_from_u64(1);
+    assert_eq!(
+        ai::generate_ai_deck(&fight(5, Some(900)), &mut ready_rng)[0].skill_id,
+        Some(900)
+    );
+
+    let mut fallback_rng = StdRng::seed_from_u64(1);
+    assert_eq!(
+        ai::generate_ai_deck(&fight(5, None), &mut fallback_rng)[0].skill_id,
+        Some(100)
+    );
+}
 
 #[test]
 fn moves_cards_before_playing() {

@@ -1,13 +1,16 @@
 use crate::{error::AppError, reward};
 use database::{
-    db::{game::summon, user::account},
+    db::{
+        game::{guides, summon},
+        user::account,
+    },
     models::game::{currencies::UserCurrencyModel, heros::UserHeroModel, items::UserItemModel},
 };
 use rand::{Rng, prelude::IndexedRandom};
 use sonettobuf::{
     ChooseEnhancedPoolHeroReply, ChooseMultiUpHeroReply, EndActivityPush, GetSummonInfoReply,
-    GetSummonProgressRewardsReply, PopUpRecommendWindowReply, SummonQueryTokenReply, SummonReply,
-    SummonResult,
+    GetSummonProgressRewardsReply, GuideInfo, PopUpRecommendWindowReply, SummonQueryTokenReply,
+    SummonReply, SummonResult,
 };
 use sqlx::SqlitePool;
 mod commands;
@@ -17,7 +20,7 @@ mod pool;
 pub use commands::*;
 use parse::{choose_weighted, parse_ids, parse_up_heroes, parse_weighted};
 pub(crate) use pool::build_gacha_pool;
-use pool::{GachaRules, GachaState, SummonType};
+use pool::{GachaResult, GachaRules, GachaState, SummonType};
 
 #[cfg(test)]
 mod test;

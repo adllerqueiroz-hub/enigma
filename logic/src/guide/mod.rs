@@ -55,6 +55,30 @@ fn hero_reward_after_step(guide_id: i32, step_id: i32) -> Option<i32> {
     })
 }
 
+fn stored_step_after(guide_id: i32, step_id: i32) -> i32 {
+    if config::configs::get()
+        .guide_step
+        .iter()
+        .any(|step| step.id == guide_id && step.step_id > step_id && step.key_step != 0)
+    {
+        step_id
+    } else {
+        -1
+    }
+}
+
+fn teaching_rewards(guide_id: i32, step_id: i32) -> reward::RewardSet {
+    config::configs::get()
+        .teaching_summon
+        .iter()
+        .filter(|row| row.grant_guide_id == guide_id && row.grant_step_id == step_id)
+        .map(|row| reward::parse(&row.grant_reward))
+        .fold(reward::RewardSet::default(), |mut rewards, reward| {
+            rewards.extend(reward);
+            rewards
+        })
+}
+
 pub async fn get_guide_info(
     db: &SqlitePool,
     player_id: i64,
@@ -99,6 +123,7 @@ pub async fn finish_guide(
     let first_completion = previous
         .as_ref()
         .is_none_or(|progress| progress.step_id != -1 && progress.step_id < step_id);
+    let stored_step_id = stored_step_after(guide_id, step_id);
     let hero_id = required_story.and_then(|_| hero_reward_after_step(guide_id, step_id));
     let common_group = if hero_id.is_some() {
         Some(
@@ -121,11 +146,11 @@ pub async fn finish_guide(
         false
     };
     let mut tx = db.begin().await?;
-    let (rewards, material_changes) = if should_grant {
-        let rewards = reward::RewardSet {
-            heroes: vec![(hero_id.unwrap(), 1)],
-            ..Default::default()
-        };
+    let (rewards, material_changes) = if first_completion {
+        let mut rewards = teaching_rewards(guide_id, step_id);
+        if should_grant {
+            rewards.heroes.push((hero_id.unwrap(), 1));
+        }
         let material_changes = rewards.material_changes();
         (
             reward::apply_in_transaction(&mut tx, db, player_id, rewards).await?,
@@ -139,7 +164,7 @@ pub async fn finish_guide(
         player_id,
         guide_id,
         previous.as_ref().map(|progress| progress.step_id),
-        step_id,
+        stored_step_id,
     )
     .await?
     {
@@ -166,7 +191,10 @@ pub async fn finish_guide(
     tx.commit().await?;
     Ok(GuideCompletion {
         reply: FinishGuideReply {},
-        guide_info: GuideInfo { guide_id, step_id },
+        guide_info: GuideInfo {
+            guide_id,
+            step_id: stored_step_id,
+        },
         rewards,
         material_changes,
         group_snapshot,

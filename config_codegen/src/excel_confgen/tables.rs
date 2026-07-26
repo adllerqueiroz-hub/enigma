@@ -30,6 +30,7 @@ pub const FILTER_TABLES: &[&str] = &[
     "guide",
     "guide_step",
     "teaching_card",
+    "teaching_summon",
     "episode",
     "chapter",
     "chapter_map",

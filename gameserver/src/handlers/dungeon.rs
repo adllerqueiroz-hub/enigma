@@ -11,9 +11,9 @@ use config::configs;
 use database::db::game::{battle as battle_db, dungeons, tasks::TaskEvent};
 use prost::Message;
 use sonettobuf::{
-    AutoRoundReply, AutoRoundRequest, BeginRoundRequest, CmdId, CoverDungeonRecordReply,
-    CoverDungeonRecordRequest, DungeonInfosPush, EndDungeonReply, EndDungeonRequest, EndFightReply,
-    EndFightRequest, EntityInfoReply, EntityInfoRequest, GetFightCardDeckDetailInfoReply,
+    AutoRoundRequest, BeginRoundRequest, CmdId, CoverDungeonRecordReply, CoverDungeonRecordRequest,
+    DungeonInfosPush, EndDungeonReply, EndDungeonRequest, EndFightReply, EndFightRequest,
+    EntityInfoReply, EntityInfoRequest, GetFightCardDeckDetailInfoReply,
     GetFightCardDeckDetailInfoRequest, GetFightCardDeckInfoReply, GetFightCardDeckInfoRequest,
     GetFightOperReply, GetFightOperRequest, GetFightRecordGroupReply, GetFightRecordGroupRequest,
     GetPuzzleProgressRequest, InstructionDungeonFinalRewardRequest, InstructionDungeonInfoRequest,
@@ -477,27 +477,17 @@ pub async fn on_begin_round(
 }
 
 pub async fn on_auto_round(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<(), AppError> {
-    let devices_opers = ctx
+    let msg = AutoRoundRequest::decode(&req.data[..])?;
+    let reply = ctx
         .player()?
         .battle
         .active
         .as_ref()
-        .map(|battle| battle.runtime.conduit_operations())
-        .unwrap_or_default();
-    let msg = AutoRoundRequest::decode(&req.data[..])?;
+        .ok_or(AppError::InvalidRequest)?
+        .plan_auto_round(&msg);
 
-    ctx.send_reply(
-        CmdId::AutoRoundCmd,
-        AutoRoundReply {
-            opers: msg.opers,
-            to_id: msg.to_id,
-            cloth_skill: None,
-            devices_opers,
-        },
-        0,
-        req.up_tag,
-    )
-    .await
+    ctx.send_reply(CmdId::AutoRoundCmd, reply, 0, req.up_tag)
+        .await
 }
 
 pub async fn on_fight_end_fight(

@@ -3,6 +3,7 @@ use config::configs;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 mod basic;
+mod guide;
 mod hero_group;
 mod inventory;
 mod misc;
@@ -11,6 +12,7 @@ mod summon;
 mod tower_player;
 
 use basic::{load_open_infos, load_player_info};
+use guide::load_starter_guides;
 use hero_group::{load_hero_touch_count, load_starter_hero_groups};
 use inventory::{load_starter_currencies, load_starter_user_stats};
 use misc::{
@@ -42,6 +44,7 @@ pub async fn load_all_starter_data_tx(
 
     load_player_info(&mut *tx, uid).await?;
     load_open_infos(&mut *tx, uid).await?;
+    load_starter_guides(&mut *tx, uid).await?;
     load_hero_touch_count(&mut *tx, uid).await?;
     load_starter_currencies(&mut *tx, uid).await?;
     load_starter_user_stats(&mut *tx, uid).await?;
