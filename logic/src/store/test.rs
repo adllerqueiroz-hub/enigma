@@ -1,7 +1,6 @@
 use super::{
-    battle_pass_pay_status, battle_pass_purchase_bonus, charge_goods_attachment,
-    charge_goods_diamond_bonus, charge_infos, goods_store_id, is_time_active, parse_time_millis,
-    purchase_cost,
+    StoreManager, battle_pass_pay_status, battle_pass_purchase_bonus, charge_goods_attachment,
+    charge_goods_diamond_bonus, goods_store_id, is_time_active, parse_time_millis, purchase_cost,
 };
 use sqlx::SqlitePool;
 
@@ -76,7 +75,7 @@ async fn charge_infos_are_synthesized_without_purchase_rows() {
     .await
     .unwrap();
 
-    let infos = charge_infos(&pool, 1).await.unwrap();
+    let infos = StoreManager::new(1).charge_infos(&pool).await.unwrap();
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_charge_info")
         .fetch_one(&pool)
         .await

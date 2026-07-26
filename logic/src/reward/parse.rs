@@ -56,11 +56,7 @@ pub fn parse_reward_id(reward_id: i32) -> RewardSet {
 }
 
 fn parse_reward_id_with_cost(reward_id: i32, cost: i32) -> RewardSet {
-    let Some(row) = config::configs::get()
-        .reward
-        .iter()
-        .find(|row| row.reward_id == reward_id)
-    else {
+    let Some(row) = config::configs::get().reward(reward_id) else {
         return RewardSet::default();
     };
 
@@ -121,10 +117,7 @@ fn collect_reward_group(rewards: &mut RewardSet, group_ref: &str, cost: i32) {
     };
     let mode = parts.next().unwrap_or("NORMAL");
 
-    let rows = config::configs::get()
-        .reward_group
-        .iter()
-        .filter(|row| row.group == group);
+    let rows = config::configs::get().reward_group(group);
     match mode {
         "NORMAL" => {
             for row in rows {

@@ -5,7 +5,33 @@ use sonettobuf::{
 };
 use sqlx::SqlitePool;
 
-pub async fn explore_simple_info(
+#[derive(Clone, Copy, Debug)]
+pub struct ExplorationManager {
+    player_id: i64,
+}
+
+impl ExplorationManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn simple_info(self, db: &SqlitePool) -> Result<GetExploreSimpleInfoReply, AppError> {
+        explore_simple_info(db, self.player_id).await
+    }
+
+    pub async fn weekwalk_info(self, db: &SqlitePool) -> Result<GetWeekwalkInfoReply, AppError> {
+        weekwalk_info(db, self.player_id).await
+    }
+
+    pub async fn weekwalk_v2_info(
+        self,
+        db: &SqlitePool,
+    ) -> Result<WeekwalkVer2GetInfoReply, AppError> {
+        weekwalk_v2_info(db, self.player_id).await
+    }
+}
+
+async fn explore_simple_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<GetExploreSimpleInfoReply, AppError> {
@@ -20,10 +46,7 @@ pub async fn explore_simple_info(
     })
 }
 
-pub async fn weekwalk_info(
-    db: &SqlitePool,
-    player_id: i64,
-) -> Result<GetWeekwalkInfoReply, AppError> {
+async fn weekwalk_info(db: &SqlitePool, player_id: i64) -> Result<GetWeekwalkInfoReply, AppError> {
     let (info, map_info) = weekwalk::get_weekwalk_info(db, player_id).await?;
 
     Ok(GetWeekwalkInfoReply {
@@ -43,7 +66,7 @@ pub async fn weekwalk_info(
     })
 }
 
-pub async fn weekwalk_v2_info(
+async fn weekwalk_v2_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<WeekwalkVer2GetInfoReply, AppError> {

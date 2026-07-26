@@ -13,18 +13,23 @@ async fn fairyland_progress_uses_config_and_generic_activity_state() {
     .await
     .unwrap();
 
+    let manager = FairylandManager::new(25);
     assert!(
-        resolve_puzzle(&pool, config::configs::get(), 25, 4, "wrong")
+        manager
+            .resolve_puzzle(&pool, config::configs::get(), 4, "wrong")
             .await
             .is_err()
     );
-    resolve_puzzle(&pool, config::configs::get(), 25, 4, "6")
+    manager
+        .resolve_puzzle(&pool, config::configs::get(), 4, "6")
         .await
         .unwrap();
-    record_dialog(&pool, config::configs::get(), 25, 1)
+    manager
+        .record_dialog(&pool, config::configs::get(), 1)
         .await
         .unwrap();
-    let reply = record_element(&pool, config::configs::get(), 25, 1)
+    let reply = manager
+        .record_element(&pool, config::configs::get(), 1)
         .await
         .unwrap();
     let info = reply.info.unwrap();

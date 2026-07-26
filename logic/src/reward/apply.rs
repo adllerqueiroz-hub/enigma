@@ -28,7 +28,7 @@ async fn apply_bp_scores_in_transaction(
     Ok(changed)
 }
 
-pub async fn apply(
+pub(crate) async fn apply(
     db: &SqlitePool,
     player_id: i64,
     rewards: RewardSet,
@@ -55,7 +55,7 @@ pub(crate) async fn apply_in_transaction(
         )
         .await?;
         player_info_changed = true;
-        rewards.extend(player_info::level_up_rewards(change));
+        rewards.extend(profile::level_up_rewards(change));
         validate_grants(&rewards)?;
     }
 
@@ -156,7 +156,11 @@ pub(crate) async fn apply_in_transaction(
     let mut antiques = Vec::new();
     for (antique_id, count) in rewards.antiques {
         for _ in 0..count {
-            antiques.push(antiques::add_antique_in_transaction(tx, player_id, antique_id).await?);
+            antiques.push(
+                antiques::add_antique_in_transaction(tx, player_id, antique_id)
+                    .await?
+                    .into(),
+            );
         }
     }
     let bp_scores = apply_bp_scores_in_transaction(tx, player_id, rewards.bp_scores).await?;
@@ -221,7 +225,7 @@ pub(crate) async fn apply_dungeon_in_transaction(
         )
         .await?;
         player_info_changed = true;
-        rewards.extend(player_info::level_up_rewards(change));
+        rewards.extend(profile::level_up_rewards(change));
         validate_grants(&rewards)?;
         ensure_dungeon_rewards_supported(&rewards)?;
     }

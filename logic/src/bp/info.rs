@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn get_bp_info(
+pub(super) async fn get_bp_info(
     db: &SqlitePool,
     player_id: i64,
     include_tasks: bool,
@@ -68,7 +68,10 @@ pub struct BpBonusRedDots {
     pub sp: i32,
 }
 
-pub async fn bonus_red_dots(db: &SqlitePool, player_id: i64) -> Result<BpBonusRedDots, AppError> {
+pub(super) async fn bonus_red_dots(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<BpBonusRedDots, AppError> {
     let Some(bp) = task_db::current_battle_pass() else {
         return Ok(BpBonusRedDots::default());
     };

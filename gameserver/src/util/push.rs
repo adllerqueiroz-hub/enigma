@@ -2,17 +2,13 @@ use crate::{
     error::AppError, logic::reward::AppliedRewards, net::context::ConnectionContext,
     types::material_get_approach::MaterialGetApproach, util::task_events,
 };
-use database::db::game::tasks::TaskEvent;
-use database::{
-    db::game::{currencies, dungeons, equipment, items},
-    models::game::heros::UserHeroModel,
-};
+use logic::task::TaskEvent;
 use sonettobuf::{
     AntiqueInfo, AntiqueUpdatePush, BlockPackageGainPush, BpScoreUpdatePush, BuildingGainPush,
     ChapterMapElementUpdatePush, ChapterMapUpdatePush, ClothUpdatePush, CmdId, CurrencyChangePush,
     EndFightPush, EquipUpdatePush, GainSpecialBlockPush, HeroSkinGainPush, HeroUpdatePush,
-    InstructionDungeonInfoPush, ItemChangePush, MaterialChangePush, MaterialData,
-    PlayerCardInfoPush, PlayerCloth, PlayerClothInfo, RedDotGroup, RedDotInfo, UpdateRedDotPush,
+    ItemChangePush, MaterialChangePush, MaterialData, PlayerCardInfoPush, PlayerCloth,
+    PlayerClothInfo, RedDotGroup, RedDotInfo, UpdateRedDotPush,
 };
 use std::collections::HashMap;
 
@@ -27,18 +23,22 @@ pub async fn send_dungeon_map_progression(
     ctx: &mut ConnectionContext,
     player_id: i64,
 ) -> Result<(), AppError> {
-    let (map_ids, elements) = dungeons::reconcile_map_progression(ctx.state.db, player_id).await?;
-    if !map_ids.is_empty() {
+    let progression = crate::dungeon::reconcile_map_progression(ctx.state.db, player_id).await?;
+    if !progression.map_ids.is_empty() {
         ctx.notify(
             CmdId::ChapterMapUpdatePushCmd,
-            ChapterMapUpdatePush { map_ids },
+            ChapterMapUpdatePush {
+                map_ids: progression.map_ids,
+            },
         )
         .await?;
     }
-    if !elements.is_empty() {
+    if !progression.elements.is_empty() {
         ctx.notify(
             CmdId::ChapterMapElementUpdatePushCmd,
-            ChapterMapElementUpdatePush { elements },
+            ChapterMapElementUpdatePush {
+                elements: progression.elements,
+            },
         )
         .await?;
     }
@@ -49,27 +49,22 @@ pub async fn send_instruction_dungeon_progression(
     ctx: &mut ConnectionContext,
     player_id: i64,
 ) -> Result<(), AppError> {
-    if !database::db::game::instruction_dungeon::reconcile_unlocks(ctx.state.db, player_id).await? {
-        return Ok(());
+    if let Some(info) =
+        crate::dungeon::reconcile_instruction_dungeon(ctx.state.db, player_id).await?
+    {
+        ctx.notify(CmdId::DungeonInstructionDungeonInfoPushCmd, info)
+            .await?;
     }
-    send_instruction_dungeon_info(ctx, player_id).await
+    Ok(())
 }
 
 pub async fn send_instruction_dungeon_info(
     ctx: &mut ConnectionContext,
     player_id: i64,
 ) -> Result<(), AppError> {
-    let info = database::db::game::instruction_dungeon::get_info(ctx.state.db, player_id).await?;
-    ctx.notify(
-        CmdId::DungeonInstructionDungeonInfoPushCmd,
-        InstructionDungeonInfoPush {
-            unlock_ids: info.unlock_ids,
-            get_reward_ids: info.get_reward_ids,
-            get_final_reward: info.get_final_reward,
-            open_ids: info.open_ids,
-        },
-    )
-    .await
+    let info = crate::dungeon::instruction_dungeon_push(ctx.state.db, player_id).await?;
+    ctx.notify(CmdId::DungeonInstructionDungeonInfoPushCmd, info)
+        .await
 }
 
 pub async fn send_currency_change_push(
@@ -86,14 +81,9 @@ pub async fn send_currency_change_push(
         *totals.entry(currency_id).or_default() += amount;
     }
 
-    let mut change_currency = Vec::new();
-    for currency_id in totals.keys() {
-        if let Some(currency) =
-            currencies::get_currency(ctx.state.db, player_id, *currency_id).await?
-        {
-            change_currency.push(currency.into());
-        }
-    }
+    let change_currency = crate::logic::inventory::InventoryManager::new(player_id)
+        .currency_snapshots(ctx.state.db, totals.keys().copied())
+        .await?;
 
     if !change_currency.is_empty() {
         ctx.notify(
@@ -238,7 +228,7 @@ async fn send_reward_pushes(
             )
             .await?;
             if item_changed {
-                send_trade_order_red_dot(ctx, player_id).await?;
+                send_trade_order_red_dot(ctx).await?;
             }
             send_currency_change_push(ctx, player_id, rewards.currency_ids).await?;
             send_equip_update_push(ctx, player_id, rewards.equip_uids).await?;
@@ -254,7 +244,7 @@ async fn send_reward_pushes(
         )
         .await?;
         if item_changed {
-            send_trade_order_red_dot(ctx, player_id).await?;
+            send_trade_order_red_dot(ctx).await?;
         }
     }
     send_hero_update_push(ctx, player_id, rewards.hero_ids).await?;
@@ -265,22 +255,26 @@ async fn send_reward_pushes(
     if rewards.player_info_changed {
         ctx.notify(
             CmdId::PlayerInfoPushCmd,
-            crate::logic::player_info::snapshot(ctx.state.db, player_id).await?,
+            crate::logic::profile::ProfileManager::new(player_id)
+                .snapshot(ctx.state.db)
+                .await?,
         )
         .await?;
     }
     send_material_change_push(ctx, material_changes, get_approach).await
 }
 
-pub async fn send_trade_order_red_dot(
-    ctx: &mut ConnectionContext,
-    player_id: i64,
-) -> Result<(), AppError> {
+pub async fn send_trade_order_red_dot(ctx: &mut ConnectionContext) -> Result<(), AppError> {
+    let value = ctx
+        .player()?
+        .red_dot
+        .trade_order_value(ctx.state.db)
+        .await?;
     ctx.push_red_dot_value(
         crate::types::red_dot_id::RedDotId::TradeOrderFulfillable.id(),
         vec![0],
         true,
-        crate::logic::red_dot::trade_order_red_dot_value(ctx.state.db, player_id).await?,
+        value,
         0,
     )
     .await
@@ -365,22 +359,14 @@ pub async fn send_cloth_update_push(
 
 pub async fn send_antique_update_push(
     ctx: &mut ConnectionContext,
-    antiques: Vec<database::models::game::antiques::UserAntique>,
+    antiques: Vec<AntiqueInfo>,
 ) -> Result<(), AppError> {
     if antiques.is_empty() {
         return Ok(());
     }
 
-    ctx.notify(
-        CmdId::AntiqueUpdatePushCmd,
-        AntiqueUpdatePush {
-            antiques: antiques
-                .into_iter()
-                .map(AntiqueInfo::from)
-                .collect::<Vec<_>>(),
-        },
-    )
-    .await
+    ctx.notify(CmdId::AntiqueUpdatePushCmd, AntiqueUpdatePush { antiques })
+        .await
 }
 
 pub async fn send_bp_score_update_pushes(
@@ -527,34 +513,16 @@ pub async fn send_item_change_push(
         return Ok(());
     }
 
-    let mut changed_items = Vec::new();
-    for item_id in item_ids {
-        if let Some(item) = items::get_item(ctx.state.db, player_id, item_id).await? {
-            changed_items.push(item.into());
-        }
-    }
-
-    let mut changed_power_items = Vec::new();
-    for item_id in power_item_ids {
-        if let Some(item) = items::get_power_item(ctx.state.db, player_id, item_id as u32).await? {
-            changed_power_items.push(item.into());
-        }
-    }
-
-    let mut changed_insight_items = Vec::new();
-    for item_id in insight_item_ids {
-        if let Some(item) = items::get_insight_item(ctx.state.db, player_id, item_id as u32).await?
-        {
-            changed_insight_items.push(item.into());
-        }
-    }
+    let changed = crate::logic::inventory::InventoryManager::new(player_id)
+        .item_snapshots(ctx.state.db, item_ids, power_item_ids, insight_item_ids)
+        .await?;
 
     ctx.notify(
         CmdId::ItemChangePushCmd,
         ItemChangePush {
-            items: changed_items,
-            power_items: changed_power_items,
-            insight_items: changed_insight_items,
+            items: changed.items,
+            power_items: changed.power_items,
+            insight_items: changed.insight_items,
             expire_items: Vec::new(),
             talent_items: Vec::new(),
         },
@@ -571,14 +539,9 @@ pub async fn send_equip_update_push(
         return Ok(());
     }
 
-    let mut equips = Vec::new();
-    for uid in equip_uids {
-        equips.push(
-            equipment::get_equipment_by_uid(ctx.state.db, player_id, uid)
-                .await?
-                .into(),
-        );
-    }
+    let equips = crate::logic::inventory::InventoryManager::new(player_id)
+        .equipment_snapshots(ctx.state.db, equip_uids)
+        .await?;
 
     ctx.notify(CmdId::EquipUpdatePushCmd, EquipUpdatePush { equips })
         .await
@@ -593,13 +556,9 @@ pub async fn send_hero_update_push(
         return Ok(());
     }
 
-    let heroes = UserHeroModel::new(player_id, (*ctx.state.db).clone());
-    let mut hero_updates = Vec::new();
-    for hero_id in hero_ids {
-        hero_updates.push(
-            crate::logic::hero::snapshot(ctx.state.db, heroes.get_hero(hero_id).await?).await?,
-        );
-    }
+    let hero_updates = crate::logic::hero::HeroManager::new(player_id)
+        .snapshots(ctx.state.db, hero_ids)
+        .await?;
 
     send_hero_updates(ctx, player_id, hero_updates).await
 }
@@ -621,7 +580,9 @@ pub async fn send_player_card_info_push(
     ctx: &mut ConnectionContext,
     player_id: i64,
 ) -> Result<(), AppError> {
-    let reply = crate::logic::player_card::get_player_card_info(ctx.state.db, player_id).await?;
+    let reply = crate::logic::profile::ProfileManager::new(player_id)
+        .card_info(ctx.state.db)
+        .await?;
     ctx.notify(
         CmdId::PlayerCardInfoPushCmd,
         PlayerCardInfoPush {

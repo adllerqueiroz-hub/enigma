@@ -9,7 +9,10 @@ use std::collections::HashSet;
 
 const DECOMPOSE_MAX_COUNT: usize = 100;
 
-pub async fn equip_info(db: &SqlitePool, player_id: i64) -> Result<GetEquipInfoReply, AppError> {
+pub(super) async fn equip_info(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<GetEquipInfoReply, AppError> {
     Ok(GetEquipInfoReply {
         equips: equipment::get_user_equipment(db, player_id)
             .await?
@@ -19,7 +22,7 @@ pub async fn equip_info(db: &SqlitePool, player_id: i64) -> Result<GetEquipInfoR
     })
 }
 
-pub async fn equip_lock(
+pub(super) async fn equip_lock(
     db: &SqlitePool,
     player_id: i64,
     target_uid: i64,
@@ -35,7 +38,7 @@ pub async fn equip_lock(
     })
 }
 
-pub async fn strengthen(
+pub(super) async fn strengthen(
     db: &SqlitePool,
     player_id: i64,
     target_uid: i64,
@@ -80,7 +83,7 @@ fn valid_strengthen_consumes(consumes: &[(i64, i32)]) -> bool {
             == consumes.len()
 }
 
-pub async fn break_equip(
+pub(super) async fn break_equip(
     db: &SqlitePool,
     player_id: i64,
     target_uid: i64,
@@ -145,7 +148,7 @@ pub async fn break_equip(
     ))
 }
 
-pub async fn refine(
+pub(super) async fn refine(
     db: &SqlitePool,
     player_id: i64,
     target_uid: i64,
@@ -176,7 +179,7 @@ pub async fn refine(
     ))
 }
 
-pub async fn decompose(
+pub(super) async fn decompose(
     db: &SqlitePool,
     player_id: i64,
     equip_uids: Vec<i64>,

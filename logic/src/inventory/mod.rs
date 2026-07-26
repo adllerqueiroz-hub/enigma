@@ -8,10 +8,10 @@ use database::{
     },
 };
 use sonettobuf::{
-    AutoUseExpirePowerItemReply, BuyPowerReply, CurrencyExchangeNo, EatEquip, EquipBreakReply,
-    EquipDecomposeReply, EquipLockReply, EquipRefineReply, EquipStrengthenReply,
+    AutoUseExpirePowerItemReply, BuyPowerReply, Currency, CurrencyExchangeNo, EatEquip, Equip,
+    EquipBreakReply, EquipDecomposeReply, EquipLockReply, EquipRefineReply, EquipStrengthenReply,
     ExchangeDiamondReply, ExchangeSameCurrencyReply, GetBuyPowerInfoReply, GetCurrencyListReply,
-    GetEquipInfoReply, GetItemListReply, M2qEntry, MarkReadSubType21Reply,
+    GetEquipInfoReply, GetItemListReply, InsightItem, Item, M2qEntry, MarkReadSubType21Reply,
     PopExchangeSameCurrencyReply, PowerItem, UseInsightItemReply, UseItemReply, UsePowerItemInfo,
     UsePowerItemListReply, UsePowerItemReply,
 };
@@ -38,23 +38,29 @@ impl EquipmentLevelEffectType {
         }
     }
 }
+mod account;
 mod currency;
 mod equipment;
 mod item;
 mod item_effect;
 mod power;
 
-pub(crate) use currency::*;
+use currency::*;
 #[cfg(test)]
 use item::item_rewards;
-pub(crate) use item::*;
+use item::*;
 use item_effect::{target_item_rewards, use_equipment_level_item};
-pub(crate) use power::*;
+use power::*;
 
 #[derive(Clone, Copy, Debug)]
-/// Player-scoped access to currencies, items, stamina items, and psychubes.
 pub struct InventoryManager {
     player_id: i64,
+}
+
+pub struct ItemChanges {
+    pub items: Vec<Item>,
+    pub power_items: Vec<PowerItem>,
+    pub insight_items: Vec<InsightItem>,
 }
 
 impl InventoryManager {
@@ -68,6 +74,68 @@ impl InventoryManager {
         currency_ids: Vec<i32>,
     ) -> Result<GetCurrencyListReply, AppError> {
         currency_list(db, self.player_id, currency_ids).await
+    }
+
+    pub async fn currency_snapshots(
+        self,
+        db: &SqlitePool,
+        currency_ids: impl IntoIterator<Item = i32>,
+    ) -> Result<Vec<Currency>, AppError> {
+        let mut snapshots = Vec::new();
+        for currency_id in currency_ids {
+            if let Some(currency) =
+                currencies::get_currency(db, self.player_id, currency_id).await?
+            {
+                snapshots.push(currency.into());
+            }
+        }
+        Ok(snapshots)
+    }
+
+    pub async fn item_snapshots(
+        self,
+        db: &SqlitePool,
+        item_ids: Vec<u32>,
+        power_item_ids: Vec<i32>,
+        insight_item_ids: Vec<i32>,
+    ) -> Result<ItemChanges, AppError> {
+        let mut changes = ItemChanges {
+            items: Vec::new(),
+            power_items: Vec::new(),
+            insight_items: Vec::new(),
+        };
+        for item_id in item_ids {
+            if let Some(item) = items::get_item(db, self.player_id, item_id).await? {
+                changes.items.push(item.into());
+            }
+        }
+        for item_id in power_item_ids {
+            if let Some(item) = items::get_power_item(db, self.player_id, item_id as u32).await? {
+                changes.power_items.push(item.into());
+            }
+        }
+        for item_id in insight_item_ids {
+            if let Some(item) = items::get_insight_item(db, self.player_id, item_id as u32).await? {
+                changes.insight_items.push(item.into());
+            }
+        }
+        Ok(changes)
+    }
+
+    pub async fn equipment_snapshots(
+        self,
+        db: &SqlitePool,
+        equip_uids: impl IntoIterator<Item = i64>,
+    ) -> Result<Vec<Equip>, AppError> {
+        let mut snapshots = Vec::new();
+        for uid in equip_uids {
+            snapshots.push(
+                equipment_db::get_equipment_by_uid(db, self.player_id, uid)
+                    .await?
+                    .into(),
+            );
+        }
+        Ok(snapshots)
     }
 
     pub async fn exchange_same_currency(

@@ -8,6 +8,35 @@ use sonettobuf::{
 };
 use sqlx::SqlitePool;
 
+#[derive(Clone, Copy, Debug)]
+pub struct RougeManager {
+    player_id: i64,
+}
+
+impl RougeManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn outside_info(
+        self,
+        db: &SqlitePool,
+    ) -> Result<GetRouge2OutsideInfoReply, AppError> {
+        rouge2_outside_info(db, self.player_id).await
+    }
+
+    pub async fn info(self, db: &SqlitePool) -> Result<GetRouge2InfoReply, AppError> {
+        rouge2_info(db, self.player_id).await
+    }
+
+    pub async fn unlock_collections(
+        self,
+        db: &SqlitePool,
+    ) -> Result<Rouge2GetUnlockCollectionsReply, AppError> {
+        rouge2_unlock_collections(db, self.player_id).await
+    }
+}
+
 pub fn rouge_outside_info(season: i32) -> GetRougeOutsideInfoReply {
     GetRougeOutsideInfoReply {
         rouge_info: Some(RougeOutsideInfo {
@@ -26,7 +55,7 @@ pub fn rouge_outside_info(season: i32) -> GetRougeOutsideInfoReply {
     }
 }
 
-pub async fn rouge2_outside_info(
+async fn rouge2_outside_info(
     db: &SqlitePool,
     user_id: i64,
 ) -> Result<GetRouge2OutsideInfoReply, AppError> {
@@ -81,7 +110,7 @@ pub async fn rouge2_outside_info(
     })
 }
 
-pub async fn rouge2_info(db: &SqlitePool, user_id: i64) -> Result<GetRouge2InfoReply, AppError> {
+async fn rouge2_info(db: &SqlitePool, user_id: i64) -> Result<GetRouge2InfoReply, AppError> {
     let rows = rouge::get_or_create_rouge2_outside(db, user_id, config::configs::get()).await?;
     let state = rows.state;
 
@@ -101,7 +130,7 @@ pub async fn rouge2_info(db: &SqlitePool, user_id: i64) -> Result<GetRouge2InfoR
     })
 }
 
-pub async fn rouge2_unlock_collections(
+async fn rouge2_unlock_collections(
     db: &SqlitePool,
     user_id: i64,
 ) -> Result<Rouge2GetUnlockCollectionsReply, AppError> {

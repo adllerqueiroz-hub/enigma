@@ -8,7 +8,27 @@ use sonettobuf::{
 };
 use sqlx::SqlitePool;
 
-pub async fn get_info(db: &SqlitePool, user_id: i64) -> Result<OdysseyGetInfoReply, AppError> {
+#[derive(Clone, Copy, Debug)]
+pub struct OdysseyManager {
+    player_id: i64,
+}
+
+impl OdysseyManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn sync(self, db: &SqlitePool, tables: &config::GameDB) -> Result<(), AppError> {
+        odyssey::sync_info(db, self.player_id, tables).await?;
+        Ok(())
+    }
+
+    pub async fn info(self, db: &SqlitePool) -> Result<OdysseyGetInfoReply, AppError> {
+        get_info(db, self.player_id).await
+    }
+}
+
+async fn get_info(db: &SqlitePool, user_id: i64) -> Result<OdysseyGetInfoReply, AppError> {
     let rows = odyssey::get_info(db, user_id).await?;
     let state = rows.state;
 

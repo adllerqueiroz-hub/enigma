@@ -1,7 +1,7 @@
 use crate::{
     error::AppError,
     logic::{
-        hero,
+        hero::HeroManager,
         reward::{self, AppliedRewards, ConsumedRewards},
     },
     player::battle::{ActiveBattle, PendingDungeonRecord},
@@ -19,7 +19,7 @@ use sonettobuf::{
     SavePuzzleProgressReply,
 };
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 const TEACH_BOUNDS_CONFIG_ID: i32 = 1100;
 const MAX_PUZZLE_PROGRESS_BYTES: usize = 64 * 1024;

@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn task_red_dot_infos(
+pub(super) async fn task_red_dot_infos(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<Vec<RedDotInfo>, AppError> {
@@ -38,18 +38,34 @@ pub async fn task_red_dot_infos(
 }
 
 pub fn task_score_from_tasks(bp_id: i32, tasks: &[Task]) -> i32 {
+    task_score(
+        bp_id,
+        tasks
+            .iter()
+            .map(|task| (task.id, task.r#type.unwrap_or_default())),
+    )
+}
+
+pub(crate) fn task_score_from_models(
+    bp_id: i32,
+    tasks: &[database::models::game::tasks::UserTask],
+) -> i32 {
+    task_score(bp_id, tasks.iter().map(|task| (task.task_id, task.type_id)))
+}
+
+fn task_score(bp_id: i32, tasks: impl IntoIterator<Item = (i32, i32)>) -> i32 {
     let tables = config::configs::get();
     tasks
-        .iter()
-        .map(|task| match task.r#type {
-            Some(type_id) if type_id == task_db::TaskType::BattlePass.id() => tables
+        .into_iter()
+        .map(|(task_id, type_id)| match type_id {
+            type_id if type_id == task_db::TaskType::BattlePass.id() => tables
                 .bp_task
-                .get(task.id)
+                .get(task_id)
                 .filter(|config| config.bp_id == bp_id)
                 .map_or(0, |config| config.bonus_score),
-            Some(type_id) if type_id == task_db::TaskType::BpOperAct.id() => tables
+            type_id if type_id == task_db::TaskType::BpOperAct.id() => tables
                 .activity214_task
-                .get(task.id)
+                .get(task_id)
                 .filter(|config| config.bp_id == bp_id)
                 .map_or(0, |config| config.bonus_score),
             _ => 0,

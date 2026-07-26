@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::charge,
     net::{context::ConnectionContext, packet::ClientPacket},
     types::material_get_approach::MaterialGetApproach,
     types::red_dot_id::RedDotId,
@@ -16,8 +15,7 @@ pub async fn on_get_charge_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = charge::charge_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.charge.charge_info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetChargeInfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -26,8 +24,7 @@ pub async fn on_get_month_card_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = charge::month_card_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.charge.month_card_info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetMonthCardInfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -38,7 +35,11 @@ pub async fn on_get_month_card_bonus(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = GetMonthCardBonusRequest::decode(&req.data[..])?;
-    let claim = charge::month_card_bonus(ctx.state.db, player_id, msg.id).await?;
+    let claim = ctx
+        .player()?
+        .charge
+        .month_card_bonus(ctx.state.db, msg.id)
+        .await?;
 
     if let Some(rewards) = &claim.rewards {
         push::send_item_change_push(
@@ -88,19 +89,19 @@ pub async fn on_read_charge_new(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = ReadChargeNewRequest::decode(&req.data[..])?;
     let mut goods_ids = msg.goods_ids.to_vec();
     goods_ids.sort_unstable();
     goods_ids.dedup();
 
-    database::db::game::red_dots::hide_red_dot_infos(
-        ctx.state.db,
-        player_id,
-        RedDotId::StoreChargeGoodsRead.id(),
-        goods_ids.clone(),
-    )
-    .await?;
+    ctx.player()?
+        .red_dot
+        .hide_infos(
+            ctx.state.db,
+            RedDotId::StoreChargeGoodsRead.id(),
+            goods_ids.clone(),
+        )
+        .await?;
 
     ctx.push_red_dot(RedDotId::StoreChargeGoodsRead.id(), vec![0], true)
         .await?;

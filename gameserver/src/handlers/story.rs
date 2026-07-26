@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::story,
     net::{context::ConnectionContext, packet::ClientPacket},
     util::push,
 };
@@ -12,8 +11,7 @@ use sonettobuf::{
 };
 
 pub async fn on_get_story(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = story::get_story(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.story.get(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetStoryCmd, reply, 0, req.up_tag)
         .await
 }
@@ -22,14 +20,12 @@ pub async fn on_get_story_finish(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = GetStoryFinishRequest::decode(&req.data[..])?;
-    let reply = story::get_story_finish(
-        ctx.state.db,
-        player_id,
-        msg.story_id.ok_or(AppError::InvalidRequest)?,
-    )
-    .await?;
+    let reply = ctx
+        .player()?
+        .story
+        .finish_state(ctx.state.db, msg.story_id.ok_or(AppError::InvalidRequest)?)
+        .await?;
     ctx.send_reply(CmdId::GetStoryFinishCmd, reply, 0, req.up_tag)
         .await
 }
@@ -40,14 +36,16 @@ pub async fn on_update_story(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = UpdateStoryRequest::decode(&req.data[..])?;
-    let update = story::update_story(
-        ctx.state.db,
-        player_id,
-        msg.story_id.unwrap_or_default(),
-        msg.step_id.unwrap_or_default(),
-        msg.favor.unwrap_or_default(),
-    )
-    .await?;
+    let update = ctx
+        .player()?
+        .story
+        .update(
+            ctx.state.db,
+            msg.story_id.unwrap_or_default(),
+            msg.step_id.unwrap_or_default(),
+            msg.favor.unwrap_or_default(),
+        )
+        .await?;
     if let Some(story_id) = update.finished_story_id {
         ctx.notify(
             CmdId::StoryFinishPushCmd,
@@ -66,9 +64,8 @@ pub async fn on_get_hero_story(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     GetHeroStoryRequest::decode(&req.data[..])?;
-    let reply = story::get_hero_story(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.story.hero_story(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetHeroStoryCmd, reply, 0, req.up_tag)
         .await
 }
@@ -77,15 +74,16 @@ pub async fn on_get_necrologist_story(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = GetNecrologistStoryRequest::decode(&req.data[..])?;
-    let reply = story::get_necrologist_story(
-        ctx.state.db,
-        player_id,
-        msg.story_id.unwrap_or_default(),
-        ctx.state.tables,
-    )
-    .await?;
+    let reply = ctx
+        .player()?
+        .story
+        .necrologist_story(
+            ctx.state.db,
+            msg.story_id.unwrap_or_default(),
+            ctx.state.tables,
+        )
+        .await?;
     ctx.send_reply(CmdId::GetNecrologistStoryCmd, reply, 0, req.up_tag)
         .await
 }
@@ -94,16 +92,17 @@ pub async fn on_update_necrologist_story(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = UpdateNecrologistStoryRequest::decode(&req.data[..])?;
-    let reply = story::update_necrologist_story(
-        ctx.state.db,
-        player_id,
-        msg.story_id.unwrap_or_default(),
-        msg.info.unwrap_or_else(|| "{}".to_string()),
-        msg.plot_infos,
-    )
-    .await?;
+    let reply = ctx
+        .player()?
+        .story
+        .update_necrologist_story(
+            ctx.state.db,
+            msg.story_id.unwrap_or_default(),
+            msg.info.unwrap_or_else(|| "{}".to_string()),
+            msg.plot_infos,
+        )
+        .await?;
     ctx.send_reply(CmdId::UpdateNecrologistStoryCmd, reply, 0, req.up_tag)
         .await
 }

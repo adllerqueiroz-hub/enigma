@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::collection,
     net::{context::ConnectionContext, packet::ClientPacket},
 };
 use prost::Message;
@@ -58,7 +57,6 @@ pub async fn on_show_achievement(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = ShowAchievementRequest::decode(&req.data[..])?;
     let db = ctx.state.db;
     let reply = ctx
@@ -69,7 +67,7 @@ pub async fn on_show_achievement(
 
     ctx.notify(
         CmdId::PlayerInfoPushCmd,
-        crate::logic::player_info::snapshot(ctx.state.db, player_id).await?,
+        ctx.player()?.profile.snapshot(ctx.state.db).await?,
     )
     .await?;
 
@@ -81,8 +79,7 @@ pub async fn on_get_antique_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = collection::antique_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.collection.antique_info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetAntiqueInfoCmd, reply, 0, req.up_tag)
         .await
 }

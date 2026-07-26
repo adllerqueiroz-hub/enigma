@@ -1,94 +1,99 @@
 use super::*;
 
-pub async fn level_up(
-    db: &SqlitePool,
-    player_id: i64,
-    hero_id: i32,
-    new_level: i32,
-) -> Result<(HeroLevelUpReply, HeroInfo), AppError> {
-    config::configs::get()
-        .character_level
-        .iter()
-        .find(|row| row.hero_id == hero_id && row.level == new_level)
-        .ok_or(AppError::InvalidRequest)?;
+impl HeroManager {
+    pub async fn level_up(
+        self,
+        db: &SqlitePool,
+        hero_id: i32,
+        new_level: i32,
+    ) -> Result<(HeroLevelUpReply, HeroInfo), AppError> {
+        config::configs::get()
+            .character_level(hero_id, new_level)
+            .ok_or(AppError::InvalidRequest)?;
 
-    let hero = UserHeroModel::new(player_id, db.clone());
-    hero.level_up(hero_id, new_level).await?;
-    let updated = snapshot(db, hero.get(hero_id).await?).await?;
+        let hero = UserHeroModel::new(self.player_id, db.clone());
+        hero.level_up(hero_id, new_level).await?;
+        let updated = snapshot(db, hero.get(hero_id).await?).await?;
 
-    Ok((
-        HeroLevelUpReply {
-            hero_id: Some(hero_id),
-            new_level: Some(new_level),
-        },
-        updated,
-    ))
-}
-
-pub async fn rank_up(
-    db: &SqlitePool,
-    player_id: i64,
-    hero_id: i32,
-) -> Result<(HeroRankUpReply, HeroInfo), AppError> {
-    let hero = UserHeroModel::new(player_id, db.clone());
-    let current_rank = hero.get(hero_id).await?.record.rank;
-    let new_rank = current_rank + 1;
-    if !hero
-        .rank_up_with_insight_skin(hero_id, current_rank)
-        .await?
-    {
-        return Err(AppError::InvalidRequest);
-    }
-    let updated = snapshot(db, hero.get(hero_id).await?).await?;
-
-    Ok((
-        HeroRankUpReply {
-            hero_id: Some(hero_id),
-            new_rank: Some(new_rank),
-        },
-        updated,
-    ))
-}
-
-pub async fn upgrade_skill(
-    db: &SqlitePool,
-    player_id: i64,
-    hero_id: i32,
-    skill_type: i32,
-    levels: i32,
-) -> Result<(HeroUpgradeSkillReply, HeroInfo, u32), AppError> {
-    if skill_type != 3 {
-        return Err(AppError::InvalidRequest);
+        Ok((
+            HeroLevelUpReply {
+                hero_id: Some(hero_id),
+                new_level: Some(new_level),
+            },
+            updated,
+        ))
     }
 
-    let hero = UserHeroModel::new(player_id, db.clone());
-    let current = hero.get(hero_id).await?;
-    if current.record.ex_skill_level >= 5 {
-        return Err(AppError::InvalidRequest);
+    pub async fn rank_up(
+        self,
+        db: &SqlitePool,
+        hero_id: i32,
+    ) -> Result<(HeroRankUpReply, HeroInfo), AppError> {
+        let hero = UserHeroModel::new(self.player_id, db.clone());
+        let current_rank = hero.get(hero_id).await?.record.rank;
+        let new_rank = current_rank + 1;
+        if !hero
+            .rank_up_with_insight_skin(hero_id, current_rank)
+            .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let updated = snapshot(db, hero.get(hero_id).await?).await?;
+
+        Ok((
+            HeroRankUpReply {
+                hero_id: Some(hero_id),
+                new_rank: Some(new_rank),
+            },
+            updated,
+        ))
     }
 
-    let consume = levels.max(1).min(5 - current.record.ex_skill_level);
-    let consumed_item_id = duplicate_item_id(hero_id)?;
-    let mut tx = db.begin().await?;
-    reward::consume(
-        &mut tx,
-        player_id,
-        &reward::RewardSet {
-            items: vec![(consumed_item_id, consume)],
-            ..Default::default()
-        },
-    )
-    .await?;
-    if !hero
-        .upgrade_ex_skill_in_transaction(&mut tx, hero_id, current.record.ex_skill_level, consume)
-        .await?
-    {
-        return Err(AppError::InvalidRequest);
-    }
-    tx.commit().await?;
-    let updated = snapshot(db, hero.get(hero_id).await?).await?;
+    pub async fn upgrade_skill(
+        self,
+        db: &SqlitePool,
+        hero_id: i32,
+        skill_type: i32,
+        levels: i32,
+    ) -> Result<(HeroUpgradeSkillReply, HeroInfo, u32), AppError> {
+        if skill_type != 3 {
+            return Err(AppError::InvalidRequest);
+        }
 
-    Ok((HeroUpgradeSkillReply {}, updated, consumed_item_id))
+        let hero = UserHeroModel::new(self.player_id, db.clone());
+        let current = hero.get(hero_id).await?;
+        if current.record.ex_skill_level >= 5 {
+            return Err(AppError::InvalidRequest);
+        }
+
+        let consume = levels.max(1).min(5 - current.record.ex_skill_level);
+        let consumed_item_id = duplicate_item_id(hero_id)?;
+        let mut tx = db.begin().await?;
+        reward::consume(
+            &mut tx,
+            self.player_id,
+            &reward::RewardSet {
+                items: vec![(consumed_item_id, consume)],
+                ..Default::default()
+            },
+        )
+        .await?;
+        if !hero
+            .upgrade_ex_skill_in_transaction(
+                &mut tx,
+                hero_id,
+                current.record.ex_skill_level,
+                consume,
+            )
+            .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        tx.commit().await?;
+        let updated = snapshot(db, hero.get(hero_id).await?).await?;
+
+        Ok((HeroUpgradeSkillReply {}, updated, consumed_item_id))
+    }
 }
 
 pub(super) fn duplicate_item_id(hero_id: i32) -> Result<u32, AppError> {

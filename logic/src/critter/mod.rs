@@ -14,10 +14,98 @@ use sqlx::SqlitePool;
 const CRITTER_BOOK_SCOPE_ID: i32 = 0;
 const CRITTER_BOOK_BACKGROUND_SUB_TYPE: i32 = 33;
 
-pub async fn critter_info(
-    db: &SqlitePool,
+#[derive(Clone, Copy, Debug)]
+pub struct CritterManager {
     player_id: i64,
-) -> Result<CritterGetInfoReply, AppError> {
+}
+
+impl CritterManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn info(&self, db: &SqlitePool) -> Result<CritterGetInfoReply, AppError> {
+        critter_info(db, self.player_id).await
+    }
+
+    pub async fn rename(
+        &self,
+        db: &SqlitePool,
+        critter_uid: i64,
+        name: String,
+    ) -> Result<CritterRenameReply, AppError> {
+        critter_rename(db, self.player_id, critter_uid, name).await
+    }
+
+    pub async fn lock(
+        &self,
+        db: &SqlitePool,
+        critter_uid: i64,
+        lock: bool,
+    ) -> Result<LockCritterReply, AppError> {
+        lock_critter(db, self.player_id, critter_uid, lock).await
+    }
+
+    pub async fn change_rest(
+        &self,
+        db: &SqlitePool,
+        building_uid: i64,
+        operation: i32,
+        slot_id1: i32,
+        critter_uid: i64,
+        slot_id2: i32,
+    ) -> Result<ChangeRestCritterReply, AppError> {
+        change_rest_critter(
+            db,
+            self.player_id,
+            building_uid,
+            operation,
+            slot_id1,
+            critter_uid,
+            slot_id2,
+        )
+        .await
+    }
+
+    pub async fn book_info(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+    ) -> Result<GetCritterBookInfoReply, AppError> {
+        get_book_info(db, tables, self.player_id).await
+    }
+
+    pub async fn mark_book_read(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+        id: i32,
+    ) -> Result<MarkCritterBookNewReadReply, AppError> {
+        mark_book_read(db, tables, self.player_id, id).await
+    }
+
+    pub async fn set_book_background(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+        id: i32,
+        background: i32,
+    ) -> Result<SetCritterBookBackgroundReply, AppError> {
+        set_book_background(db, tables, self.player_id, id, background).await
+    }
+
+    pub async fn set_book_special_skin(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+        id: i32,
+        use_special_skin: bool,
+    ) -> Result<SetCritterBookUseSpecialSkinReply, AppError> {
+        set_book_special_skin(db, tables, self.player_id, id, use_special_skin).await
+    }
+}
+
+async fn critter_info(db: &SqlitePool, player_id: i64) -> Result<CritterGetInfoReply, AppError> {
     Ok(CritterGetInfoReply {
         critter_infos: critters::get_player_critters(db, player_id)
             .await?
@@ -27,7 +115,7 @@ pub async fn critter_info(
     })
 }
 
-pub async fn critter_rename(
+async fn critter_rename(
     db: &SqlitePool,
     player_id: i64,
     critter_uid: i64,
@@ -40,7 +128,7 @@ pub async fn critter_rename(
     })
 }
 
-pub async fn lock_critter(
+async fn lock_critter(
     db: &SqlitePool,
     player_id: i64,
     critter_uid: i64,
@@ -53,7 +141,7 @@ pub async fn lock_critter(
     })
 }
 
-pub async fn change_rest_critter(
+async fn change_rest_critter(
     db: &SqlitePool,
     player_id: i64,
     building_uid: i64,
@@ -76,7 +164,7 @@ pub async fn change_rest_critter(
     })
 }
 
-pub async fn get_book_info(
+async fn get_book_info(
     db: &SqlitePool,
     tables: &config::GameDB,
     player_id: i64,
@@ -107,7 +195,7 @@ pub async fn get_book_info(
     Ok(GetCritterBookInfoReply { book_infos })
 }
 
-pub async fn mark_book_read(
+async fn mark_book_read(
     db: &SqlitePool,
     tables: &config::GameDB,
     player_id: i64,
@@ -118,7 +206,7 @@ pub async fn mark_book_read(
     Ok(MarkCritterBookNewReadReply { id: Some(id) })
 }
 
-pub async fn set_book_background(
+async fn set_book_background(
     db: &SqlitePool,
     tables: &config::GameDB,
     player_id: i64,
@@ -145,7 +233,7 @@ pub async fn set_book_background(
     })
 }
 
-pub async fn set_book_special_skin(
+async fn set_book_special_skin(
     db: &SqlitePool,
     tables: &config::GameDB,
     player_id: i64,

@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn get_bp_bonus(
+pub(super) async fn get_bp_bonus(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,
@@ -101,7 +101,7 @@ pub async fn get_bp_bonus(
     })
 }
 
-pub async fn get_self_select_bonus(
+pub(super) async fn get_self_select_bonus(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,

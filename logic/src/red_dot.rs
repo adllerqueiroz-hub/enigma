@@ -1,4 +1,4 @@
-use crate::{bp, error::AppError, types::red_dot_id::RedDotId};
+use crate::{bp::BattlePassManager, error::AppError, types::red_dot_id::RedDotId};
 use database::{
     db::game::{achievements, activity101, mail, red_dots, room_ob, tasks as task_db},
     models::game::red_dots::RedDotRecord,
@@ -39,9 +39,40 @@ impl RedDotManager {
     ) -> Result<(ShowRedDotReply, Vec<i32>), AppError> {
         show_red_dot(db, self.player_id, define_id, is_visible).await
     }
+
+    pub async fn mail_state(&self, db: &SqlitePool) -> Result<(i32, i32), AppError> {
+        sync_mail_red_dot(db, self.player_id).await
+    }
+
+    pub async fn trade_order_value(&self, db: &SqlitePool) -> Result<i32, AppError> {
+        trade_order_red_dot_value(db, self.player_id).await
+    }
+
+    pub async fn battle_pass_groups(&self, db: &SqlitePool) -> Result<Vec<RedDotGroup>, AppError> {
+        battle_pass_red_dot_groups(db, self.player_id).await
+    }
+
+    pub async fn hide_infos(
+        &self,
+        db: &SqlitePool,
+        define_id: i32,
+        info_ids: Vec<i32>,
+    ) -> Result<(), AppError> {
+        red_dots::hide_red_dot_infos(db, self.player_id, define_id, info_ids).await?;
+        Ok(())
+    }
+
+    pub async fn hide_visible_info(
+        &self,
+        db: &SqlitePool,
+        define_id: i32,
+        info_id: i32,
+    ) -> Result<Option<RedDotRecord>, AppError> {
+        Ok(red_dots::hide_visible_red_dot_info(db, self.player_id, define_id, info_id).await?)
+    }
 }
 
-pub async fn get_red_dot_infos(
+async fn get_red_dot_infos(
     db: &SqlitePool,
     player_id: i64,
     requested_ids: Vec<i32>,
@@ -75,7 +106,7 @@ pub async fn get_red_dot_infos(
     Ok(reply)
 }
 
-pub async fn show_red_dot(
+async fn show_red_dot(
     db: &SqlitePool,
     player_id: i64,
     define_id: i32,
@@ -91,7 +122,7 @@ pub async fn show_red_dot(
     Ok((ShowRedDotReply {}, changed_info_ids))
 }
 
-pub async fn sync_mail_red_dot(db: &SqlitePool, player_id: i64) -> Result<(i32, i32), AppError> {
+async fn sync_mail_red_dot(db: &SqlitePool, player_id: i64) -> Result<(i32, i32), AppError> {
     let unread = mail::unread_count(db, player_id).await?;
     let value = if unread > 0 { 1 } else { 0 };
     let time = if unread > 0 {
@@ -130,7 +161,7 @@ async fn apply_dynamic_red_dots(
     };
 
     if ids.contains(&RedDotId::BattlePassBonus) || ids.contains(&RedDotId::BattlePassSpBonus) {
-        let bonus = bp::bonus_red_dots(db, player_id).await?;
+        let bonus = BattlePassManager::new(player_id).bonus_red_dots(db).await?;
         if ids.contains(&RedDotId::BattlePassBonus) {
             replace_group(
                 reply,
@@ -210,7 +241,7 @@ async fn apply_trade_order_red_dot(
     Ok(())
 }
 
-pub async fn trade_order_red_dot_value(db: &SqlitePool, player_id: i64) -> Result<i32, AppError> {
+async fn trade_order_red_dot_value(db: &SqlitePool, player_id: i64) -> Result<i32, AppError> {
     Ok(i32::from(
         database::db::game::room_orders::has_fulfillable_purchase_order(
             db,
@@ -398,17 +429,20 @@ async fn apply_bp_task_red_dot(
     replace_group(
         reply,
         RedDotId::BattlePassTask.id(),
-        bp::task_red_dot_infos(db, player_id).await?,
+        BattlePassManager::new(player_id)
+            .task_red_dot_infos(db)
+            .await?,
     );
     Ok(())
 }
 
-pub async fn battle_pass_red_dot_groups(
+async fn battle_pass_red_dot_groups(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<Vec<RedDotGroup>, AppError> {
-    let bonus = bp::bonus_red_dots(db, player_id).await?;
-    let task_infos = bp::task_red_dot_infos(db, player_id).await?;
+    let manager = BattlePassManager::new(player_id);
+    let bonus = manager.bonus_red_dots(db).await?;
+    let task_infos = manager.task_red_dot_infos(db).await?;
 
     Ok(vec![
         RedDotGroup {
@@ -782,7 +816,9 @@ mod tests {
             .unwrap();
         }
 
-        let reply = super::get_red_dot_infos(&pool, 1, vec![RedDotId::AchievementFinish.id()])
+        let manager = super::RedDotManager::new(1);
+        let reply = manager
+            .infos(&pool, vec![RedDotId::AchievementFinish.id()])
             .await
             .unwrap();
         assert_eq!(reply.red_dot_infos[0].infos[0].id, 4);
@@ -790,7 +826,8 @@ mod tests {
         database::db::game::achievements::clear_new_flags(&pool, 1, vec![41170101])
             .await
             .unwrap();
-        let reply = super::get_red_dot_infos(&pool, 1, vec![RedDotId::AchievementFinish.id()])
+        let reply = manager
+            .infos(&pool, vec![RedDotId::AchievementFinish.id()])
             .await
             .unwrap();
         assert_eq!(
@@ -827,9 +864,8 @@ mod tests {
         .unwrap();
 
         let define_id = RedDotId::RoomCharacterFaithGetFull.id();
-        let before = super::get_red_dot_infos(&pool, 2, vec![define_id])
-            .await
-            .unwrap();
+        let manager = super::RedDotManager::new(2);
+        let before = manager.infos(&pool, vec![define_id]).await.unwrap();
         assert_eq!(before.red_dot_infos[0].infos[0].id, 0);
         assert_eq!(before.red_dot_infos[0].infos[0].value, 0);
 
@@ -840,9 +876,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let full = super::get_red_dot_infos(&pool, 2, vec![define_id])
-            .await
-            .unwrap();
+        let full = manager.infos(&pool, vec![define_id]).await.unwrap();
         assert_eq!(full.red_dot_infos[0].infos[0].id, 3023);
         assert_eq!(full.red_dot_infos[0].infos[0].value, 1);
         assert_eq!(full.red_dot_infos[0].replace_all, Some(true));
@@ -855,10 +889,10 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let production =
-            super::get_red_dot_infos(&pool, 2, vec![RedDotId::RoomProductionFull.id()])
-                .await
-                .unwrap();
+        let production = manager
+            .infos(&pool, vec![RedDotId::RoomProductionFull.id()])
+            .await
+            .unwrap();
         assert_eq!(production.red_dot_infos[0].infos[0].id, 1);
         assert_eq!(production.red_dot_infos[0].infos[0].value, 1);
     }
@@ -884,9 +918,8 @@ mod tests {
             .unwrap();
 
         let define_id = RedDotId::TradeOrderFulfillable.id();
-        let before = super::get_red_dot_infos(&pool, 3, vec![define_id])
-            .await
-            .unwrap();
+        let manager = super::RedDotManager::new(3);
+        let before = manager.infos(&pool, vec![define_id]).await.unwrap();
         assert_eq!(before.red_dot_infos[0].infos[0].value, 0);
 
         let goods = sqlx::query_as::<_, (i32, i32)>(
@@ -907,10 +940,8 @@ mod tests {
                 .unwrap();
         }
 
-        let ready = super::get_red_dot_infos(&pool, 3, vec![define_id])
-            .await
-            .unwrap();
+        let ready = manager.infos(&pool, vec![define_id]).await.unwrap();
         assert_eq!(ready.red_dot_infos[0].infos[0].value, 1);
-        assert_eq!(super::trade_order_red_dot_value(&pool, 3).await.unwrap(), 1);
+        assert_eq!(manager.trade_order_value(&pool).await.unwrap(), 1);
     }
 }

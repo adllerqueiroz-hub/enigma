@@ -1,11 +1,10 @@
-use crate::{error::AppError, reward, types::red_dot_id::RedDotId};
+use crate::{error::AppError, reward, task::UserTask, types::red_dot_id::RedDotId};
 use database::{
     db::game::{
         block_packages, buildings, character_interactions, dungeons, player_infos, red_dots,
         room_ob, room_plan, tasks as task_db,
     },
     models::game::heros::UserHeroModel,
-    models::game::tasks::UserTask,
 };
 use sonettobuf::{
     AllotCritterReply, AllotVehicleReply, BlockPermanentInfo, CopyOtherRoomPlanReply,
@@ -25,6 +24,17 @@ use sonettobuf::{
 };
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy, Debug)]
+pub struct RoomManager {
+    player_id: i64,
+}
+
+impl RoomManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+}
 
 pub struct ProductionStart {
     pub reply: StartProductionLineReply,
@@ -62,19 +72,15 @@ mod hero;
 mod info;
 mod interaction;
 mod layout;
+mod manufacture;
 mod plan;
 mod production;
-
-pub use blocks::*;
-pub use hero::*;
-pub use info::*;
-pub use interaction::*;
-pub use layout::*;
-pub use plan::*;
-pub use production::*;
+mod trade;
 
 #[cfg(test)]
 use blocks::permanent_infos_for_blocks;
+#[cfg(test)]
+use plan::room_plan_building_degree;
 #[cfg(test)]
 use production::{scale_production_rewards, scaled_formula_materials};
 

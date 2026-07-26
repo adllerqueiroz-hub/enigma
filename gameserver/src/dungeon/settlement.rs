@@ -45,6 +45,15 @@ struct CompletionRewards {
     advanced_bonus: Vec<(u32, u32, i32)>,
 }
 
+pub async fn finish_fight_instance(
+    db: &SqlitePool,
+    player_id: i64,
+    fight_id: i64,
+) -> Result<(), AppError> {
+    battle_db::finish_fight_instance(db, player_id, fight_id).await?;
+    Ok(())
+}
+
 pub async fn settle_active(
     db: &SqlitePool,
     player_id: i64,
@@ -133,13 +142,9 @@ async fn settle_completion_in_transaction(
     )
     .await?;
     let hero_ids = if let Some(fight_group) = fight_group {
-        hero::gain_battle_faith_in_transaction(
-            tx,
-            player_id,
-            fight_group,
-            cost.saturating_mul(multiplier),
-        )
-        .await?
+        HeroManager::new(player_id)
+            .gain_battle_faith_in_transaction(tx, fight_group, cost.saturating_mul(multiplier))
+            .await?
     } else {
         Vec::new()
     };

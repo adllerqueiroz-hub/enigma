@@ -7,13 +7,7 @@ pub async fn act104_infos(
 ) -> Result<Get104InfosReply, AppError> {
     let tables = config::configs::get();
     let activity_id = activity_id
-        .or_else(|| {
-            tables
-                .activity104_episode
-                .iter()
-                .map(|row| row.activity_id)
-                .max()
-        })
+        .or_else(|| tables.latest_activity104_id())
         .ok_or(AppError::InvalidRequest)?;
     let episode_states =
         activity_state::get(db, player_id, activity_id, ActivityStateKind::Act104Episode).await?;
@@ -37,9 +31,7 @@ pub async fn act104_infos(
     .await?;
 
     let mut episodes = tables
-        .activity104_episode
-        .iter()
-        .filter(|row| row.activity_id == activity_id)
+        .activity104_episodes(activity_id)
         .map(|row| Act104EpisodeNo {
             layer: Some(row.layer),
             state: Some(
@@ -58,9 +50,7 @@ pub async fn act104_infos(
     episodes.sort_by_key(|episode| episode.layer.unwrap_or_default());
 
     let mut specials = tables
-        .activity104_special
-        .iter()
-        .filter(|row| row.activity_id == activity_id)
+        .activity104_specials(activity_id)
         .map(|row| Act104SpecialNo {
             layer: Some(row.layer),
             state: Some(
@@ -74,9 +64,7 @@ pub async fn act104_infos(
     specials.sort_by_key(|special| special.layer.unwrap_or_default());
 
     let mut retails = tables
-        .activity104_retail
-        .iter()
-        .filter(|row| row.activity_id == activity_id)
+        .activity104_retails(activity_id)
         .map(|row| Act104RetailNo {
             id: Some(first_number(&row.retail_episode_id_pool).unwrap_or(row.stage)),
             state: Some(0),
@@ -106,9 +94,7 @@ pub async fn act104_infos(
         trial: Some(Act104TrialNo {
             id: Some(
                 tables
-                    .activity104_trial
-                    .iter()
-                    .find(|row| row.activity_id == activity_id)
+                    .activity104_trial(activity_id)
                     .map(|row| row.layer)
                     .unwrap_or_default(),
             ),
@@ -160,10 +146,10 @@ async fn mark_activity104_flag(
     activity_id: i32,
     kind: ActivityStateKind,
 ) -> Result<(), AppError> {
-    if !config::configs::get()
-        .activity104_episode
-        .iter()
-        .any(|row| row.activity_id == activity_id)
+    if config::configs::get()
+        .activity104_episodes(activity_id)
+        .next()
+        .is_none()
     {
         return Err(AppError::InvalidRequest);
     }
@@ -193,10 +179,9 @@ pub async fn mark_episode_after_story(
     activity_id: i32,
     layer: i32,
 ) -> Result<MarkEpisodeAfterStoryReply, AppError> {
-    if !config::configs::get()
-        .activity104_episode
-        .iter()
-        .any(|row| row.activity_id == activity_id && row.layer == layer)
+    if config::configs::get()
+        .activity104_episode(activity_id, layer)
+        .is_none()
     {
         return Err(AppError::InvalidRequest);
     }

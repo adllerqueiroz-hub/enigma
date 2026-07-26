@@ -60,8 +60,9 @@ async fn voice_unlock_requires_an_owned_matching_hero() {
         .await
         .unwrap();
 
-    assert!(unlock_voice(&pool, 14, 3002, 1_300_302).await.is_err());
-    unlock_voice(&pool, 14, 3003, 1_300_302).await.unwrap();
+    let manager = HeroManager::new(14);
+    assert!(manager.unlock_voice(&pool, 3002, 1_300_302).await.is_err());
+    manager.unlock_voice(&pool, 3003, 1_300_302).await.unwrap();
     let unlocked: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM hero_voices WHERE voice_id = 1300302")
             .fetch_one(&pool)
@@ -86,13 +87,14 @@ async fn item_unlock_uses_faith_config_and_existing_hero_storage() {
         .create_hero(3003)
         .await
         .unwrap();
-    assert!(unlock_item(&pool, 15, 3003, 3).await.is_err());
+    let manager = HeroManager::new(15);
+    assert!(manager.unlock_item(&pool, 3003, 3).await.is_err());
     sqlx::query("UPDATE heroes SET faith = 100000 WHERE user_id = 15 AND hero_id = 3003")
         .execute(&pool)
         .await
         .unwrap();
 
-    let (_, reward) = unlock_item(&pool, 15, 3003, 3).await.unwrap();
+    let (_, reward) = manager.unlock_item(&pool, 3003, 3).await.unwrap();
 
     assert_eq!(reward, (2, 40));
     let unlocked: i64 =
@@ -177,7 +179,10 @@ async fn rank_and_insight_skin_commit_together() {
         .await
         .unwrap();
 
-    rank_up(&pool, 17, skin.character_id).await.unwrap();
+    HeroManager::new(17)
+        .rank_up(&pool, skin.character_id)
+        .await
+        .unwrap();
 
     let hero = heroes.get(skin.character_id).await.unwrap();
     assert_eq!(hero.record.rank, 3);
@@ -208,12 +213,23 @@ async fn profile_rejects_foreign_skins_and_equipment() {
     let heroes = UserHeroModel::new(18, pool.clone());
     heroes.create_hero(3003).await.unwrap();
 
-    assert!(use_skin(&pool, 18, 3003, foreign_skin.id).await.is_err());
+    let manager = HeroManager::new(18);
+    assert!(
+        manager
+            .use_skin(&pool, 3003, foreign_skin.id)
+            .await
+            .is_err()
+    );
 
     let foreign_uid = database::db::game::equipment::add_equipment(&pool, 19, 1000, 1)
         .await
         .unwrap()[0];
-    assert!(default_equip(&pool, 18, 3003, foreign_uid).await.is_err());
+    assert!(
+        manager
+            .default_equip(&pool, 3003, foreign_uid)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -234,14 +250,21 @@ async fn specialization_rejects_the_wrong_hero_and_unknown_weapon_group() {
     heroes.create_hero(3123).await.unwrap();
 
     assert!(
-        choice_hero_3123_weapon(&pool, 21, 3003, 1001, 0)
+        HeroManager::new(21)
+            .choice_weapon(&pool, 3003, 1001, 0)
             .await
             .is_err()
     );
     assert!(
-        choice_hero_3123_weapon(&pool, 21, 3123, 9999, 0)
+        HeroManager::new(21)
+            .choice_weapon(&pool, 3123, 9999, 0)
             .await
             .is_err()
     );
-    assert!(reset_hero_3124_talent_tree(&pool, 21, 3003).await.is_err());
+    assert!(
+        HeroManager::new(21)
+            .reset_talents(&pool, 3003)
+            .await
+            .is_err()
+    );
 }

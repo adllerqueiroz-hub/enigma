@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::command_post,
     net::{context::ConnectionContext, packet::ClientPacket},
     types::{material_get_approach::MaterialGetApproach, red_dot_id::RedDotId},
     util::push,
@@ -17,8 +16,7 @@ pub async fn on_get_command_post_info(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     GetCommandPostInfoRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = command_post::get_command_post_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.command_post.info(ctx.state.db).await?;
 
     ctx.send_reply(CmdId::GetCommandPostInfoCmd, reply, 0, req.up_tag)
         .await
@@ -29,8 +27,11 @@ pub async fn on_command_post_character_read(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let msg = CommandPostCharacterReadRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = command_post::command_post_character_read(ctx.state.db, player_id, msg.id).await?;
+    let reply = ctx
+        .player()?
+        .command_post
+        .read_character(ctx.state.db, msg.id)
+        .await?;
 
     ctx.send_reply(CmdId::CommandPostCharacterReadCmd, reply, 0, req.up_tag)
         .await
@@ -41,8 +42,11 @@ pub async fn on_command_post_event_read(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let msg = CommandPostEventReadRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = command_post::command_post_event_read(ctx.state.db, player_id, msg.id).await?;
+    let reply = ctx
+        .player()?
+        .command_post
+        .read_event(ctx.state.db, msg.id)
+        .await?;
 
     ctx.send_reply(CmdId::CommandPostEventReadCmd, reply, 0, req.up_tag)
         .await
@@ -54,7 +58,11 @@ pub async fn on_command_post_bonus(
 ) -> Result<(), AppError> {
     let msg = CommandPostBonusRequest::decode(&req.data[..])?;
     let player_id = ctx.player()?.id;
-    let claim = command_post::command_post_bonus(ctx.state.db, player_id, msg.bonus_id).await?;
+    let claim = ctx
+        .player()?
+        .command_post
+        .claim_bonus(ctx.state.db, msg.bonus_id)
+        .await?;
     push::send_item_first_applied_reward_pushes(
         ctx,
         player_id,
@@ -75,7 +83,11 @@ pub async fn on_command_post_bonus_all(
 ) -> Result<(), AppError> {
     CommandPostBonusAllRequest::decode(&req.data[..])?;
     let player_id = ctx.player()?.id;
-    let claim = command_post::command_post_bonus_all(ctx.state.db, player_id).await?;
+    let claim = ctx
+        .player()?
+        .command_post
+        .claim_all_bonuses(ctx.state.db)
+        .await?;
     push::send_item_first_applied_reward_pushes(
         ctx,
         player_id,
@@ -95,8 +107,11 @@ pub async fn on_command_post_paper(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     CommandPostPaperRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = command_post::command_post_paper(ctx.state.db, player_id).await?;
+    let reply = ctx
+        .player()?
+        .command_post
+        .compose_paper(ctx.state.db)
+        .await?;
 
     ctx.send_reply(CmdId::CommandPostPaperCmd, reply, 0, req.up_tag)
         .await
@@ -107,10 +122,11 @@ pub async fn on_command_post_dispatch(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let msg = CommandPostDispatchRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply =
-        command_post::command_post_dispatch(ctx.state.db, player_id, msg.event_id, msg.hero_ids)
-            .await?;
+    let reply = ctx
+        .player()?
+        .command_post
+        .dispatch(ctx.state.db, msg.event_id, msg.hero_ids)
+        .await?;
 
     ctx.send_reply(CmdId::CommandPostDispatchCmd, reply, 0, req.up_tag)
         .await
@@ -121,8 +137,11 @@ pub async fn on_finish_command_post_event(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let msg = FinishCommandPostEventRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = command_post::finish_command_post_event(ctx.state.db, player_id, msg.id).await?;
+    let reply = ctx
+        .player()?
+        .command_post
+        .finish_event(ctx.state.db, msg.id)
+        .await?;
 
     ctx.send_reply(CmdId::FinishCommandPostEventCmd, reply, 0, req.up_tag)
         .await

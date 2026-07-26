@@ -23,7 +23,74 @@ pub struct CommandPostBonusAllClaim {
     pub material_changes: Vec<(u32, u32, i32)>,
 }
 
-pub async fn get_command_post_info(
+#[derive(Clone, Copy, Debug)]
+pub struct CommandPostManager {
+    player_id: i64,
+}
+
+impl CommandPostManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn info(&self, db: &SqlitePool) -> Result<GetCommandPostInfoReply, AppError> {
+        get_command_post_info(db, self.player_id).await
+    }
+
+    pub async fn read_character(
+        &self,
+        db: &SqlitePool,
+        id: Option<i32>,
+    ) -> Result<CommandPostCharacterReadReply, AppError> {
+        command_post_character_read(db, self.player_id, id).await
+    }
+
+    pub async fn read_event(
+        &self,
+        db: &SqlitePool,
+        id: Option<i32>,
+    ) -> Result<CommandPostEventReadReply, AppError> {
+        command_post_event_read(db, self.player_id, id).await
+    }
+
+    pub async fn claim_bonus(
+        &self,
+        db: &SqlitePool,
+        bonus_id: Option<i32>,
+    ) -> Result<CommandPostBonusClaim, AppError> {
+        command_post_bonus(db, self.player_id, bonus_id).await
+    }
+
+    pub async fn claim_all_bonuses(
+        &self,
+        db: &SqlitePool,
+    ) -> Result<CommandPostBonusAllClaim, AppError> {
+        command_post_bonus_all(db, self.player_id).await
+    }
+
+    pub async fn compose_paper(&self, db: &SqlitePool) -> Result<CommandPostPaperReply, AppError> {
+        command_post_paper(db, self.player_id).await
+    }
+
+    pub async fn dispatch(
+        &self,
+        db: &SqlitePool,
+        event_id: Option<i32>,
+        hero_ids: Vec<i32>,
+    ) -> Result<CommandPostDispatchReply, AppError> {
+        command_post_dispatch(db, self.player_id, event_id, hero_ids).await
+    }
+
+    pub async fn finish_event(
+        &self,
+        db: &SqlitePool,
+        id: Option<i32>,
+    ) -> Result<FinishCommandPostEventReply, AppError> {
+        finish_command_post_event(db, self.player_id, id).await
+    }
+}
+
+async fn get_command_post_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<GetCommandPostInfoReply, AppError> {
@@ -41,7 +108,7 @@ pub async fn get_command_post_info(
     })
 }
 
-pub async fn command_post_character_read(
+async fn command_post_character_read(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,
@@ -53,7 +120,7 @@ pub async fn command_post_character_read(
     Ok(CommandPostCharacterReadReply { id })
 }
 
-pub async fn command_post_event_read(
+async fn command_post_event_read(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,
@@ -65,7 +132,7 @@ pub async fn command_post_event_read(
     Ok(CommandPostEventReadReply { id })
 }
 
-pub async fn command_post_bonus(
+async fn command_post_bonus(
     db: &SqlitePool,
     player_id: i64,
     bonus_id: Option<i32>,
@@ -90,7 +157,7 @@ pub async fn command_post_bonus(
     })
 }
 
-pub async fn command_post_bonus_all(
+async fn command_post_bonus_all(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<CommandPostBonusAllClaim, AppError> {
@@ -121,7 +188,7 @@ pub async fn command_post_bonus_all(
     })
 }
 
-pub async fn command_post_paper(
+async fn command_post_paper(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<CommandPostPaperReply, AppError> {
@@ -130,7 +197,7 @@ pub async fn command_post_paper(
     Ok(CommandPostPaperReply { paper: Some(paper) })
 }
 
-pub async fn command_post_dispatch(
+async fn command_post_dispatch(
     db: &SqlitePool,
     player_id: i64,
     event_id: Option<i32>,
@@ -158,7 +225,7 @@ pub async fn command_post_dispatch(
     })
 }
 
-pub async fn finish_command_post_event(
+async fn finish_command_post_event(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,

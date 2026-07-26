@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::{critter, player_info},
     net::{context::ConnectionContext, packet::ClientPacket},
     session,
 };
@@ -27,7 +26,10 @@ pub async fn on_login(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<
         .await?;
 
     ctx.register();
-    let critter_infos = critter::critter_info(ctx.state.db, session.user_id)
+    let critter_infos = ctx
+        .player()?
+        .critter
+        .info(ctx.state.db)
         .await?
         .critter_infos;
     ctx.notify(CmdId::CritterInfoPushCmd, CritterInfoPush { critter_infos })
@@ -51,13 +53,14 @@ pub async fn on_reconnect(ctx: &mut ConnectionContext, req: ClientPacket) -> Res
 }
 
 pub async fn on_rename(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
+    let profile = ctx.player()?.profile;
     let msg = RenameRequest::decode(&req.data[..])?;
     let name = msg.name.unwrap_or_default();
     let guide_id = msg.guide_id.unwrap_or(1);
     let step_id = msg.step_id.unwrap_or(-1);
-    let (reply, push) =
-        player_info::rename(ctx.state.db, player_id, name, guide_id, step_id).await?;
+    let (reply, push) = profile
+        .rename(ctx.state.db, name, guide_id, step_id)
+        .await?;
 
     ctx.notify(CmdId::PlayerInfoPushCmd, push).await?;
     ctx.send_reply(CmdId::RenameCmd, reply, 0, req.up_tag).await

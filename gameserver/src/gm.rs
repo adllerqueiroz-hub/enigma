@@ -390,7 +390,9 @@ async fn grant(state: &'static AppState, player_id: i64, args: &[&str]) -> Resul
                 if model.has_hero(id).await? {
                     let duplicate_count = model.add_hero_duplicate(id).await?;
                     let rewards = reward::hero_duplicate_rewards(id, duplicate_count)?;
-                    let applied = reward::apply(state.db, player_id, rewards).await?;
+                    let applied = reward::RewardManager::new(player_id)
+                        .apply(state.db, rewards)
+                        .await?;
                     data.merge_rewards(applied);
                 } else {
                     model.create_hero(id).await?;
@@ -537,12 +539,9 @@ async fn send_grant_pushes(state: &'static AppState, data: &GrantData) -> Result
         .await?;
     }
 
-    let heroes = UserHeroModel::new(data.user_id, (*state.db).clone());
-    let mut hero_updates = Vec::new();
-    for hero_id in &data.changed_hero_ids {
-        hero_updates
-            .push(crate::logic::hero::snapshot(state.db, heroes.get_hero(*hero_id).await?).await?);
-    }
+    let hero_updates = crate::logic::hero::HeroManager::new(data.user_id)
+        .snapshots(state.db, data.changed_hero_ids.iter().copied())
+        .await?;
 
     if !hero_updates.is_empty() {
         send_push(
@@ -552,8 +551,9 @@ async fn send_grant_pushes(state: &'static AppState, data: &GrantData) -> Result
             HeroUpdatePush { hero_updates },
         )
         .await?;
-        let player_card =
-            crate::logic::player_card::get_player_card_info(state.db, data.user_id).await?;
+        let player_card = crate::logic::profile::ProfileManager::new(data.user_id)
+            .card_info(state.db)
+            .await?;
         send_push(
             state,
             data.user_id,

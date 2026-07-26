@@ -4,19 +4,9 @@ use crate::{
 };
 use byteorder::{BE, ByteOrder};
 use common::time::ServerTime;
-use database::{
-    db::{
-        game::{
-            achievements, activity199, activity217, activity218, activity225, battle_pass,
-            dungeons, instruction_dungeon, manufacture, necrologist_story, odyssey, open_infos,
-            player_infos, sign_in, stories, summon, tasks, trade,
-        },
-        user::account,
-    },
-    models::game::tasks::UserTask,
-};
+use database::db::user::account;
+use logic::task::UserTask;
 use sqlx::SqlitePool;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginRequest {
@@ -105,6 +95,7 @@ pub async fn start_session(
     session: LoginSession,
 ) -> Result<Vec<UserTask>, AppError> {
     conn.load_player(session.user_id).await?;
+    let db = conn.state.db;
     let now = ServerTime::now_ms();
     let today = ServerTime::server_day(now);
     let state = &conn.player()?.state;
@@ -112,12 +103,13 @@ pub async fn start_session(
     let is_new_week = state.is_new_week(now);
     let is_new_month = state.is_new_month(now);
 
-    if is_new_week {
-        sign_in::reset_weekly_counters(conn.state.db, session.user_id).await?;
-    }
+    logic::sign_in::SignInManager::new(session.user_id)
+        .reset_counters(db, is_new_day, is_new_week)
+        .await?;
     if is_new_day {
-        sign_in::reset_daily_counters(conn.state.db, session.user_id).await?;
-        player_infos::increment_total_login_days(conn.state.db, session.user_id).await?;
+        logic::profile::ProfileManager::new(session.user_id)
+            .record_login_day(db)
+            .await?;
     }
 
     {
@@ -140,11 +132,11 @@ pub async fn start_session(
         state.last_sign_in_time = Some(now);
     }
 
-    if let Some(bp_id) = tasks::current_battle_pass_id() {
-        battle_pass::get_or_create_state(conn.state.db, session.user_id, bp_id).await?;
-    }
-    let updated_tasks = tasks::sync_login_tasks(conn.state.db, session.user_id, is_new_day).await?;
-    sync_login_catalog(conn.state.db, session.user_id, conn.state.tables).await?;
+    logic::bp::BattlePassManager::new(session.user_id)
+        .sync_current(db)
+        .await?;
+    let updated_tasks = conn.player_mut()?.tasks.sync_login(db, is_new_day).await?;
+    sync_login_catalog(db, session.user_id, conn.state.tables).await?;
 
     conn.save_player().await?;
     Ok(updated_tasks)
@@ -155,60 +147,32 @@ async fn sync_login_catalog(
     user_id: i64,
     tables: &config::GameDB,
 ) -> Result<(), AppError> {
-    summon::sync_visible_pools(db, user_id).await?;
-    achievements::reconcile_snapshot(db, user_id).await?;
-    instruction_dungeon::reconcile_unlocks(db, user_id).await?;
-    open_infos::reconcile_progression(db, user_id).await?;
-    dungeons::reconcile_map_progression(db, user_id).await?;
-    stories::sync_hero_story_states(db, user_id, tables).await?;
-    necrologist_story::sync_stories(db, user_id, 0, tables).await?;
-    odyssey::sync_info(db, user_id, tables).await?;
-
-    let trade_level = manufacture::get_trade_level(db, user_id, tables).await?;
-    trade::sync_tasks(db, user_id, trade_level, tables).await?;
-
-    for activity_id in tables
-        .activity199
-        .iter()
-        .map(|row| row.activity_id)
-        .collect::<BTreeSet<_>>()
-    {
-        activity199::sync(db, user_id, activity_id).await?;
-    }
-    for activity_id in tables
-        .activity217_control
-        .iter()
-        .map(|row| row.activity_id)
-        .collect::<BTreeSet<_>>()
-    {
-        activity217::sync(db, user_id, activity_id, tables).await?;
-    }
-    for activity_id in tables
-        .activity218_control
-        .iter()
-        .map(|row| row.activity_id)
-        .collect::<BTreeSet<_>>()
-    {
-        activity218::sync(db, user_id, activity_id).await?;
-    }
-    for activity_id in tables
-        .activity225_const
-        .iter()
-        .map(|row| row.activity_id)
-        .collect::<BTreeSet<_>>()
-    {
-        let question_id = tables
-            .activity225_question
-            .iter()
-            .filter(|row| row.activity_id == activity_id)
-            .map(|row| row.id)
-            .min()
-            .unwrap_or_default();
-        activity225::sync(db, user_id, activity_id, question_id).await?;
-    }
-
-    logic::dice_hero::sync_state(db, user_id, tables).await?;
-    logic::turnback::sync_state(db, user_id, tables).await?;
+    logic::summon::SummonManager::new(user_id)
+        .sync_visible_pools(db)
+        .await?;
+    logic::collection::CollectionManager::new(user_id)
+        .sync_achievements(db)
+        .await?;
+    crate::dungeon::reconcile_instruction_dungeon(db, user_id).await?;
+    logic::profile::ProfileManager::new(user_id)
+        .reconcile_open_infos(db)
+        .await?;
+    crate::dungeon::reconcile_map_progression(db, user_id).await?;
+    logic::story::StoryManager::new(user_id)
+        .sync(db, tables)
+        .await?;
+    logic::odyssey::OdysseyManager::new(user_id)
+        .sync(db, tables)
+        .await?;
+    logic::room::RoomManager::new(user_id)
+        .sync_trade_tasks(db, tables)
+        .await?;
+    logic::activity::ActivityManager::new(user_id)
+        .sync_login_catalog(db, tables)
+        .await?;
+    logic::turnback::TurnbackManager::new(user_id)
+        .sync_state(db, tables)
+        .await?;
     Ok(())
 }
 

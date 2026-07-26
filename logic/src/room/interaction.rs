@@ -1,77 +1,80 @@
 use super::*;
 
-pub async fn character_interaction_info(
-    db: &SqlitePool,
-    player_id: i64,
-) -> Result<GetCharacterInteractionInfoReply, AppError> {
-    Ok(GetCharacterInteractionInfoReply {
-        infos: character_interactions::get_character_interactions(db, player_id)
-            .await?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        interaction_count: Some(
-            character_interactions::get_interaction_count(db, player_id).await?,
-        ),
-    })
-}
+impl RoomManager {
+    pub async fn character_interaction_info(
+        &self,
+        db: &SqlitePool,
+    ) -> Result<GetCharacterInteractionInfoReply, AppError> {
+        Ok(GetCharacterInteractionInfoReply {
+            infos: character_interactions::get_character_interactions(db, self.player_id)
+                .await?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            interaction_count: Some(
+                character_interactions::get_interaction_count(db, self.player_id).await?,
+            ),
+        })
+    }
 
-pub async fn start_character_interaction(
-    db: &SqlitePool,
-    tables: &config::GameDB,
-    player_id: i64,
-    interaction_id: i32,
-) -> Result<StartCharacterInteractionReply, AppError> {
-    validate_character_interaction(db, tables, player_id, interaction_id).await?;
-    if !character_interactions::start_interaction(db, player_id, interaction_id).await? {
-        return Err(AppError::InvalidRequest);
-    }
-    Ok(StartCharacterInteractionReply {
-        id: Some(interaction_id),
-    })
-}
-
-pub async fn complete_character_interaction(
-    db: &SqlitePool,
-    tables: &config::GameDB,
-    player_id: i64,
-    interaction_id: i32,
-    select_ids: Vec<i32>,
-) -> Result<RoomReward<GetCharacterInteractionBonusReply>, AppError> {
-    let interaction = validate_character_interaction(db, tables, player_id, interaction_id).await?;
-    let mut unique = BTreeSet::new();
-    if select_ids.iter().any(|id| {
-        !unique.insert(*id)
-            || tables
-                .room_character_dialog_select
-                .get(*id)
-                .is_none_or(|select| select.dialog_id != interaction.dialog_id)
-    }) {
-        return Err(AppError::InvalidRequest);
-    }
-    let reward_set = reward::parse(&interaction.reward);
-    let material_changes = reward_set.material_changes();
-    let mut tx = db.begin().await?;
-    if !character_interactions::complete_interaction_in_transaction(
-        &mut tx,
-        player_id,
-        interaction_id,
-        &select_ids,
-    )
-    .await?
-    {
-        return Err(AppError::InvalidRequest);
-    }
-    let rewards = reward::apply_in_transaction(&mut tx, db, player_id, reward_set).await?;
-    tx.commit().await?;
-    Ok(RoomReward {
-        reply: GetCharacterInteractionBonusReply {
+    pub async fn start_character_interaction(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+        interaction_id: i32,
+    ) -> Result<StartCharacterInteractionReply, AppError> {
+        validate_character_interaction(db, tables, self.player_id, interaction_id).await?;
+        if !character_interactions::start_interaction(db, self.player_id, interaction_id).await? {
+            return Err(AppError::InvalidRequest);
+        }
+        Ok(StartCharacterInteractionReply {
             id: Some(interaction_id),
-            select_ids,
-        },
-        rewards,
-        material_changes,
-    })
+        })
+    }
+
+    pub async fn complete_character_interaction(
+        &self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+        interaction_id: i32,
+        select_ids: Vec<i32>,
+    ) -> Result<RoomReward<GetCharacterInteractionBonusReply>, AppError> {
+        let interaction =
+            validate_character_interaction(db, tables, self.player_id, interaction_id).await?;
+        let mut unique = BTreeSet::new();
+        if select_ids.iter().any(|id| {
+            !unique.insert(*id)
+                || tables
+                    .room_character_dialog_select
+                    .get(*id)
+                    .is_none_or(|select| select.dialog_id != interaction.dialog_id)
+        }) {
+            return Err(AppError::InvalidRequest);
+        }
+        let reward_set = reward::parse(&interaction.reward);
+        let material_changes = reward_set.material_changes();
+        let mut tx = db.begin().await?;
+        if !character_interactions::complete_interaction_in_transaction(
+            &mut tx,
+            self.player_id,
+            interaction_id,
+            &select_ids,
+        )
+        .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let rewards = reward::apply_in_transaction(&mut tx, db, self.player_id, reward_set).await?;
+        tx.commit().await?;
+        Ok(RoomReward {
+            reply: GetCharacterInteractionBonusReply {
+                id: Some(interaction_id),
+                select_ids,
+            },
+            rewards,
+            material_changes,
+        })
+    }
 }
 
 async fn validate_character_interaction<'a>(

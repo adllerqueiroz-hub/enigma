@@ -16,7 +16,7 @@ pub struct NewOrderResult {
     pub material_changes: Vec<(u32, u32, i32)>,
 }
 
-pub async fn new_order(
+pub(super) async fn new_order(
     db: &SqlitePool,
     player_id: i64,
     goods_id: i32,

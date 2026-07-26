@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::guide,
     net::{context::ConnectionContext, packet::ClientPacket},
     util::push,
 };
@@ -11,8 +10,7 @@ pub async fn on_get_guide_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = guide::get_guide_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.guide.get_info(ctx.state.db).await?;
 
     ctx.send_reply(CmdId::GetGuideInfoCmd, reply, 0, req.up_tag)
         .await
@@ -24,8 +22,11 @@ pub async fn on_finish_guide(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = FinishGuideRequest::decode(&req.data[..])?;
-    let completion =
-        guide::finish_guide(ctx.state.db, player_id, msg.guide_id, msg.step_id).await?;
+    let completion = ctx
+        .player()?
+        .guide
+        .finish(ctx.state.db, msg.guide_id, msg.step_id)
+        .await?;
 
     push::send_applied_reward_pushes(
         ctx,

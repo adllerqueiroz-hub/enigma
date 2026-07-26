@@ -1,6 +1,6 @@
 use super::{
-    GachaRules, is_newbie_pool, is_newbie_six_star, pop_up_recommend_window, progress_rewards,
-    summon as perform_summon, validate_summon_count,
+    GachaRules, SummonManager,
+    commands::{is_newbie_pool, is_newbie_six_star, validate_summon_count},
 };
 use crate::reward::{self, RewardSet};
 use database::{
@@ -59,7 +59,8 @@ async fn teaching_summon_uses_captured_result_and_advances_guide() {
         .await
         .unwrap();
 
-    let completion = perform_summon(&pool, 26, 2, Some(103), Some(8), 1)
+    let completion = SummonManager::new(26)
+        .summon(&pool, 2, Some(103), Some(8), 1)
         .await
         .unwrap();
 
@@ -112,7 +113,10 @@ async fn ordinary_summon_still_uses_the_pool_without_advancing_a_guide() {
         .await
         .unwrap();
 
-    let completion = perform_summon(&pool, 27, 2, None, None, 1).await.unwrap();
+    let completion = SummonManager::new(27)
+        .summon(&pool, 2, None, None, 1)
+        .await
+        .unwrap();
     let hero_id = completion.reply.summon_result[0].hero_id.unwrap();
 
     assert!(completion.guide_info.is_none());
@@ -175,8 +179,15 @@ async fn recommend_popup_count_is_persisted_per_pool_order() {
     .await
     .unwrap();
 
-    let first = pop_up_recommend_window(&pool, 22, 34111, 1).await.unwrap();
-    let second = pop_up_recommend_window(&pool, 22, 34111, 1).await.unwrap();
+    let manager = SummonManager::new(22);
+    let first = manager
+        .pop_up_recommend_window(&pool, 34111, 1)
+        .await
+        .unwrap();
+    let second = manager
+        .pop_up_recommend_window(&pool, 34111, 1)
+        .await
+        .unwrap();
 
     assert_eq!(first.pop_up_count, Some(1));
     assert_eq!(second.pop_up_count, Some(2));
@@ -203,8 +214,9 @@ async fn summon_progress_claims_each_configured_portrayal_once() {
     .await
     .unwrap();
 
-    let (first, changed) = progress_rewards(&pool, 23, 305111).await.unwrap();
-    let (_, repeated) = progress_rewards(&pool, 23, 305111).await.unwrap();
+    let manager = SummonManager::new(23);
+    let (first, changed) = manager.progress_rewards(&pool, 305111).await.unwrap();
+    let (_, repeated) = manager.progress_rewards(&pool, 305111).await.unwrap();
 
     assert_eq!(first.has_get_reward_progresses, vec![100, 160]);
     assert_eq!(changed, vec![133123, 133123]);

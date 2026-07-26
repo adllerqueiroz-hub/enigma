@@ -7,7 +7,7 @@ use crate::{
     util::{push, task_events},
 };
 use config::configs;
-use database::db::game::tasks::TaskEvent;
+use logic::task::TaskEvent;
 use prost::Message;
 use sonettobuf::{
     CmdId, StartTowerBattleReply, StartTowerBattleRequest, TowerActiveTalentReply,
@@ -108,9 +108,7 @@ pub async fn on_start_battle(
     .await?;
 
     let start_dungeon_reply = active.start_reply();
-    let battle = &mut ctx.player_mut()?.battle;
-    battle.pending_record = None;
-    battle.active = Some(active);
+    ctx.player_mut()?.battle.start_active(active);
 
     ctx.send_reply(
         CmdId::StartTowerBattleCmd,

@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::stat,
     net::{context::ConnectionContext, packet::ClientPacket},
 };
 use prost::Message;
@@ -12,9 +11,8 @@ pub async fn on_client_stat_base_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     ClientStatBaseInfoRequest::decode(&req.data[..])?;
-    let push = stat::base_info(ctx.state.db, player_id).await?;
+    let push = ctx.player()?.stat.base_info(ctx.state.db).await?;
 
     ctx.notify(CmdId::StatInfoPushCmd, push).await?;
     ctx.send_empty_reply(CmdId::ClientStatBaseInfoCmd, Vec::new(), 0, req.up_tag)
@@ -25,9 +23,8 @@ pub async fn on_update_client_stat_base_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     UpdateClientStatBaseInfoRequest::decode(&req.data[..])?;
-    let reply = stat::update_base_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.stat.update_base_info();
 
     ctx.send_reply(CmdId::UpdateClientStatBaseInfoCmd, reply, 0, req.up_tag)
         .await

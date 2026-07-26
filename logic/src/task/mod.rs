@@ -1,5 +1,7 @@
-use crate::{error::AppError, reward, room};
+use crate::{bp, error::AppError, reward, room::RoomManager, types::red_dot_id::RedDotId};
 use database::db::game::tasks as task_db;
+pub use database::db::game::tasks::{ProductionLineAction, TaskEvent, TaskType};
+pub use database::models::game::tasks::UserTask;
 use sonettobuf::{
     FinishAllTaskReply, FinishReadTaskReply, FinishTaskReply, GetTaskActivityBonusReply,
     GetTaskInfoReply, RefreshOnlineTaskReply, Task, TaskActivityInfo,
@@ -16,7 +18,7 @@ use rewards::{
 #[derive(Clone, Debug)]
 pub struct TaskManager {
     player_id: i64,
-    tasks: HashMap<(i32, i32), database::models::game::tasks::UserTask>,
+    tasks: HashMap<(i32, i32), UserTask>,
 }
 
 impl TaskManager {
@@ -25,6 +27,34 @@ impl TaskManager {
             player_id,
             tasks: HashMap::new(),
         }
+    }
+
+    pub async fn sync_login(
+        &mut self,
+        db: &SqlitePool,
+        reset_daily: bool,
+    ) -> Result<Vec<UserTask>, AppError> {
+        let tasks = task_db::sync_login_tasks(db, self.player_id, reset_daily).await?;
+        self.cache_tasks(&tasks);
+        Ok(tasks)
+    }
+
+    pub async fn sync_event(
+        &mut self,
+        db: &SqlitePool,
+        event: TaskEvent,
+    ) -> Result<Vec<UserTask>, AppError> {
+        let tasks = task_db::sync_event_tasks(db, self.player_id, event).await?;
+        self.cache_tasks(&tasks);
+        Ok(tasks)
+    }
+
+    pub async fn activity_info(&self, db: &SqlitePool) -> Result<Vec<TaskActivityInfo>, AppError> {
+        Ok(task_db::list_activity(db, self.player_id, Vec::new())
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub async fn get_info(
@@ -37,7 +67,9 @@ impl TaskManager {
             .map(|type_id| *type_id as i32)
             .collect::<Vec<_>>();
         if db_type_ids.is_empty() || db_type_ids.contains(&task_db::TaskType::Room.id()) {
-            room::sync_room_tasks(db, config::configs::get(), self.player_id).await?;
+            RoomManager::new(self.player_id)
+                .sync_room_tasks(db, config::configs::get())
+                .await?;
         }
         let tasks = task_db::list_by_types(db, self.player_id, db_type_ids.clone()).await?;
         self.cache_tasks(&tasks);
@@ -60,7 +92,9 @@ impl TaskManager {
         task_id: i32,
     ) -> Result<TaskClaim<FinishTaskReply>, AppError> {
         if config::configs::get().task_room.get(task_id).is_some() {
-            room::sync_room_tasks(db, config::configs::get(), self.player_id).await?;
+            RoomManager::new(self.player_id)
+                .sync_room_tasks(db, config::configs::get())
+                .await?;
         }
         let task = task_db::get_by_id(db, self.player_id, task_id)
             .await?
@@ -70,7 +104,8 @@ impl TaskManager {
             .await?
             .ok_or(AppError::InvalidRequest)?;
         let activity = add_claim_activity_in_transaction(&mut tx, self.player_id, &task).await?;
-        let reward_set = task_rewards(task.type_id, task.task_id);
+        let mut reward_set = task_rewards(task.type_id, task.task_id);
+        add_battle_pass_score(&mut reward_set, std::slice::from_ref(&task));
         let material_changes = reward_set.material_changes();
         let rewards = reward::apply_in_transaction(&mut tx, db, self.player_id, reward_set).await?;
         tx.commit().await?;
@@ -97,7 +132,9 @@ impl TaskManager {
         activity_id: Option<i32>,
     ) -> Result<TaskClaim<FinishAllTaskReply>, AppError> {
         if type_id == task_db::TaskType::Room.id() {
-            room::sync_room_tasks(db, config::configs::get(), self.player_id).await?;
+            RoomManager::new(self.player_id)
+                .sync_room_tasks(db, config::configs::get())
+                .await?;
         }
         let claimable = task_db::claimable_tasks(
             db,
@@ -120,6 +157,7 @@ impl TaskManager {
                 .extend(add_claim_activity_in_transaction(&mut tx, self.player_id, task).await?);
             reward_set.extend(task_rewards(task.type_id, task.task_id));
         }
+        add_battle_pass_score(&mut reward_set, &tasks);
 
         let material_changes = reward_set.material_changes();
         let rewards = reward::apply_in_transaction(&mut tx, db, self.player_id, reward_set).await?;
@@ -215,14 +253,59 @@ impl TaskManager {
         ))
     }
 
-    fn cache_tasks(&mut self, tasks: &[database::models::game::tasks::UserTask]) {
+    pub async fn recurring_red_dot(
+        &self,
+        db: &SqlitePool,
+        type_id: i32,
+    ) -> Result<Option<TaskRedDot>, AppError> {
+        let Some((task_type, define_id)) = task_red_dot_route(type_id) else {
+            return Ok(None);
+        };
+        let expiry = task_db::claimable_expiry(db, self.player_id, task_type).await?;
+        Ok(Some(TaskRedDot {
+            define_id,
+            value: i32::from(expiry.is_some()),
+            expiry: expiry.unwrap_or_default(),
+        }))
+    }
+
+    fn cache_tasks(&mut self, tasks: &[UserTask]) {
         for task in tasks {
             self.cache_task(task.clone());
         }
     }
 
-    fn cache_task(&mut self, task: database::models::game::tasks::UserTask) {
+    fn cache_task(&mut self, task: UserTask) {
         self.tasks.insert((task.type_id, task.task_id), task);
+    }
+}
+
+pub fn recurring_red_dot_types(tasks: impl IntoIterator<Item = (i32, bool, i32)>) -> Vec<i32> {
+    let mut type_ids = tasks
+        .into_iter()
+        .filter(|(_, has_finished, finish_count)| *has_finished || *finish_count > 0)
+        .filter_map(|(type_id, _, _)| task_red_dot_route(type_id).map(|_| type_id))
+        .collect::<Vec<_>>();
+    type_ids.sort_unstable();
+    type_ids.dedup();
+    type_ids
+}
+
+fn task_red_dot_route(type_id: i32) -> Option<(task_db::TaskType, i32)> {
+    match task_db::TaskType::from_id(type_id)? {
+        task_db::TaskType::Daily => Some((task_db::TaskType::Daily, RedDotId::DailyTask.id())),
+        task_db::TaskType::Weekly => Some((task_db::TaskType::Weekly, RedDotId::WeeklyTask.id())),
+        _ => None,
+    }
+}
+
+fn add_battle_pass_score(rewards: &mut reward::RewardSet, tasks: &[UserTask]) {
+    let Some(bp_id) = task_db::current_battle_pass_id() else {
+        return;
+    };
+    let score = bp::task_score_from_models(bp_id, tasks);
+    if score > 0 {
+        rewards.bp_scores.push((bp_id, score));
     }
 }
 
@@ -232,6 +315,12 @@ pub struct TaskClaim<T> {
     pub activity_info: Vec<TaskActivityInfo>,
     pub rewards: reward::AppliedRewards,
     pub material_changes: Vec<(u32, u32, i32)>,
+}
+
+pub struct TaskRedDot {
+    pub define_id: i32,
+    pub value: i32,
+    pub expiry: i32,
 }
 
 pub fn refresh_online_task(id: Option<i32>) -> RefreshOnlineTaskReply {

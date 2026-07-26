@@ -27,14 +27,25 @@ enum UniqueSkillKind {
 }
 
 mod destiny;
+mod group;
 mod profile;
 mod progression;
 mod specialization;
+mod talent;
 
-pub use destiny::*;
-pub use profile::*;
-pub use progression::*;
-pub use specialization::*;
+pub(crate) use profile::snapshot_data;
+pub(crate) use profile::snapshot_data as snapshot;
+
+#[derive(Clone, Copy, Debug)]
+pub struct HeroManager {
+    player_id: i64,
+}
+
+impl HeroManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+}
 
 #[cfg(test)]
 use destiny::{destiny_stones, next_destiny_slot};

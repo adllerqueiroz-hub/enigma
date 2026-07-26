@@ -79,126 +79,134 @@ fn teaching_rewards(guide_id: i32, step_id: i32) -> reward::RewardSet {
         })
 }
 
-pub async fn get_guide_info(
-    db: &SqlitePool,
+#[derive(Clone, Copy, Debug)]
+pub struct GuideManager {
     player_id: i64,
-) -> Result<GetGuideInfoReply, AppError> {
-    let guide_infos = guides::get_all_guide_progress(db, player_id).await?;
-
-    Ok(GetGuideInfoReply {
-        guide_infos: guide_infos.into_iter().map(Into::into).collect(),
-    })
 }
 
-pub async fn finish_guide(
-    db: &SqlitePool,
-    player_id: i64,
-    guide_id: i32,
-    step_id: i32,
-) -> Result<GuideCompletion, AppError> {
-    if config::configs::get()
-        .guide
-        .get(guide_id)
-        .is_none_or(|guide| guide.is_online == 0)
-    {
-        return Err(AppError::InvalidRequest);
-    }
-    let required_story = if step_id == 0 {
-        None
-    } else {
-        let step = config::configs::get()
-            .guide_step
-            .iter()
-            .find(|step| step.id == guide_id && step.step_id == step_id)
-            .ok_or(AppError::InvalidRequest)?;
-        story_requirement(&step.action)
-    };
-    if let Some(story_id) = required_story
-        && !stories::is_story_finished(db, player_id, story_id).await?
-    {
-        return Err(AppError::InvalidRequest);
+impl GuideManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
     }
 
-    let previous = guides::get_guide_progress(db, player_id, guide_id).await?;
-    let first_completion = previous
-        .as_ref()
-        .is_none_or(|progress| progress.step_id != -1 && progress.step_id < step_id);
-    let stored_step_id = stored_step_after(guide_id, step_id);
-    let hero_id = required_story.and_then(|_| hero_reward_after_step(guide_id, step_id));
-    let common_group = if hero_id.is_some() {
-        Some(
-            hero_groups::get_hero_groups_common(db, player_id)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or(AppError::InvalidRequest)?,
-        )
-    } else {
-        None
-    };
-    let heroes = UserHeroModel::new(player_id, db.clone());
-    let should_grant = if first_completion {
-        match hero_id {
-            Some(hero_id) => !heroes.has_hero(hero_id).await?,
-            None => false,
-        }
-    } else {
-        false
-    };
-    let mut tx = db.begin().await?;
-    let (rewards, material_changes) = if first_completion {
-        let mut rewards = teaching_rewards(guide_id, step_id);
-        if should_grant {
-            rewards.heroes.push((hero_id.unwrap(), 1));
-        }
-        let material_changes = rewards.material_changes();
-        (
-            reward::apply_in_transaction(&mut tx, db, player_id, rewards).await?,
-            material_changes,
-        )
-    } else {
-        Default::default()
-    };
-    if !guides::update_guide_progress_in_transaction(
-        &mut tx,
-        player_id,
-        guide_id,
-        previous.as_ref().map(|progress| progress.step_id),
-        stored_step_id,
-    )
-    .await?
-    {
-        return Err(AppError::InvalidRequest);
-    }
-    let group_snapshot = if let (Some(hero_id), Some(mut group)) = (hero_id, common_group) {
-        let hero_uid = heroes.hero_uid_in_transaction(&mut tx, hero_id).await?;
-        group.hero_list = vec![hero_uid];
-        hero_group_snapshots::save_common_group_snapshot_in_transaction(
-            &mut tx,
-            player_id,
-            HeroGroupSnapshotType::Common.id(),
-            &group,
-        )
-        .await?;
-        Some(UpdateHeroGroupSnapshotPush {
-            snapshot_id: Some(HeroGroupSnapshotType::Common.id()),
-            snapshot_sub_id: Some(group.group_id),
-            group_info: Some(group.into()),
+    pub async fn get_info(&self, db: &SqlitePool) -> Result<GetGuideInfoReply, AppError> {
+        let guide_infos = guides::get_all_guide_progress(db, self.player_id).await?;
+
+        Ok(GetGuideInfoReply {
+            guide_infos: guide_infos.into_iter().map(Into::into).collect(),
         })
-    } else {
-        None
-    };
-    tx.commit().await?;
-    Ok(GuideCompletion {
-        reply: FinishGuideReply {},
-        guide_info: GuideInfo {
+    }
+
+    pub async fn finish(
+        &self,
+        db: &SqlitePool,
+        guide_id: i32,
+        step_id: i32,
+    ) -> Result<GuideCompletion, AppError> {
+        if config::configs::get()
+            .guide
+            .get(guide_id)
+            .is_none_or(|guide| guide.is_online == 0)
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let required_story = if step_id == 0 {
+            None
+        } else {
+            let step = config::configs::get()
+                .guide_step
+                .iter()
+                .find(|step| step.id == guide_id && step.step_id == step_id)
+                .ok_or(AppError::InvalidRequest)?;
+            story_requirement(&step.action)
+        };
+        if let Some(story_id) = required_story
+            && !stories::is_story_finished(db, self.player_id, story_id).await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+
+        let previous = guides::get_guide_progress(db, self.player_id, guide_id).await?;
+        let first_completion = previous
+            .as_ref()
+            .is_none_or(|progress| progress.step_id != -1 && progress.step_id < step_id);
+        let stored_step_id = stored_step_after(guide_id, step_id);
+        let hero_id = required_story.and_then(|_| hero_reward_after_step(guide_id, step_id));
+        let common_group = if hero_id.is_some() {
+            Some(
+                hero_groups::get_hero_groups_common(db, self.player_id)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or(AppError::InvalidRequest)?,
+            )
+        } else {
+            None
+        };
+        let heroes = UserHeroModel::new(self.player_id, db.clone());
+        let should_grant = if first_completion {
+            match hero_id {
+                Some(hero_id) => !heroes.has_hero(hero_id).await?,
+                None => false,
+            }
+        } else {
+            false
+        };
+        let mut tx = db.begin().await?;
+        let (rewards, material_changes) = if first_completion {
+            let mut rewards = teaching_rewards(guide_id, step_id);
+            if should_grant {
+                rewards.heroes.push((hero_id.unwrap(), 1));
+            }
+            let material_changes = rewards.material_changes();
+            (
+                reward::apply_in_transaction(&mut tx, db, self.player_id, rewards).await?,
+                material_changes,
+            )
+        } else {
+            Default::default()
+        };
+        if !guides::update_guide_progress_in_transaction(
+            &mut tx,
+            self.player_id,
             guide_id,
-            step_id: stored_step_id,
-        },
-        rewards,
-        material_changes,
-        group_snapshot,
-    })
+            previous.as_ref().map(|progress| progress.step_id),
+            stored_step_id,
+        )
+        .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let group_snapshot = if let (Some(hero_id), Some(mut group)) = (hero_id, common_group) {
+            let hero_uid = heroes.hero_uid_in_transaction(&mut tx, hero_id).await?;
+            group.hero_list = vec![hero_uid];
+            hero_group_snapshots::save_common_group_snapshot_in_transaction(
+                &mut tx,
+                self.player_id,
+                HeroGroupSnapshotType::Common.id(),
+                &group,
+            )
+            .await?;
+            Some(UpdateHeroGroupSnapshotPush {
+                snapshot_id: Some(HeroGroupSnapshotType::Common.id()),
+                snapshot_sub_id: Some(group.group_id),
+                group_info: Some(group.into()),
+            })
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(GuideCompletion {
+            reply: FinishGuideReply {},
+            guide_info: GuideInfo {
+                guide_id,
+                step_id: stored_step_id,
+            },
+            rewards,
+            material_changes,
+            group_snapshot,
+        })
+    }
 }
 
 #[cfg(test)]

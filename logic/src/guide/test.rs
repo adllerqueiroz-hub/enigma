@@ -29,7 +29,8 @@ async fn finish_guide_persists_step() {
         .unwrap();
     let guide_id = configured_step.id;
     let expected_step_id = configured_step.step_id;
-    finish_guide(&pool, 7, guide_id, expected_step_id)
+    GuideManager::new(7)
+        .finish(&pool, guide_id, expected_step_id)
         .await
         .unwrap();
     let stored_step_id: i32 =
@@ -47,7 +48,7 @@ async fn finish_guide_persists_step() {
             .iter()
             .all(|step| step.id != 102 || step.step_id != 0)
     );
-    finish_guide(&pool, 8, 102, 0).await.unwrap();
+    GuideManager::new(8).finish(&pool, 102, 0).await.unwrap();
     let start_marker: i32 = sqlx::query_scalar(
         "SELECT step_id FROM guide_progress WHERE user_id = 8 AND guide_id = 102",
     )
@@ -85,7 +86,11 @@ async fn prologue_guide_grants_apple_after_story_once() {
 
     let heroes = UserHeroModel::new(8, pool.clone());
     assert_eq!(
-        get_guide_info(&pool, 8).await.unwrap().guide_infos,
+        GuideManager::new(8)
+            .get_info(&pool)
+            .await
+            .unwrap()
+            .guide_infos,
         [GuideInfo {
             guide_id: 101,
             step_id: 0,
@@ -93,16 +98,17 @@ async fn prologue_guide_grants_apple_after_story_once() {
     );
     assert!(heroes.get_all_heroes().await.unwrap().is_empty());
     assert!(matches!(
-        finish_guide(&pool, 8, 101, 84).await,
+        GuideManager::new(8).finish(&pool, 101, 84).await,
         Err(AppError::InvalidRequest)
     ));
 
-    crate::story::update_story(&pool, 8, 100017, -1, 0)
+    crate::story::StoryManager::new(8)
+        .update(&pool, 100017, -1, 0)
         .await
         .unwrap();
     assert!(heroes.get_all_heroes().await.unwrap().is_empty());
 
-    let completion = finish_guide(&pool, 8, 101, 84).await.unwrap();
+    let completion = GuideManager::new(8).finish(&pool, 101, 84).await.unwrap();
     let apple = heroes.get_hero(3028).await.unwrap();
     assert_eq!(completion.rewards.hero_ids, [3028]);
     assert_eq!(completion.rewards.item_ids, [140001]);
@@ -117,7 +123,7 @@ async fn prologue_guide_grants_apple_after_story_once() {
         [apple.record.uid]
     );
 
-    let repeated = finish_guide(&pool, 8, 101, 84).await.unwrap();
+    let repeated = GuideManager::new(8).finish(&pool, 101, 84).await.unwrap();
     assert!(repeated.rewards.hero_ids.is_empty());
     assert_eq!(heroes.get_all_heroes().await.unwrap().len(), 1);
 }

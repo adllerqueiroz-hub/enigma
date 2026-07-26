@@ -1,11 +1,10 @@
 use crate::util::push;
 use crate::{
     error::AppError,
-    logic::store,
     net::{context::ConnectionContext, packet::ClientPacket},
     types::{material_get_approach::MaterialGetApproach, red_dot_id::RedDotId},
 };
-use database::db::game::tasks::TaskEvent;
+use logic::task::TaskEvent;
 use prost::Message;
 use sonettobuf::{
     BuyGoodsRequest, CmdId, GetStoreInfosRequest, NewOrderRequest, ReadStoreNewReply,
@@ -16,9 +15,12 @@ pub async fn on_get_store_infos(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = GetStoreInfosRequest::decode(&req.data[..])?;
-    let reply = store::store_infos(ctx.state.db, player_id, &msg.store_ids).await?;
+    let reply = ctx
+        .player()?
+        .store
+        .infos(ctx.state.db, &msg.store_ids)
+        .await?;
 
     ctx.send_reply(CmdId::GetStoreInfosCmd, reply, 0, req.up_tag)
         .await
@@ -27,15 +29,17 @@ pub async fn on_get_store_infos(
 pub async fn on_buy_goods(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = BuyGoodsRequest::decode(&req.data[..])?;
-    let result = store::buy_goods(
-        ctx.state.db,
-        player_id,
-        msg.store_id,
-        msg.goods_id,
-        msg.num,
-        msg.select_cost,
-    )
-    .await?;
+    let result = ctx
+        .player()?
+        .store
+        .buy_goods(
+            ctx.state.db,
+            msg.store_id,
+            msg.goods_id,
+            msg.num,
+            msg.select_cost,
+        )
+        .await?;
 
     push::send_applied_reward_pushes(
         ctx,
@@ -53,13 +57,11 @@ pub async fn on_buy_goods(ctx: &mut ConnectionContext, req: ClientPacket) -> Res
         },
     )
     .await?;
-    if let Some(dot) = database::db::game::red_dots::hide_visible_red_dot_info(
-        ctx.state.db,
-        player_id,
-        RedDotId::StoreTab.id(),
-        result.reply.goods_id,
-    )
-    .await?
+    if let Some(dot) = ctx
+        .player()?
+        .red_dot
+        .hide_visible_info(ctx.state.db, RedDotId::StoreTab.id(), result.reply.goods_id)
+        .await?
     {
         ctx.push_red_dot_value(
             RedDotId::StoreTab.id(),
@@ -77,14 +79,16 @@ pub async fn on_buy_goods(ctx: &mut ConnectionContext, req: ClientPacket) -> Res
 pub async fn on_new_order(ctx: &mut ConnectionContext, req: ClientPacket) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = NewOrderRequest::decode(&req.data[..])?;
-    let result = store::new_order(
-        ctx.state.db,
-        player_id,
-        msg.id.ok_or(AppError::InvalidRequest)?,
-        msg.origin_currency,
-        &msg.selection_infos,
-    )
-    .await?;
+    let result = ctx
+        .player()?
+        .store
+        .new_order(
+            ctx.state.db,
+            msg.id.ok_or(AppError::InvalidRequest)?,
+            msg.origin_currency,
+            &msg.selection_infos,
+        )
+        .await?;
 
     ctx.send_reply(CmdId::NewOrderCmd, result.reply, 0, req.up_tag)
         .await?;
@@ -124,19 +128,19 @@ pub async fn on_read_store_new(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = ReadStoreNewRequest::decode(&req.data[..])?;
     let mut goods_ids = msg.goods_ids.to_vec();
     goods_ids.sort_unstable();
     goods_ids.dedup();
 
-    database::db::game::red_dots::hide_red_dot_infos(
-        ctx.state.db,
-        player_id,
-        RedDotId::StoreGoodsRead.id(),
-        goods_ids.clone(),
-    )
-    .await?;
+    ctx.player()?
+        .red_dot
+        .hide_infos(
+            ctx.state.db,
+            RedDotId::StoreGoodsRead.id(),
+            goods_ids.clone(),
+        )
+        .await?;
 
     ctx.push_red_dot(RedDotId::StoreGoodsRead.id(), vec![0], true)
         .await?;

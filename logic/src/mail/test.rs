@@ -24,9 +24,10 @@ async fn mail_red_dot_only_changes_when_last_unread_mail_is_claimed() {
     .await
     .unwrap();
 
-    let (_, first) = super::claim_one(&pool, 1, 1).await.unwrap();
+    let manager = super::MailManager::new(1);
+    let (_, first) = manager.claim_one(&pool, 1).await.unwrap();
     assert_eq!(first.mail_red_dot, None);
 
-    let (_, last) = super::claim_one(&pool, 1, 2).await.unwrap();
+    let (_, last) = manager.claim_one(&pool, 2).await.unwrap();
     assert_eq!(last.mail_red_dot.map(|dot| dot.0), Some(0));
 }

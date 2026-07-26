@@ -6,7 +6,7 @@ use sonettobuf::{ChargeInfo, GetStoreInfosReply, GoodsInfo, StoreInfo};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
-pub async fn store_infos(
+pub(super) async fn store_infos(
     db: &SqlitePool,
     player_id: i64,
     requested_store_ids: &[i32],
@@ -56,7 +56,10 @@ pub async fn store_infos(
     Ok(GetStoreInfosReply { store_infos })
 }
 
-pub async fn charge_infos(db: &SqlitePool, player_id: i64) -> Result<Vec<ChargeInfo>, AppError> {
+pub(super) async fn charge_infos(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<Vec<ChargeInfo>, AppError> {
     let purchases = charges::get_charge_infos(db, player_id)
         .await?
         .into_iter()

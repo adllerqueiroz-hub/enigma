@@ -21,23 +21,29 @@ async fn critter_book_derives_unlocks_and_persists_only_preferences() {
     .await
     .unwrap();
 
+    let manager = CritterManager::new(26);
     assert!(
-        set_book_special_skin(&pool, config::configs::get(), 26, 500002, true)
+        manager
+            .set_book_special_skin(&pool, config::configs::get(), 500002, true)
             .await
             .is_err()
     );
     assert!(
-        set_book_background(&pool, config::configs::get(), 26, 500001, 1)
+        manager
+            .set_book_background(&pool, config::configs::get(), 500001, 1)
             .await
             .is_err()
     );
-    mark_book_read(&pool, config::configs::get(), 26, 500001)
+    manager
+        .mark_book_read(&pool, config::configs::get(), 500001)
         .await
         .unwrap();
-    set_book_special_skin(&pool, config::configs::get(), 26, 500001, true)
+    manager
+        .set_book_special_skin(&pool, config::configs::get(), 500001, true)
         .await
         .unwrap();
-    let info = get_book_info(&pool, config::configs::get(), 26)
+    let info = manager
+        .book_info(&pool, config::configs::get())
         .await
         .unwrap()
         .book_infos;

@@ -3,7 +3,7 @@ use crate::{
     net::{context::ConnectionContext, packet::ClientPacket},
     util::{push, task_events},
 };
-use database::db::game::tasks::TaskEvent;
+use logic::task::TaskEvent;
 use prost::Message;
 use sonettobuf::{
     CmdId, EquipBreakRequest, EquipDecomposeRequest, EquipDeletePush, EquipLockRequest,

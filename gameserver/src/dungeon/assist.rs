@@ -1,4 +1,5 @@
 use super::*;
+use crate::logic::{profile::ProfileManager, social::SocialManager};
 
 pub async fn refresh_assist(
     db: &SqlitePool,
@@ -18,74 +19,18 @@ pub async fn refresh_assist(
         });
     };
 
-    let friends = database::db::game::friends::get_friend_ids(db, player_id).await?;
-    let friend_ids = friends.iter().map(|id| *id as i64).collect::<HashSet<_>>();
-    let mut candidate_ids = friends;
-    candidate_ids
-        .extend(database::db::game::friends::get_recommended_ids(db, player_id, 20).await?);
-
     let mut careers = BTreeMap::<i32, Vec<AssistHeroInfo>>::new();
-    let mut seen = HashSet::new();
-    for candidate_id in candidate_ids
-        .into_iter()
-        .map(|id| id as i64)
-        .filter(|id| seen.insert(*id))
+    for (candidate_id, is_friend) in SocialManager::new(player_id)
+        .assist_candidates(db, 20)
+        .await?
     {
-        let Ok(hero) = database::models::game::heros::UserHeroModel::new(candidate_id, db.clone())
-            .get_hero(hero_id)
-            .await
+        let Some((career, assist)) = ProfileManager::new(candidate_id)
+            .assist_hero(db, hero_id, is_friend)
+            .await?
         else {
             continue;
         };
-        let Some(player) =
-            database::db::game::player_infos::get_player_info_data(db, candidate_id).await?
-        else {
-            continue;
-        };
-        let Some(character) = configs::get().character.get(hero.record.hero_id) else {
-            continue;
-        };
-        let template = hero
-            .talent_templates
-            .iter()
-            .find(|(template, _)| template.template_id == hero.record.use_talent_template_id)
-            .or_else(|| hero.talent_templates.first());
-        let cubes = template
-            .filter(|(_, cubes)| !cubes.is_empty())
-            .map(|(_, cubes)| cubes.as_slice())
-            .unwrap_or(&hero.talent_cubes);
-
-        careers
-            .entry(character.career)
-            .or_default()
-            .push(AssistHeroInfo {
-                hero_uid: Some(hero.record.uid),
-                user_id: Some(candidate_id),
-                name: Some(player.user_info.username),
-                user_level: Some(player.user_info.level),
-                portrait: Some(player.player_info.portrait),
-                bg: Some(player.player_info.bg),
-                is_friend: Some(friend_ids.contains(&candidate_id)),
-                hero_id: Some(hero.record.hero_id),
-                level: Some(hero.record.level),
-                rank: Some(hero.record.rank),
-                skin: Some(hero.record.skin),
-                passive_skill_level: hero.passive_skill_levels.clone(),
-                ex_skill_level: Some(hero.record.ex_skill_level),
-                talent: Some(hero.record.talent),
-                talent_cube_infos: cubes.iter().cloned().map(Into::into).collect(),
-                balance_level: Some(hero.record.level),
-                is_open_talent: Some(hero.record.talent > 0),
-                style: Some(
-                    template
-                        .map(|(template, _)| template.style)
-                        .unwrap_or_default(),
-                ),
-                destiny_rank: Some(hero.record.destiny_rank),
-                destiny_level: Some(hero.record.destiny_level),
-                destiny_stone: Some(hero.record.destiny_stone),
-                extra_str: Some(hero.record.extra_str.clone()),
-            });
+        careers.entry(career).or_default().push(assist);
     }
 
     Ok(RefreshAssistReply {

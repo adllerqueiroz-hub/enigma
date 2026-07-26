@@ -1,14 +1,14 @@
 use crate::{
     error::AppError,
-    logic::{bp, red_dot, task as tasks},
+    logic::{bp, task as tasks},
     net::{context::ConnectionContext, packet::ClientPacket},
     types::material_get_approach::MaterialGetApproach,
     util::{push, task_events},
 };
-use database::db::game::{battle_pass, tasks as task_db};
+use logic::task::{TaskEvent, TaskType};
 use prost::Message;
 use sonettobuf::{
-    BpScoreUpdatePush, CmdId, FinishAllTaskRequest, FinishReadTaskRequest, FinishTaskRequest,
+    CmdId, FinishAllTaskRequest, FinishReadTaskRequest, FinishTaskRequest,
     GetTaskActivityBonusRequest, GetTaskInfoRequest, RefreshOnlineTaskRequest, UpdateTaskPush,
 };
 
@@ -48,8 +48,7 @@ pub async fn on_finish_task(
         Some(reward_approach),
     )
     .await?;
-    send_bp_score_update(ctx, player_id, &finished_tasks).await?;
-    send_bp_task_red_dot_update(ctx, player_id, &finished_tasks).await?;
+    send_bp_task_red_dot_update(ctx, &finished_tasks).await?;
     notify_task_finish_events(ctx, player_id, &finished_task_ids).await?;
     send_task_update(ctx, claim.task_info, claim.activity_info).await?;
 
@@ -86,8 +85,7 @@ pub async fn on_finish_all_task(
         Some(reward_approach),
     )
     .await?;
-    send_bp_score_update(ctx, player_id, &finished_tasks).await?;
-    send_bp_task_red_dot_update(ctx, player_id, &finished_tasks).await?;
+    send_bp_task_red_dot_update(ctx, &finished_tasks).await?;
     notify_task_finish_events(ctx, player_id, &finished_task_ids).await?;
     send_task_update(ctx, claim.task_info, claim.activity_info).await?;
 
@@ -160,8 +158,7 @@ async fn send_task_update(
         return Ok(());
     }
 
-    let player_id = ctx.player()?.id;
-    let red_dot_types = task_events::recurring_red_dot_types(task_info.iter().map(|task| {
+    let red_dot_types = tasks::recurring_red_dot_types(task_info.iter().map(|task| {
         (
             task.r#type.unwrap_or_default(),
             task.has_finished,
@@ -176,7 +173,7 @@ async fn send_task_update(
         },
     )
     .await?;
-    task_events::notify_task_red_dots(ctx, player_id, red_dot_types).await
+    task_events::notify_task_red_dots(ctx, red_dot_types).await
 }
 
 fn task_reward_approach(tasks: &[sonettobuf::Task]) -> MaterialGetApproach {
@@ -202,8 +199,8 @@ fn task_type_reward_approach(type_id: i32) -> MaterialGetApproach {
 
 fn is_recurring_task_type(type_id: i32) -> bool {
     matches!(
-        task_db::TaskType::from_id(type_id),
-        Some(task_db::TaskType::Daily | task_db::TaskType::Weekly)
+        TaskType::from_id(type_id),
+        Some(TaskType::Daily | TaskType::Weekly)
     )
 }
 
@@ -223,59 +220,23 @@ async fn notify_task_finish_events(
     task_ids: &[i32],
 ) -> Result<(), AppError> {
     for task_id in task_ids {
-        task_events::notify(
-            ctx,
-            player_id,
-            task_db::TaskEvent::TaskFinish { task_id: *task_id },
-        )
-        .await?;
+        task_events::notify(ctx, player_id, TaskEvent::TaskFinish { task_id: *task_id }).await?;
     }
-    Ok(())
-}
-
-async fn send_bp_score_update(
-    ctx: &mut ConnectionContext,
-    player_id: i64,
-    tasks: &[sonettobuf::Task],
-) -> Result<(), AppError> {
-    let Some(bp_id) = task_db::current_battle_pass_id() else {
-        return Ok(());
-    };
-
-    let score = bp::task_score_from_tasks(bp_id, tasks);
-
-    if score <= 0 {
-        return Ok(());
-    }
-
-    let update = battle_pass::add_score(ctx.state.db, player_id, bp_id, score).await?;
-    if update.score_changed {
-        ctx.notify(
-            CmdId::BpScoreUpdatePushCmd,
-            BpScoreUpdatePush {
-                id: Some(bp_id),
-                score: Some(update.score),
-                weekly_score: Some(update.weekly_score),
-            },
-        )
-        .await?;
-    }
-
     Ok(())
 }
 
 async fn send_bp_task_red_dot_update(
     ctx: &mut ConnectionContext,
-    player_id: i64,
     tasks: &[sonettobuf::Task],
 ) -> Result<(), AppError> {
     if !bp::has_task_red_dot(tasks) {
         return Ok(());
     }
 
-    push::send_red_dot_groups(
-        ctx,
-        red_dot::battle_pass_red_dot_groups(ctx.state.db, player_id).await?,
-    )
-    .await
+    let red_dot_groups = ctx
+        .player()?
+        .red_dot
+        .battle_pass_groups(ctx.state.db)
+        .await?;
+    push::send_red_dot_groups(ctx, red_dot_groups).await
 }

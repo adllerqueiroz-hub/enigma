@@ -1,6 +1,9 @@
 use super::*;
 
-pub async fn summon_info(db: &SqlitePool, player_id: i64) -> Result<GetSummonInfoReply, AppError> {
+pub(super) async fn summon_info(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<GetSummonInfoReply, AppError> {
     let stats = summon::get_summon_stats(db, player_id).await?;
     let pool_infos = summon::get_summon_pool_infos(db, player_id).await?;
 
@@ -13,7 +16,7 @@ pub async fn summon_info(db: &SqlitePool, player_id: i64) -> Result<GetSummonInf
     })
 }
 
-pub async fn progress_rewards(
+pub(super) async fn progress_rewards(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,
@@ -52,7 +55,7 @@ pub async fn progress_rewards(
     ))
 }
 
-pub async fn pop_up_recommend_window(
+pub(super) async fn pop_up_recommend_window(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,
@@ -72,7 +75,7 @@ pub async fn pop_up_recommend_window(
     })
 }
 
-pub async fn choose_enhanced_pool_hero(
+pub(super) async fn choose_enhanced_pool_hero(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,
@@ -86,7 +89,7 @@ pub async fn choose_enhanced_pool_hero(
     })
 }
 
-pub async fn choose_multi_up_hero(
+pub(super) async fn choose_multi_up_hero(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,
@@ -104,7 +107,7 @@ pub async fn choose_multi_up_hero(
     })
 }
 
-pub async fn query_token(
+pub(super) async fn query_token(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<(SummonQueryTokenReply, EndActivityPush), AppError> {
@@ -127,7 +130,7 @@ pub async fn query_token(
     ))
 }
 
-pub async fn summon(
+pub(super) async fn summon(
     db: &SqlitePool,
     player_id: i64,
     pool_id: i32,

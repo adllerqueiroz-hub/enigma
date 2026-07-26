@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn buy_levels(
+pub(super) async fn buy_levels(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,
@@ -54,7 +54,7 @@ pub(super) fn level_purchase_cost(value: &str, levels: i32) -> Option<(i32, i32)
     Some((*currency_id, unit_cost.checked_mul(levels)?))
 }
 
-pub async fn mark_first_show(
+pub(super) async fn mark_first_show(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,

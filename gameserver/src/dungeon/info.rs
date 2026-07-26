@@ -1,5 +1,41 @@
 use super::*;
 
+pub struct DungeonMapProgression {
+    pub map_ids: Vec<i32>,
+    pub elements: Vec<i32>,
+}
+
+pub async fn reconcile_map_progression(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<DungeonMapProgression, AppError> {
+    let (map_ids, elements) = dungeons::reconcile_map_progression(db, player_id).await?;
+    Ok(DungeonMapProgression { map_ids, elements })
+}
+
+pub async fn reconcile_instruction_dungeon(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<Option<sonettobuf::InstructionDungeonInfoPush>, AppError> {
+    if !instruction_dungeon::reconcile_unlocks(db, player_id).await? {
+        return Ok(None);
+    }
+    Ok(Some(instruction_dungeon_push(db, player_id).await?))
+}
+
+pub async fn instruction_dungeon_push(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<sonettobuf::InstructionDungeonInfoPush, AppError> {
+    let info = instruction_dungeon::get_info(db, player_id).await?;
+    Ok(sonettobuf::InstructionDungeonInfoPush {
+        unlock_ids: info.unlock_ids,
+        get_reward_ids: info.get_reward_ids,
+        get_final_reward: info.get_final_reward,
+        open_ids: info.open_ids,
+    })
+}
+
 pub async fn dungeon_info(
     db: &SqlitePool,
     player_id: i64,

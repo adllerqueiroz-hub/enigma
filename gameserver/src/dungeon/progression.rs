@@ -12,6 +12,15 @@ pub struct InstructionDungeonFinalRewardClaim {
     pub material_changes: Vec<(u32, u32, i32)>,
 }
 
+pub async fn can_start_episode(
+    db: &SqlitePool,
+    player_id: i64,
+    chapter_id: i32,
+    episode_id: i32,
+) -> Result<bool, AppError> {
+    Ok(dungeons::can_start_episode(db, player_id, chapter_id, episode_id).await?)
+}
+
 pub fn episode_player_exp(
     episode: &config::episode::Episode,
     first_pass: bool,

@@ -1,6 +1,9 @@
 use super::*;
 
-pub async fn item_list(db: &SqlitePool, player_id: i64) -> Result<GetItemListReply, AppError> {
+pub(super) async fn item_list(
+    db: &SqlitePool,
+    player_id: i64,
+) -> Result<GetItemListReply, AppError> {
     let items = UserItemModel::new(player_id, db.clone());
 
     Ok(GetItemListReply {
@@ -27,7 +30,7 @@ pub async fn item_list(db: &SqlitePool, player_id: i64) -> Result<GetItemListRep
     })
 }
 
-pub async fn buy_power_info(
+pub(super) async fn buy_power_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<GetBuyPowerInfoReply, AppError> {
@@ -39,7 +42,7 @@ pub async fn buy_power_info(
     })
 }
 
-pub async fn buy_power(
+pub(super) async fn buy_power(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<(BuyPowerReply, (i32, i32)), AppError> {
@@ -74,9 +77,7 @@ pub async fn buy_power(
         })
         .ok_or(AppError::InvalidRequest)?;
     let stamina = config::configs::get()
-        .player_level
-        .iter()
-        .find(|row| row.level == level)
+        .player_level(level)
         .ok_or(AppError::InvalidRequest)?
         .add_buy_recover_power;
     let stamina_limit = config::configs::get()
@@ -127,7 +128,7 @@ fn power_max_buy_count() -> Result<i32, AppError> {
         .ok_or(AppError::InvalidRequest)
 }
 
-pub async fn auto_use_expired_power_items(
+pub(super) async fn auto_use_expired_power_items(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<AutoUseExpirePowerItemReply, AppError> {
@@ -140,10 +141,9 @@ pub async fn auto_use_expired_power_items(
 
     let mut stamina = 0;
     for item in &expired {
-        if let Some(row) = config::configs::get()
-            .power_item
-            .iter()
-            .find(|row| i64::from(row.id) == item.item_id)
+        if let Some(row) = i32::try_from(item.item_id)
+            .ok()
+            .and_then(|item_id| config::configs::get().power_item.get(item_id))
         {
             stamina += row.effect * item.quantity;
         }
@@ -157,7 +157,7 @@ pub async fn auto_use_expired_power_items(
     Ok(AutoUseExpirePowerItemReply { used: Some(true) })
 }
 
-pub async fn use_power_item(
+pub(super) async fn use_power_item(
     db: &SqlitePool,
     player_id: i64,
     uid: i64,
@@ -166,7 +166,7 @@ pub async fn use_power_item(
     Ok((UsePowerItemReply { uid: Some(uid) }, updates))
 }
 
-pub async fn use_power_item_list(
+pub(super) async fn use_power_item_list(
     db: &SqlitePool,
     player_id: i64,
     requested: Vec<UsePowerItemInfo>,

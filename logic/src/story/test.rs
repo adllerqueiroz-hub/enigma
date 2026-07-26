@@ -29,12 +29,13 @@ async fn update_story_minus_one_finishes_story() {
     .await
     .unwrap();
 
-    update_story(&pool, 7, 1001, 3, 5).await.unwrap();
+    let manager = StoryManager::new(7);
+    manager.update(&pool, 1001, 3, 5).await.unwrap();
     assert_eq!(
-        get_story_finish(&pool, 7, 1001).await.unwrap().is_finish,
+        manager.finish_state(&pool, 1001).await.unwrap().is_finish,
         Some(false)
     );
-    let update = update_story(&pool, 7, 1001, -1, 0).await.unwrap();
+    let update = manager.update(&pool, 1001, -1, 0).await.unwrap();
 
     let processing_count: i32 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_processing_stories WHERE user_id = 7 AND story_id = 1001",
@@ -51,7 +52,7 @@ async fn update_story_minus_one_finishes_story() {
 
     assert_eq!(update.finished_story_id, Some(1001));
     assert_eq!(
-        get_story_finish(&pool, 7, 1001).await.unwrap().is_finish,
+        manager.finish_state(&pool, 1001).await.unwrap().is_finish,
         Some(true)
     );
     assert_eq!(processing_count, 0);

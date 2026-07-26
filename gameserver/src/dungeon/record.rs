@@ -1,5 +1,21 @@
 use super::*;
 
+pub async fn load_dungeon_record(
+    db: &SqlitePool,
+    player_id: i64,
+    episode_id: i32,
+) -> Result<Option<sonettobuf::FightGroupRecord>, AppError> {
+    Ok(dungeons::load_dungeon_record(db, player_id, episode_id).await?)
+}
+
+pub async fn load_dungeon_record_operations(
+    db: &SqlitePool,
+    player_id: i64,
+    episode_id: i32,
+) -> Result<Vec<sonettobuf::FightRoundOperRecord>, AppError> {
+    Ok(dungeons::load_dungeon_record_operations(db, player_id, episode_id).await?)
+}
+
 pub async fn prepare_dungeon_record(
     db: &SqlitePool,
     player_id: i64,

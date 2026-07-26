@@ -9,7 +9,7 @@ use sonettobuf::{
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
 
-pub async fn sync_state(
+pub(super) async fn sync_state(
     db: &SqlitePool,
     player_id: i64,
     tables: &config::GameDB,
@@ -23,7 +23,7 @@ pub async fn sync_state(
     Ok(())
 }
 
-pub async fn turnback_info(
+pub(super) async fn turnback_info(
     db: &SqlitePool,
     player_id: i64,
     tables: &config::GameDB,
@@ -83,7 +83,7 @@ pub async fn turnback_info(
     })
 }
 
-pub async fn turnback_first_show(
+pub(super) async fn turnback_first_show(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,

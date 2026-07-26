@@ -24,8 +24,7 @@ pub async fn on_get_rouge2_outside_info(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let _ = GetRouge2OutsideInfoRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = rouge::rouge2_outside_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.rouge.outside_info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetRouge2OutsideInfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -35,8 +34,7 @@ pub async fn on_get_rouge2_info(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let _ = GetRouge2InfoRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = rouge::rouge2_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.rouge.info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetRouge2InfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -46,8 +44,7 @@ pub async fn on_rouge2_get_unlock_collections(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let _ = Rouge2GetUnlockCollectionsRequest::decode(&req.data[..])?;
-    let player_id = ctx.player()?.id;
-    let reply = rouge::rouge2_unlock_collections(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.rouge.unlock_collections(ctx.state.db).await?;
     ctx.send_reply(CmdId::Rouge2GetUnlockCollectionsCmd, reply, 0, req.up_tag)
         .await
 }

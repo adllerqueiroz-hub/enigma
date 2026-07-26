@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::talent,
     net::{context::ConnectionContext, packet::ClientPacket},
     util::push,
 };
@@ -19,7 +18,11 @@ pub async fn on_talent_style_read(
     let player_id = ctx.player()?.id;
     let msg = TalentStyleReadRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = talent::style_read(ctx.state.db, player_id, hero_id).await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .talent_style_read(ctx.state.db, hero_id)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::TalentStyleReadCmd, reply, 0, req.up_tag)
@@ -34,15 +37,17 @@ pub async fn on_put_talent_cube(
     let msg = PutTalentCubeRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let template_id = msg.template_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = talent::put_cube(
-        ctx.state.db,
-        player_id,
-        hero_id,
-        template_id,
-        cube_pos(msg.get_cube_info),
-        cube_full(msg.put_cube_info),
-    )
-    .await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .put_talent_cube(
+            ctx.state.db,
+            hero_id,
+            template_id,
+            cube_pos(msg.get_cube_info),
+            cube_full(msg.put_cube_info),
+        )
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::PutTalentCubeCmd, reply, 0, req.up_tag)
@@ -62,15 +67,11 @@ pub async fn on_put_talent_cube_batch(
         .into_iter()
         .map(cube_full_required)
         .collect::<Result<Vec<_>, _>>()?;
-    let (reply, hero_info) = talent::put_cube_batch(
-        ctx.state.db,
-        player_id,
-        hero_id,
-        template_id,
-        msg.style,
-        cubes,
-    )
-    .await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .put_talent_cube_batch(ctx.state.db, hero_id, template_id, msg.style, cubes)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::PutTalentCubeBatchCmd, reply, 0, req.up_tag)
@@ -85,8 +86,11 @@ pub async fn on_takeoff_all_talent_cube(
     let msg = TakeoffAllTalentCubeRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let template_id = msg.template_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) =
-        talent::takeoff_all(ctx.state.db, player_id, hero_id, template_id).await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .takeoff_all_talent_cubes(ctx.state.db, hero_id, template_id)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::TakeoffAllTalentCubeCmd, reply, 0, req.up_tag)
@@ -97,16 +101,17 @@ pub async fn on_rename_talent_template(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = RenameTalentTemplateRequest::decode(&req.data[..])?;
-    let reply = talent::rename_template(
-        ctx.state.db,
-        player_id,
-        msg.hero_id.ok_or(AppError::InvalidRequest)?,
-        msg.template_id.ok_or(AppError::InvalidRequest)?,
-        msg.name.ok_or(AppError::InvalidRequest)?,
-    )
-    .await?;
+    let reply = ctx
+        .player()?
+        .hero
+        .rename_talent_template(
+            ctx.state.db,
+            msg.hero_id.ok_or(AppError::InvalidRequest)?,
+            msg.template_id.ok_or(AppError::InvalidRequest)?,
+            msg.name.ok_or(AppError::InvalidRequest)?,
+        )
+        .await?;
     ctx.send_reply(CmdId::RenameTalentTemplateCmd, reply, 0, req.up_tag)
         .await
 }
@@ -118,7 +123,7 @@ pub async fn on_hero_talent_up(
     let player_id = ctx.player()?.id;
     let msg = HeroTalentUpRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = talent::talent_up(ctx.state.db, player_id, hero_id).await?;
+    let (reply, hero_info) = ctx.player()?.hero.talent_up(ctx.state.db, hero_id).await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::HeroTalentUpCmd, reply, 0, req.up_tag)
@@ -135,15 +140,11 @@ pub async fn on_put_talent_scheme(
     let talent_id = msg.talent_id.ok_or(AppError::InvalidRequest)?;
     let talent_mould = msg.talent_mould.ok_or(AppError::InvalidRequest)?;
     let template_id = msg.template_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = talent::put_scheme(
-        ctx.state.db,
-        player_id,
-        hero_id,
-        talent_id,
-        talent_mould,
-        template_id,
-    )
-    .await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .put_talent_scheme(ctx.state.db, hero_id, talent_id, talent_mould, template_id)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::PutTalentSchemeCmd, reply, 0, req.up_tag)
@@ -156,7 +157,7 @@ pub async fn on_hero_talent_style_stat(
 ) -> Result<(), AppError> {
     let msg = HeroTalentStyleStatRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
-    let reply = talent::style_stat(hero_id);
+    let reply = ctx.player()?.hero.talent_style_stat(hero_id);
 
     ctx.send_reply(CmdId::HeroTalentStyleStatCmd, reply, 0, req.up_tag)
         .await
@@ -170,7 +171,11 @@ pub async fn on_unlock_talent_style(
     let msg = UnlockTalentStyleRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let style = msg.style.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = talent::unlock_style(ctx.state.db, player_id, hero_id, style).await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .unlock_talent_style(ctx.state.db, hero_id, style)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::UnlockTalentStyleCmd, reply, 0, req.up_tag)
@@ -186,8 +191,11 @@ pub async fn on_use_talent_style(
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let template_id = msg.template_id.ok_or(AppError::InvalidRequest)?;
     let style = msg.style.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) =
-        talent::use_style(ctx.state.db, player_id, hero_id, template_id, style).await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .use_talent_style(ctx.state.db, hero_id, template_id, style)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::UseTalentStyleCmd, reply, 0, req.up_tag)
@@ -202,8 +210,11 @@ pub async fn on_use_talent_template(
     let msg = UseTalentTemplateRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let template_id = msg.template_id.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) =
-        talent::use_template(ctx.state.db, player_id, hero_id, template_id).await?;
+    let (reply, hero_info) = ctx
+        .player()?
+        .hero
+        .use_talent_template(ctx.state.db, hero_id, template_id)
+        .await?;
 
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     ctx.send_reply(CmdId::UseTalentTemplateCmd, reply, 0, req.up_tag)

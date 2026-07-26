@@ -1,10 +1,9 @@
 use crate::{
     error::AppError,
-    logic::summon,
     net::{context::ConnectionContext, packet::ClientPacket},
     util::{push, task_events},
 };
-use database::db::game::tasks::TaskEvent;
+use logic::task::TaskEvent;
 use prost::Message;
 use sonettobuf::CmdId;
 use sonettobuf::{
@@ -16,8 +15,7 @@ pub async fn on_get_summon_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
-    let reply = summon::summon_info(ctx.state.db, player_id).await?;
+    let reply = ctx.player()?.summon.info(ctx.state.db).await?;
     ctx.send_reply(CmdId::GetSummonInfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -28,12 +26,11 @@ pub async fn on_get_summon_progress_rewards(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = GetSummonProgressRewardsRequest::decode(&req.data[..])?;
-    let (reply, changed_items) = summon::progress_rewards(
-        ctx.state.db,
-        player_id,
-        msg.pool_id.ok_or(AppError::InvalidRequest)?,
-    )
-    .await?;
+    let (reply, changed_items) = ctx
+        .player()?
+        .summon
+        .progress_rewards(ctx.state.db, msg.pool_id.ok_or(AppError::InvalidRequest)?)
+        .await?;
 
     push::send_item_change_push(ctx, player_id, changed_items, Vec::new(), Vec::new()).await?;
     ctx.send_reply(CmdId::GetSummonProgressRewardsCmd, reply, 0, req.up_tag)
@@ -44,15 +41,16 @@ pub async fn on_pop_up_recommend_window(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = PopUpRecommendWindowRequest::decode(&req.data[..])?;
-    let reply = summon::pop_up_recommend_window(
-        ctx.state.db,
-        player_id,
-        msg.pool_id.ok_or(AppError::InvalidRequest)?,
-        msg.order_id.ok_or(AppError::InvalidRequest)?,
-    )
-    .await?;
+    let reply = ctx
+        .player()?
+        .summon
+        .pop_up_recommend_window(
+            ctx.state.db,
+            msg.pool_id.ok_or(AppError::InvalidRequest)?,
+            msg.order_id.ok_or(AppError::InvalidRequest)?,
+        )
+        .await?;
 
     ctx.send_reply(CmdId::PopUpRecommendWindowCmd, reply, 0, req.up_tag)
         .await
@@ -62,9 +60,8 @@ pub async fn on_summon_query_token(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     SummonQueryTokenRequest::decode(&req.data[..])?;
-    let (reply, activity_push) = summon::query_token(ctx.state.db, player_id).await?;
+    let (reply, activity_push) = ctx.player()?.summon.query_token(ctx.state.db).await?;
 
     ctx.notify(CmdId::EndActivityPushCmd, activity_push).await?;
     ctx.send_reply(CmdId::SummonQueryTokenCmd, reply, 0, req.up_tag)
@@ -76,15 +73,11 @@ pub async fn on_summon(ctx: &mut ConnectionContext, req: ClientPacket) -> Result
     let msg = SummonRequest::decode(&req.data[..])?;
     let pool_id = msg.pool_id.ok_or(AppError::InvalidRequest)?;
     let count = msg.count.unwrap_or(1);
-    let completion = summon::summon(
-        ctx.state.db,
-        player_id,
-        pool_id,
-        msg.guide_id,
-        msg.step_id,
-        count,
-    )
-    .await?;
+    let completion = ctx
+        .player()?
+        .summon
+        .summon(ctx.state.db, pool_id, msg.guide_id, msg.step_id, count)
+        .await?;
     let changed = completion.changed;
 
     push::send_item_change_push(
@@ -126,12 +119,14 @@ pub async fn on_choose_enhanced_pool_hero(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = ChooseEnhancedPoolHeroRequest::decode(&req.data[..])?;
     let pool_id = msg.pool_id.ok_or(AppError::InvalidRequest)?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
-    let reply =
-        summon::choose_enhanced_pool_hero(ctx.state.db, player_id, pool_id, hero_id).await?;
+    let reply = ctx
+        .player()?
+        .summon
+        .choose_enhanced_pool_hero(ctx.state.db, pool_id, hero_id)
+        .await?;
 
     ctx.send_reply(CmdId::ChooseEnhancedPoolHeroCmd, reply, 0, req.up_tag)
         .await
@@ -141,11 +136,13 @@ pub async fn on_choose_multi_up_hero(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = ChooseMultiUpHeroRequest::decode(&req.data[..])?;
     let pool_id = msg.pool_id.ok_or(AppError::InvalidRequest)?;
-    let reply =
-        summon::choose_multi_up_hero(ctx.state.db, player_id, pool_id, msg.hero_ids).await?;
+    let reply = ctx
+        .player()?
+        .summon
+        .choose_multi_up_hero(ctx.state.db, pool_id, msg.hero_ids)
+        .await?;
 
     ctx.send_reply(CmdId::ChooseMultiUpHeroCmd, reply, 0, req.up_tag)
         .await

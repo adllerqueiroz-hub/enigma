@@ -1,4 +1,4 @@
-use crate::{error::AppError, misc::RewardedReply, reward};
+use crate::{error::AppError, reward, reward::RewardedReply};
 use database::db::game::turnback;
 use sonettobuf::{
     AcceptAllTurnbackBonusPointReply, BuyDoubleBonusReply, GetTurnbackDailyBonusReply,
@@ -7,7 +7,7 @@ use sonettobuf::{
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
 
-pub async fn turnback_once_bonus(
+pub(super) async fn turnback_once_bonus(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,
@@ -31,7 +31,7 @@ pub async fn turnback_once_bonus(
     .await
 }
 
-pub async fn turnback_sign_in(
+pub(super) async fn turnback_sign_in(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,
@@ -60,7 +60,7 @@ pub async fn turnback_sign_in(
     .await
 }
 
-pub async fn turnback_daily_bonus(
+pub(super) async fn turnback_daily_bonus(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,
@@ -91,7 +91,7 @@ pub async fn turnback_daily_bonus(
     .await
 }
 
-pub async fn turnback_bonus_point(
+pub(super) async fn turnback_bonus_point(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,
@@ -116,7 +116,7 @@ pub async fn turnback_bonus_point(
     .await
 }
 
-pub async fn accept_all_turnback_bonus_point(
+pub(super) async fn accept_all_turnback_bonus_point(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,
@@ -145,7 +145,7 @@ pub async fn accept_all_turnback_bonus_point(
     .await
 }
 
-pub async fn buy_double_bonus(
+pub(super) async fn buy_double_bonus(
     db: &SqlitePool,
     player_id: i64,
     turnback_id: i32,

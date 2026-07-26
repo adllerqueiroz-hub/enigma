@@ -182,7 +182,7 @@ pub async fn on_use_item(ctx: &mut ConnectionContext, req: ClientPacket) -> Resu
     .await?;
     push::send_item_change_push(ctx, player_id, consumed, Vec::new(), Vec::new()).await?;
     if !reply.entry.is_empty() {
-        push::send_trade_order_red_dot(ctx, player_id).await?;
+        push::send_trade_order_red_dot(ctx).await?;
     }
     ctx.send_reply(CmdId::UseItemCmd, reply, 0, req.up_tag)
         .await

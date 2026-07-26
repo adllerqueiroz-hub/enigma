@@ -212,7 +212,7 @@ fn episode_exp_uses_cost_and_player_level_thresholds() {
     assert_eq!(failure_refund(episode, 2).currencies, vec![(4, 16)]);
     assert_eq!(database::db::game::player_infos::level_for_exp(199), 1);
     assert_eq!(database::db::game::player_infos::level_for_exp(200), 2);
-    let level_rewards = crate::logic::player_info::level_up_rewards(
+    let level_rewards = crate::logic::profile::level_up_rewards(
         database::db::game::player_infos::PlayerLevelChange { from: 1, to: 2 },
     );
     assert_eq!(level_rewards.currencies, vec![(3, 1), (4, 50)]);

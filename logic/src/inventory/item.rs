@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn use_items(
+pub(super) async fn use_items(
     db: &SqlitePool,
     player_id: i64,
     entries: Vec<M2qEntry>,
@@ -76,7 +76,7 @@ pub async fn use_items(
     ))
 }
 
-pub async fn use_insight_item(
+pub(super) async fn use_insight_item(
     db: &SqlitePool,
     player_id: i64,
     uid: i64,
@@ -142,7 +142,7 @@ pub async fn use_insight_item(
     ))
 }
 
-pub async fn mark_read_sub_type21(
+pub(super) async fn mark_read_sub_type21(
     db: &SqlitePool,
     player_id: i64,
     item_id: i32,

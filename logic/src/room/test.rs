@@ -63,9 +63,19 @@ async fn room_hero_update_replaces_owned_placement() {
         .unwrap(),
         48
     );
-    assert_eq!(reset_room(&pool, 13).await.unwrap().infos.len(), 6);
+    assert_eq!(
+        RoomManager::new(13)
+            .reset_room(&pool)
+            .await
+            .unwrap()
+            .infos
+            .len(),
+        6
+    );
 
-    let placed = update_room_hero_data(&pool, config::configs::get(), 13, &[3023])
+    let rooms = RoomManager::new(13);
+    let placed = rooms
+        .update_room_hero_data(&pool, config::configs::get(), &[3023])
         .await
         .unwrap();
     assert_eq!(placed.room_hero_datas.len(), 1);
@@ -74,7 +84,8 @@ async fn room_hero_update_replaces_owned_placement() {
     let refresh_delay = next_refresh_time - common::time::ServerTime::now_sec_i32();
     assert!((599..=600).contains(&refresh_delay));
     assert!(
-        update_room_hero_data(&pool, config::configs::get(), 13, &[999_999])
+        rooms
+            .update_room_hero_data(&pool, config::configs::get(), &[999_999])
             .await
             .is_err()
     );
@@ -91,7 +102,8 @@ async fn room_hero_update_replaces_owned_placement() {
         .create_hero(3022)
         .await
         .unwrap();
-    let expanded = update_room_hero_data(&pool, config::configs::get(), 13, &[3023, 3022])
+    let expanded = rooms
+        .update_room_hero_data(&pool, config::configs::get(), &[3023, 3022])
         .await
         .unwrap();
     let retained = expanded
@@ -110,7 +122,8 @@ async fn room_hero_update_replaces_owned_placement() {
     assert_eq!(added.skin, Some(302201));
     assert_eq!(added.current_faith, Some(0));
 
-    let gain = gain_room_hero_faith(&pool, config::configs::get(), 13, &[3023])
+    let gain = rooms
+        .gain_room_hero_faith(&pool, config::configs::get(), &[3023])
         .await
         .unwrap();
     assert_eq!(
@@ -132,13 +145,15 @@ async fn room_hero_update_replaces_owned_placement() {
         Some(next_refresh_time)
     );
 
-    let removed = update_room_hero_data(&pool, config::configs::get(), 13, &[3022])
+    let removed = rooms
+        .update_room_hero_data(&pool, config::configs::get(), &[3022])
         .await
         .unwrap();
     assert_eq!(removed.room_hero_datas.len(), 1);
     assert_eq!(removed.room_hero_datas[0].hero_id, Some(3022));
 
-    let cleared = update_room_hero_data(&pool, config::configs::get(), 13, &[])
+    let cleared = rooms
+        .update_room_hero_data(&pool, config::configs::get(), &[])
         .await
         .unwrap();
     assert!(cleared.room_hero_datas.is_empty());
@@ -175,7 +190,8 @@ async fn room_tasks_follow_confirmed_room_state() {
         .await
         .unwrap();
 
-    sync_room_tasks(&pool, config::configs::get(), 14)
+    RoomManager::new(14)
+        .sync_room_tasks(&pool, config::configs::get())
         .await
         .unwrap();
     let tasks = task_db::list_by_types(&pool, 14, vec![task_db::TaskType::Room.id()])
@@ -281,7 +297,8 @@ async fn switching_used_plan_replaces_room_and_preserves_previous_layout() {
     .await
     .unwrap();
 
-    switch_room_plan(&pool, config::configs::get(), 7, 0, 3)
+    RoomManager::new(7)
+        .switch_room_plan(&pool, config::configs::get(), 0, 3)
         .await
         .unwrap();
 
@@ -312,34 +329,35 @@ async fn switching_used_plan_replaces_room_and_preserves_previous_layout() {
 async fn generated_roads_receive_ids_and_follow_room_revert() {
     let pool = room_test_pool(8, "roads").await;
 
-    let generated = generate_roads(
-        &pool,
-        8,
-        Vec::new(),
-        vec![RoadInfo {
-            id: Some(0),
-            from_type: Some(1),
-            to_type: Some(2),
-            road_points: vec![sonettobuf::RoadPoint {
-                x: Some(3),
-                y: Some(4),
+    let rooms = RoomManager::new(8);
+    let generated = rooms
+        .generate_roads(
+            &pool,
+            Vec::new(),
+            vec![RoadInfo {
+                id: Some(0),
+                from_type: Some(1),
+                to_type: Some(2),
+                road_points: vec![sonettobuf::RoadPoint {
+                    x: Some(3),
+                    y: Some(4),
+                }],
+                ..Default::default()
             }],
-            ..Default::default()
-        }],
-    )
-    .await
-    .unwrap();
+        )
+        .await
+        .unwrap();
     assert_eq!(generated.valid_road_infos[0].id, Some(1));
-    room_confirm(&pool, 8).await.unwrap();
+    rooms.room_confirm(&pool).await.unwrap();
 
-    delete_roads(&pool, 8, vec![1]).await.unwrap();
+    rooms.delete_roads(&pool, vec![1]).await.unwrap();
     assert!(
         block_packages::get_roads(&pool, 8)
             .await
             .unwrap()
             .is_empty()
     );
-    room_revert(&pool, 8).await.unwrap();
+    rooms.room_revert(&pool).await.unwrap();
 
     let restored = block_packages::get_roads(&pool, 8).await.unwrap();
     assert_eq!(restored.len(), 1);
@@ -354,20 +372,17 @@ async fn character_interaction_uses_config_and_rewards_only_once() {
         .await
         .unwrap();
 
-    let started = start_character_interaction(&pool, config::configs::get(), 9, 1_301_501)
+    let rooms = RoomManager::new(9);
+    let started = rooms
+        .start_character_interaction(&pool, config::configs::get(), 1_301_501)
         .await
         .unwrap();
     assert_eq!(started.id, Some(1_301_501));
 
-    let completed = complete_character_interaction(
-        &pool,
-        config::configs::get(),
-        9,
-        1_301_501,
-        vec![1_000_101],
-    )
-    .await
-    .unwrap();
+    let completed = rooms
+        .complete_character_interaction(&pool, config::configs::get(), 1_301_501, vec![1_000_101])
+        .await
+        .unwrap();
     assert_eq!(completed.reply.id, Some(1_301_501));
     assert_eq!(completed.reply.select_ids, vec![1_000_101]);
     assert_eq!(
@@ -377,15 +392,15 @@ async fn character_interaction_uses_config_and_rewards_only_once() {
         1
     );
     assert!(
-        complete_character_interaction(
-            &pool,
-            config::configs::get(),
-            9,
-            1_301_501,
-            vec![1_000_101],
-        )
-        .await
-        .is_err()
+        rooms
+            .complete_character_interaction(
+                &pool,
+                config::configs::get(),
+                1_301_501,
+                vec![1_000_101],
+            )
+            .await
+            .is_err()
     );
 }
 
@@ -424,7 +439,8 @@ async fn copying_another_current_plan_applies_the_copied_layout() {
     .await
     .unwrap();
 
-    let copied = copy_other_room_plan(&pool, config::configs::get(), 11, 10, 0, 2, "Copied".into())
+    let copied = RoomManager::new(11)
+        .copy_other_room_plan(&pool, config::configs::get(), 10, 0, 2, "Copied".into())
         .await
         .unwrap();
 
@@ -433,35 +449,44 @@ async fn copying_another_current_plan_applies_the_copied_layout() {
     assert_eq!(blocks.len(), 1);
     assert_eq!((blocks[0].block_id, blocks[0].x, blocks[0].y), (101, 4, 5));
 
-    generate_roads(
-        &pool,
-        10,
-        Vec::new(),
-        vec![RoadInfo {
-            road_points: vec![sonettobuf::RoadPoint {
-                x: Some(1),
-                y: Some(2),
+    RoomManager::new(10)
+        .generate_roads(
+            &pool,
+            Vec::new(),
+            vec![RoadInfo {
+                road_points: vec![sonettobuf::RoadPoint {
+                    x: Some(1),
+                    y: Some(2),
+                }],
+                ..Default::default()
             }],
-            ..Default::default()
-        }],
-    )
-    .await
-    .unwrap();
-    let limits = room_plan_info(&pool, config::configs::get(), 10)
+        )
+        .await
+        .unwrap();
+    let rooms = RoomManager::new(10);
+    let limits = rooms
+        .room_plan_info(&pool, config::configs::get())
         .await
         .unwrap();
     assert_eq!(
         (limits.can_share_count, limits.can_use_share_count),
         (Some(10), Some(30))
     );
-    let share = share_room_plan(&pool, 10, 0).await.unwrap();
+    let share = rooms.share_room_plan(&pool, 0).await.unwrap();
     assert_eq!(share.can_share_count, Some(9));
     let share_code = share.share_code.unwrap();
-    let shared = get_room_share(&pool, share_code.clone()).await.unwrap();
+    let shared = rooms
+        .get_room_share(&pool, share_code.clone())
+        .await
+        .unwrap();
     assert_eq!(shared.nick_name.as_deref(), Some("owner"));
     assert_eq!(shared.road_infos.len(), 1);
     assert_eq!(
-        other_room_ob_info(&pool, 10).await.unwrap().share_code,
+        RoomManager::new(11)
+            .other_room_ob_info(&pool, 10)
+            .await
+            .unwrap()
+            .share_code,
         Some(share_code)
     );
 }
@@ -477,7 +502,8 @@ async fn episode_condition_uses_saved_dungeon_progress() {
             .unwrap();
     }
     assert!(
-        start_character_interaction(&pool, config::configs::get(), 12, 109_308_621)
+        RoomManager::new(12)
+            .start_character_interaction(&pool, config::configs::get(), 109_308_621)
             .await
             .is_err()
     );
@@ -490,7 +516,8 @@ async fn episode_condition_uses_saved_dungeon_progress() {
     .execute(&pool)
     .await
     .unwrap();
-    let started = start_character_interaction(&pool, config::configs::get(), 12, 109_308_621)
+    let started = RoomManager::new(12)
+        .start_character_interaction(&pool, config::configs::get(), 109_308_621)
         .await
         .unwrap();
     assert_eq!(started.id, Some(109_308_621));
@@ -512,8 +539,9 @@ async fn room_reddot_commands_hide_owned_entries() {
             .unwrap();
     }
 
-    hide_block_package_reddot(&pool, 13, 6).await.unwrap();
-    hide_building_reddot(&pool, 13, 5001).await.unwrap();
+    let rooms = RoomManager::new(13);
+    rooms.hide_block_package_reddot(&pool, 6).await.unwrap();
+    rooms.hide_building_reddot(&pool, 5001).await.unwrap();
 
     let dots = red_dots::get_red_dots_by_defines(
         &pool,

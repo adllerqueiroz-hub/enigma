@@ -1,4 +1,4 @@
-use crate::{error::AppError, player_info};
+use crate::{error::AppError, profile};
 use database::{
     db::game::{
         antiques, battle_pass, block_packages, buildings, cloths, currencies, equipment, items,
@@ -6,16 +6,21 @@ use database::{
         tasks::{self as task_db},
     },
     models::game::{
-        antiques::UserAntique,
         block_packages::{BlockPackage, SpecialBlock},
         buildings::Building,
         heros::UserHeroModel,
     },
 };
 use serde::{Deserialize, Serialize};
-use sonettobuf::PlayerCloth;
+use sonettobuf::{AntiqueInfo, PlayerCloth};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
+
+pub struct RewardedReply<T> {
+    pub reply: T,
+    pub rewards: AppliedRewards,
+    pub material_changes: Vec<(u32, u32, i32)>,
+}
 
 #[derive(Clone, Copy)]
 pub enum RewardMaterialType {
@@ -345,6 +350,14 @@ impl RewardManager {
         consume(tx, self.player_id, costs).await
     }
 
+    pub async fn apply(
+        self,
+        db: &SqlitePool,
+        rewards: RewardSet,
+    ) -> Result<AppliedRewards, AppError> {
+        apply(db, self.player_id, rewards).await
+    }
+
     pub async fn apply_in_transaction(
         self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -373,7 +386,7 @@ pub struct AppliedRewards {
     pub cloth_updates: Vec<PlayerCloth>,
     pub equip_uids: Vec<i64>,
     pub power_item_ids: Vec<i32>,
-    pub antiques: Vec<UserAntique>,
+    pub antiques: Vec<AntiqueInfo>,
     pub insight_item_ids: Vec<i32>,
     pub bp_scores: Vec<BpScoreGain>,
     pub room_buildings: Vec<Building>,
@@ -402,7 +415,7 @@ impl AppliedRewards {
 mod apply;
 mod parse;
 
-pub use apply::*;
+pub(crate) use apply::*;
 pub use parse::*;
 
 #[cfg(test)]

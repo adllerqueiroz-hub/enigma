@@ -1,6 +1,6 @@
 use super::*;
 
-pub async fn currency_list(
+pub(super) async fn currency_list(
     db: &SqlitePool,
     player_id: i64,
     currency_ids: Vec<i32>,
@@ -12,7 +12,7 @@ pub async fn currency_list(
     })
 }
 
-pub async fn exchange_same_currency(
+pub(super) async fn exchange_same_currency(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<ExchangeSameCurrencyReply, AppError> {
@@ -30,7 +30,7 @@ pub async fn exchange_same_currency(
     Ok(ExchangeSameCurrencyReply { currency_exchanges })
 }
 
-pub async fn pop_exchange_same_currency(
+pub(super) async fn pop_exchange_same_currency(
     db: &SqlitePool,
     player_id: i64,
     currency_ids: Vec<i32>,
@@ -40,7 +40,7 @@ pub async fn pop_exchange_same_currency(
     Ok(PopExchangeSameCurrencyReply { currency_ids })
 }
 
-pub async fn exchange_diamond(
+pub(super) async fn exchange_diamond(
     db: &SqlitePool,
     player_id: i64,
     amount: i32,

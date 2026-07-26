@@ -1,18 +1,18 @@
-use crate::error::AppError;
+use crate::{error::AppError, task::TaskEvent};
 use database::{
-    db::game::{achievements, dialogs, player_infos},
+    db::game::{achievements, antiques, dialogs, player_infos},
     models::game::achievements::Achievement,
 };
 use sonettobuf::{
-    GetAchievementInfoReply, GetDialogInfoReply, ReadNewAchievementReply, RecordDialogInfoReplay,
-    ShowAchievementReply, UpdateAchievementPush,
+    GetAchievementInfoReply, GetAntiqueInfoReply, GetDialogInfoReply, ReadNewAchievementReply,
+    RecordDialogInfoReplay, ShowAchievementReply, UpdateAchievementPush,
 };
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct CollectionManager {
-    player_id: i64,
+    pub(super) player_id: i64,
     achievements: HashMap<i32, Achievement>,
     dialogs: HashSet<i32>,
 }
@@ -24,6 +24,25 @@ impl CollectionManager {
             achievements: HashMap::new(),
             dialogs: HashSet::new(),
         }
+    }
+
+    pub async fn sync_achievements(&self, db: &SqlitePool) -> Result<(), AppError> {
+        achievements::reconcile_snapshot(db, self.player_id).await?;
+        Ok(())
+    }
+
+    pub async fn sync_task_event(
+        &mut self,
+        db: &SqlitePool,
+        event: TaskEvent,
+    ) -> Result<Vec<Achievement>, AppError> {
+        let achievements = achievements::sync_event(db, self.player_id, event).await?;
+        self.achievements.extend(
+            achievements
+                .iter()
+                .map(|achievement| (achievement.achievement_id, achievement.clone())),
+        );
+        Ok(achievements)
     }
 
     pub async fn achievement_info(
@@ -91,6 +110,16 @@ impl CollectionManager {
 
         Ok(RecordDialogInfoReplay {
             dialog_id: Some(dialog_id),
+        })
+    }
+
+    pub async fn antique_info(&self, db: &SqlitePool) -> Result<GetAntiqueInfoReply, AppError> {
+        Ok(GetAntiqueInfoReply {
+            antiques: antiques::get_user_antiques(db, self.player_id)
+                .await?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         })
     }
 }

@@ -13,17 +13,47 @@ pub struct MonthCardClaim {
     pub material_changes: Vec<(u32, u32, i32)>,
 }
 
-pub async fn charge_info(db: &SqlitePool, player_id: i64) -> Result<GetChargeInfoReply, AppError> {
+#[derive(Clone, Copy, Debug)]
+pub struct ChargeManager {
+    player_id: i64,
+}
+
+impl ChargeManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn charge_info(&self, db: &SqlitePool) -> Result<GetChargeInfoReply, AppError> {
+        charge_info(db, self.player_id).await
+    }
+
+    pub async fn month_card_info(
+        &self,
+        db: &SqlitePool,
+    ) -> Result<GetMonthCardInfoReply, AppError> {
+        month_card_info(db, self.player_id).await
+    }
+
+    pub async fn month_card_bonus(
+        &self,
+        db: &SqlitePool,
+        id: Option<i32>,
+    ) -> Result<MonthCardClaim, AppError> {
+        month_card_bonus(db, self.player_id, id).await
+    }
+}
+
+async fn charge_info(db: &SqlitePool, player_id: i64) -> Result<GetChargeInfoReply, AppError> {
     let settings = charges::get_sandbox_settings(db, player_id).await?;
 
     Ok(GetChargeInfoReply {
-        infos: store::charge_infos(db, player_id).await?,
+        infos: store::StoreManager::new(player_id).charge_infos(db).await?,
         sandbox_enable: settings.sandbox_enable.then_some(true),
         sandbox_balance: settings.sandbox_enable.then_some(settings.sandbox_balance),
     })
 }
 
-pub async fn month_card_info(
+async fn month_card_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<GetMonthCardInfoReply, AppError> {
@@ -32,7 +62,7 @@ pub async fn month_card_info(
     })
 }
 
-pub async fn month_card_bonus(
+async fn month_card_bonus(
     db: &SqlitePool,
     player_id: i64,
     id: Option<i32>,

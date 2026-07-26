@@ -1,6 +1,5 @@
 use crate::{
     error::AppError,
-    logic::turnback,
     net::{context::ConnectionContext, packet::ClientPacket},
     types::{material_get_approach::MaterialGetApproach, red_dot_id::RedDotId},
     util::push,
@@ -15,9 +14,12 @@ pub async fn on_get_turnback_info(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     GetTurnbackInfoRequest::decode(&req.data[..])?;
-    let reply = turnback::turnback_info(ctx.state.db, player_id, ctx.state.tables).await?;
+    let reply = ctx
+        .player()?
+        .turnback
+        .info(ctx.state.db, ctx.state.tables)
+        .await?;
     ctx.send_reply(CmdId::GetTurnbackInfoCmd, reply, 0, req.up_tag)
         .await
 }
@@ -26,10 +28,12 @@ pub async fn on_turnback_first_show(
     ctx: &mut ConnectionContext,
     req: ClientPacket,
 ) -> Result<(), AppError> {
-    let player_id = ctx.player()?.id;
     let msg = TurnbackFirstShowRequest::decode(&req.data[..])?;
-    let reply =
-        turnback::turnback_first_show(ctx.state.db, player_id, msg.id.unwrap_or_default()).await?;
+    let reply = ctx
+        .player()?
+        .turnback
+        .mark_first_show(ctx.state.db, msg.id.unwrap_or_default())
+        .await?;
     ctx.send_reply(CmdId::TurnbackFirstShowCmd, reply, 0, req.up_tag)
         .await
 }
@@ -40,8 +44,11 @@ pub async fn on_turnback_once_bonus(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = TurnbackOnceBonusRequest::decode(&req.data[..])?;
-    let claim =
-        turnback::turnback_once_bonus(ctx.state.db, player_id, msg.id.unwrap_or_default()).await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .claim_once_bonus(ctx.state.db, msg.id.unwrap_or_default())
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -61,13 +68,15 @@ pub async fn on_turnback_sign_in(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = TurnbackSignInRequest::decode(&req.data[..])?;
-    let claim = turnback::turnback_sign_in(
-        ctx.state.db,
-        player_id,
-        msg.id.unwrap_or_default(),
-        msg.day.unwrap_or_default(),
-    )
-    .await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .claim_sign_in(
+            ctx.state.db,
+            msg.id.unwrap_or_default(),
+            msg.day.unwrap_or_default(),
+        )
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -87,8 +96,11 @@ pub async fn on_get_turnback_daily_bonus(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = GetTurnbackDailyBonusRequest::decode(&req.data[..])?;
-    let claim =
-        turnback::turnback_daily_bonus(ctx.state.db, player_id, msg.id.unwrap_or_default()).await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .claim_daily_bonus(ctx.state.db, msg.id.unwrap_or_default())
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -108,14 +120,16 @@ pub async fn on_turnback_bonus_point(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = TurnbackBonusPointRequest::decode(&req.data[..])?;
-    let claim = turnback::turnback_bonus_point(
-        ctx.state.db,
-        player_id,
-        msg.id.unwrap_or_default(),
-        msg.bonus_point_id.unwrap_or_default(),
-        ctx.state.tables,
-    )
-    .await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .claim_bonus_point(
+            ctx.state.db,
+            msg.id.unwrap_or_default(),
+            msg.bonus_point_id.unwrap_or_default(),
+            ctx.state.tables,
+        )
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -134,13 +148,11 @@ pub async fn on_accept_all_turnback_bonus_point(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = AcceptAllTurnbackBonusPointRequest::decode(&req.data[..])?;
-    let claim = turnback::accept_all_turnback_bonus_point(
-        ctx.state.db,
-        player_id,
-        msg.id.unwrap_or_default(),
-        ctx.state.tables,
-    )
-    .await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .claim_all_bonus_points(ctx.state.db, msg.id.unwrap_or_default(), ctx.state.tables)
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,
@@ -173,8 +185,11 @@ pub async fn on_buy_double_bonus(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     let msg = BuyDoubleBonusRequest::decode(&req.data[..])?;
-    let claim =
-        turnback::buy_double_bonus(ctx.state.db, player_id, msg.id.unwrap_or_default()).await?;
+    let claim = ctx
+        .player()?
+        .turnback
+        .buy_double_bonus(ctx.state.db, msg.id.unwrap_or_default())
+        .await?;
     push::send_applied_reward_pushes(
         ctx,
         player_id,

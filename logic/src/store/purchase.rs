@@ -11,7 +11,7 @@ pub struct BuyGoodsResult {
     pub material_changes: Vec<(u32, u32, i32)>,
 }
 
-pub async fn buy_goods(
+pub(super) async fn buy_goods(
     db: &SqlitePool,
     player_id: i64,
     store_id: i32,

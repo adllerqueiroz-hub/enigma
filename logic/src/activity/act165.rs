@@ -333,9 +333,7 @@ fn act165_validate_keywords(
     keyword_ids: &[i32],
 ) -> Result<(), AppError> {
     let step = config::configs::get()
-        .activity165_step
-        .iter()
-        .find(|row| row.belong_story_id == story_id && row.step_id == step_id)
+        .activity165_step(story_id, step_id)
         .ok_or(AppError::InvalidRequest)?;
     let allowed = parse_i32_list(&step.optional_keyword_ids, '#');
     if keyword_ids.iter().all(|id| allowed.contains(id)) {
@@ -346,10 +344,7 @@ fn act165_validate_keywords(
 }
 
 fn act165_next_step(story_id: i32, step_id: i32, keyword_ids: &[i32]) -> Option<i32> {
-    let step = config::configs::get()
-        .activity165_step
-        .iter()
-        .find(|row| row.belong_story_id == story_id && row.step_id == step_id)?;
+    let step = config::configs::get().activity165_step(story_id, step_id)?;
     if step.answers_keyword_ids == "-1" {
         return None;
     }
@@ -420,9 +415,7 @@ fn act165_can_append_step(story_id: i32, state: &Act165State, next_step_id: i32)
 
 fn act165_answer_allows_empty(story_id: i32, step_id: i32, next_step_id: i32) -> bool {
     config::configs::get()
-        .activity165_step
-        .iter()
-        .find(|row| row.belong_story_id == story_id && row.step_id == step_id)
+        .activity165_step(story_id, step_id)
         .map(|step| {
             parse_i32_rows(&step.answers_keyword_ids)
                 .into_iter()
@@ -432,23 +425,20 @@ fn act165_answer_allows_empty(story_id: i32, step_id: i32, next_step_id: i32) ->
 }
 
 fn act165_is_ending_step(story_id: i32, step_id: i32) -> bool {
-    config::configs::get().activity165_step.iter().any(|row| {
-        row.belong_story_id == story_id && row.step_id == step_id && row.answers_keyword_ids == "-1"
-    })
+    config::configs::get()
+        .activity165_step(story_id, step_id)
+        .is_some_and(|row| row.answers_keyword_ids == "-1")
 }
 
 fn act165_branches(story_id: i32) -> Vec<Vec<i32>> {
     let ending_steps = config::configs::get()
-        .activity165_step
-        .iter()
-        .filter(|row| row.belong_story_id == story_id && row.answers_keyword_ids == "-1")
+        .activity165_steps(story_id)
+        .filter(|row| row.answers_keyword_ids == "-1")
         .map(|row| row.step_id)
         .collect::<HashSet<_>>();
 
     config::configs::get()
-        .activity165_step
-        .iter()
-        .filter(|row| row.belong_story_id == story_id)
+        .activity165_steps(story_id)
         .flat_map(|row| {
             parse_i32_rows(&row.next_step_condition_ids)
                 .into_iter()
