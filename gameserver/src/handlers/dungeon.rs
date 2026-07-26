@@ -224,11 +224,34 @@ pub async fn on_start_dungeon(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
-    ctx.player()?
-        .battle
-        .ensure_can_start(ctx.state.db, player_id)
-        .await?;
     let request = StartDungeonRequest::decode(&req.data[..])?;
+    if let Some(active) = ctx.player()?.battle.active.as_ref() {
+        if !dungeon::matches_saved_dungeon_start(active, &request) {
+            return Err(AppError::InvalidRequest);
+        }
+        if !request.is_restart.unwrap_or(false) {
+            return send_active_battle_start(ctx, req.up_tag).await;
+        }
+    }
+
+    match dungeon::restore_active_fight(ctx.state.db, player_id).await? {
+        dungeon::ActiveFightRestore::Missing => {
+            if ctx.player()?.battle.active.is_some() {
+                return Err(AppError::InvalidRequest);
+            }
+        }
+        dungeon::ActiveFightRestore::Active(active) => {
+            if !dungeon::matches_saved_dungeon_start(&active, &request) {
+                return Err(AppError::InvalidRequest);
+            }
+            ctx.player_mut()?.battle.active = Some(*active);
+            return send_active_battle_start(ctx, req.up_tag).await;
+        }
+        dungeon::ActiveFightRestore::Refunded(refund) => {
+            ctx.player_mut()?.battle.active = None;
+            send_refund(ctx, player_id, *refund).await?;
+        }
+    }
 
     let chapter_id = request
         .chapter_id
@@ -300,8 +323,6 @@ pub async fn on_start_dungeon(
             &dungeon::episode_cost(episode_cfg, multiplier),
         )
         .await?;
-    let reply = active.start_reply();
-    let cards = active.card_info_push();
     let battle = &mut ctx.player_mut()?.battle;
     battle.pending_record = None;
     battle.active = Some(active);
@@ -314,9 +335,7 @@ pub async fn on_start_dungeon(
         cost.material_changes,
     )
     .await?;
-    ctx.send_reply(CmdId::StartDungeonCmd, reply, 0, req.up_tag)
-        .await?;
-    ctx.notify(CmdId::CardInfoPushCmd, cards).await
+    send_active_battle_start(ctx, req.up_tag).await
 }
 
 pub async fn on_reconnect_fight(
@@ -325,44 +344,16 @@ pub async fn on_reconnect_fight(
 ) -> Result<(), AppError> {
     let player_id = ctx.player()?.id;
     ReconnectFightRequest::decode(&req.data[..])?;
-    let mut refund = None;
-
-    if ctx.player()?.battle.active.is_none()
-        && let Some(record) = battle_db::load_active_fight(ctx.state.db, player_id).await?
-    {
-        let fight_id = record.id;
-        let episode_id = record.episode_id;
-        let multiplication = record.multiplication;
-        let entry_cost = record.entry_cost.clone();
-        match ActiveBattle::restore(ctx.state.db, player_id, record).await {
-            Ok(active) => ctx.player_mut()?.battle.active = Some(active),
-            Err(AppError::InvalidBattleCheckpoint(error)) => {
-                tracing::warn!(player_id, fight_id, %error, "refunding invalid fight checkpoint");
-                let entry_cost = if entry_cost.is_empty() {
-                    let episode = configs::get()
-                        .episode
-                        .get(episode_id)
-                        .ok_or(AppError::InvalidRequest)?;
-                    dungeon::failure_refund(episode, multiplication)
-                } else {
-                    serde_json::from_str(&entry_cost)
-                        .map_err(|error| AppError::InvalidBattleCheckpoint(error.to_string()))?
-                };
-                refund = Some(
-                    dungeon::settle_checkpoint_refund(
-                        ctx.state.db,
-                        player_id,
-                        fight_id,
-                        entry_cost,
-                    )
-                    .await?,
-                );
+    if ctx.player()?.battle.active.is_none() {
+        match dungeon::restore_active_fight(ctx.state.db, player_id).await? {
+            dungeon::ActiveFightRestore::Missing => {}
+            dungeon::ActiveFightRestore::Active(active) => {
+                ctx.player_mut()?.battle.active = Some(*active);
             }
-            Err(error) => return Err(error),
+            dungeon::ActiveFightRestore::Refunded(refund) => {
+                send_refund(ctx, player_id, *refund).await?;
+            }
         }
-    }
-    if let Some(refund) = refund {
-        send_refund(ctx, player_id, refund).await?;
     }
     let reply = ctx
         .player()?
@@ -373,6 +364,21 @@ pub async fn on_reconnect_fight(
         .unwrap_or_default();
     ctx.send_reply(CmdId::ReconnectFightCmd, reply, 0, req.up_tag)
         .await
+}
+
+async fn send_active_battle_start(ctx: &mut ConnectionContext, up_tag: u8) -> Result<(), AppError> {
+    let (reply, cards) = {
+        let active = ctx
+            .player()?
+            .battle
+            .active
+            .as_ref()
+            .ok_or(AppError::InvalidRequest)?;
+        (active.start_reply(), active.card_info_push())
+    };
+    ctx.send_reply(CmdId::StartDungeonCmd, reply, 0, up_tag)
+        .await?;
+    ctx.notify(CmdId::CardInfoPushCmd, cards).await
 }
 
 pub async fn on_instruction_dungeon_info(

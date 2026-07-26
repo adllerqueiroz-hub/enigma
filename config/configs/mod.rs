@@ -251,7 +251,6 @@ pub mod instruction_level;
 pub mod instruction_topic;
 pub mod item;
 pub mod language_en;
-pub mod language_server_en;
 pub mod magic_circle;
 pub mod manufacture_building;
 pub mod manufacture_building_level;
@@ -642,7 +641,6 @@ pub struct GameDB {
     pub instruction_topic: instruction_topic::InstructionTopicTable,
     pub item: item::ItemTable,
     pub language_en: language_en::LanguageEnTable,
-    pub language_server_en: language_server_en::LanguageServerEnTable,
     pub magic_circle: magic_circle::MagicCircleTable,
     pub manufacture_building: manufacture_building::ManufactureBuildingTable,
     pub manufacture_building_level: manufacture_building_level::ManufactureBuildingLevelTable,
@@ -1535,9 +1533,6 @@ impl GameDB {
         let language_en = language_en::LanguageEnTable::load(
             &format!("{}/language_en.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load language_en.json: {}", e))?;
-        let language_server_en = language_server_en::LanguageServerEnTable::load(
-            &format!("{}/language_server_en.json", data_dir)
-        ).map_err(|e| anyhow::anyhow!("Failed to load language_server_en.json: {}", e))?;
         let magic_circle = magic_circle::MagicCircleTable::load(
             &format!("{}/magic_circle.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load magic_circle.json: {}", e))?;
@@ -2196,7 +2191,6 @@ impl GameDB {
             instruction_topic,
             item,
             language_en,
-            language_server_en,
             magic_circle,
             manufacture_building,
             manufacture_building_level,

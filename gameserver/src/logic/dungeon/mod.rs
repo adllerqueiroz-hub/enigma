@@ -28,6 +28,7 @@ mod info;
 mod outcome;
 mod progression;
 mod record;
+mod restore;
 mod settlement;
 
 pub use assist::*;
@@ -35,6 +36,7 @@ pub use info::*;
 pub use outcome::*;
 pub use progression::*;
 pub use record::*;
+pub use restore::*;
 pub use settlement::*;
 
 #[cfg(test)]

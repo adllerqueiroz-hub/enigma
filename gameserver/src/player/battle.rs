@@ -544,6 +544,8 @@ mod tests {
                             .await
                             .unwrap();
                         let expected = active.reconnect_reply();
+                        let expected_start = active.start_reply();
+                        let expected_cards = active.card_info_push();
                         active.begin_round(BeginRoundRequest::default()).unwrap();
                         let fight_id = active.fight_id.unwrap();
                         assert!(matches!(
@@ -571,6 +573,8 @@ mod tests {
                         let restored = ActiveBattle::restore(&pool, 9, record).await.unwrap();
 
                         assert_eq!(restored.reconnect_reply(), expected);
+                        assert_eq!(restored.start_reply(), expected_start);
+                        assert_eq!(restored.card_info_push(), expected_cards);
                         assert!(restored.oper_records().is_empty());
                         battle::finish_fight_instance(&pool, 9, fight_id)
                             .await

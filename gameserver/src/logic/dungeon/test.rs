@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn saved_start_matches_with_or_without_the_restart_marker() {
+    let start = sonettobuf::StartDungeonRequest {
+        chapter_id: Some(301),
+        episode_id: Some(10002),
+        fight_group: Some(Default::default()),
+        multiplication: Some(1),
+        ..Default::default()
+    };
+    let active = ActiveBattle {
+        start_request: Some(start.clone()),
+        ..Default::default()
+    };
+    let mut restart = start;
+
+    assert!(matches_saved_dungeon_start(&active, &restart));
+    restart.is_restart = Some(true);
+    assert!(matches_saved_dungeon_start(&active, &restart));
+    restart.episode_id = Some(10003);
+    assert!(!matches_saved_dungeon_start(&active, &restart));
+
+    restart.episode_id = Some(10002);
+    let tower = ActiveBattle {
+        start_request: active.start_request.clone(),
+        tower_context: Some(::battle::tower::BattleContext {
+            tower_type: 1,
+            tower_id: 2,
+            layer_id: 3,
+            difficulty: 4,
+            talent_plan_id: 5,
+        }),
+        ..Default::default()
+    };
+    assert!(!matches_saved_dungeon_start(&tower, &restart));
+}
+
+#[test]
 fn abort_push_carries_the_abort_result_and_required_fight_group() {
     let push = abort_end_fight(&ActiveBattle {
         fight_id: Some(42),
