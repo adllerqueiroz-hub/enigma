@@ -128,8 +128,9 @@ Example: What does this do.
 
 ## Thanks
 
-Using [https://github.com/Luotianyi-0712](Luotianyi-0712) original script to auto build new updates
-[https://github.com/Yoshk4e](Yoshk4e) for helping on figuring the custom protocol needed to login on the original server
+- Using [Luotianyi-0712](https://github.com/Luotianyi-0712) original script to auto build new updates
+
+- [Yoshk4e](https://github.com/Yoshk4e) for helping on figuring the custom protocol needed to login on the original server
 
 ---
 
