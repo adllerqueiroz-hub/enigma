@@ -8,4 +8,5 @@ Todo.txt
 /changelog/
 config.toml
 !common/Config.toml
+!.cargo/config.toml
 /data/
