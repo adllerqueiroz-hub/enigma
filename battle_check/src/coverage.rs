@@ -411,7 +411,6 @@ fn display_name(db: &config::GameDB, primary: &str, fallback: &str, id: i32) -> 
         .map(|value| {
             db.language_en
                 .get(value)
-                .or_else(|| db.language_server_en.get(value))
                 .unwrap_or(value)
                 .to_owned()
         })

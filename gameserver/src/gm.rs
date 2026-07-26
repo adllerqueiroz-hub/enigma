@@ -869,11 +869,7 @@ fn catalog_entry(
 }
 
 fn resolve_name(tables: &config::GameDB, raw_name: &str) -> String {
-    let resolved = tables
-        .language_en
-        .get(raw_name)
-        .or_else(|| tables.language_server_en.get(raw_name))
-        .unwrap_or(raw_name);
+    let resolved = tables.language_en.get(raw_name).unwrap_or(raw_name);
 
     clean_name(resolved)
 }

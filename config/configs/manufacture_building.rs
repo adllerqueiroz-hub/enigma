@@ -51,7 +51,7 @@ impl ManufactureBuildingTable {
 
         for (idx, record) in records.iter().enumerate() {
             by_id.insert(record.id, idx);
-            by_group.entry(record.upgrade_group_id).or_default().push(idx);
+            by_group.entry(record.trade_group_id).or_default().push(idx);
         }
 
         Ok(Self {

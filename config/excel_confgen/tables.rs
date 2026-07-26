@@ -162,7 +162,6 @@ pub const FILTER_TABLES: &[&str] = &[
     "same_currency_exchange",
     "magic_circle",
     "language_en",
-    "language_server_en",
     "const",
     "act139_dispatch_task",
     "act139_explore_task",

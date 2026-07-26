@@ -732,10 +732,7 @@ pub(super) fn configured_skill_ids(raw: &str, db: &config::GameDB) -> Vec<i32> {
 }
 
 fn localized<'a>(db: &'a config::GameDB, value: &'a str) -> &'a str {
-    db.language_en
-        .get(value)
-        .or_else(|| db.language_server_en.get(value))
-        .unwrap_or(value)
+    db.language_en.get(value).unwrap_or(value)
 }
 
 fn numeric_ids(raw: &str) -> Vec<i32> {
