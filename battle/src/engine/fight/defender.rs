@@ -161,7 +161,7 @@ impl Defender {
             position: Some(position),
             entity_type: Some(2),
             user_id: Some(0),
-            ex_point: Some(0),
+            ex_point: Some(monster.initial_unique_skill_point),
             level: Some(level),
             current_hp: attr.hp,
             attr: Some(attr),
@@ -264,6 +264,21 @@ mod tests {
 
         assert_eq!(monster.ex_skill, Some(40_231_331));
         assert_eq!(monster.ex_skill_level, Some(0));
+    }
+
+    #[tokio::test]
+    async fn monster_starts_with_configured_moxie() {
+        crate::test_support::init_config();
+
+        let setup = Defender::get(10001, 2).await.unwrap();
+        let monster = setup
+            .team
+            .entitys
+            .iter()
+            .find(|entity| entity.model_id == Some(100104))
+            .unwrap();
+
+        assert_eq!(monster.ex_point, Some(5));
     }
 
     #[tokio::test]
