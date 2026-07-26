@@ -58,12 +58,6 @@ jobs:
           echo "JSON_DATA_DIR=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         shell: pwsh
 
-      - name: Fix config file case (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cp common/Config.toml common/config.toml
-        shell: bash
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:

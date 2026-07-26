@@ -1,0 +1,23 @@
+[server]
+host = "127.0.0.1"
+dns = "localhost"
+http_port = 21000
+game_port = 23301
+
+[muip]
+host = "0.0.0.0"
+port = 21100
+token = "1999"
+gm_host = "127.0.0.1"
+gm_port = 21101
+
+[muip_gm]
+host = "127.0.0.1"
+port = 21101
+enabled = true
+
+[paths]
+excel_data = "./data/excel2json"
+
+[database]
+path = "./db/sonetto.db"

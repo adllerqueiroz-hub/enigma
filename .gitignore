@@ -7,4 +7,5 @@
 Todo.txt
 /changelog/
 config.toml
+!common/Config.toml
 /data/
