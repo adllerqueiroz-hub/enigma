@@ -1,0 +1,135 @@
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+const CONFIG_TEMPLATE: &str = include_str!("../Config.toml");
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub server: ServerSettings,
+    #[serde(default)]
+    pub muip: MuipConfig,
+    #[serde(default)]
+    pub muip_gm: MuipGmConfig,
+    pub paths: PathConfig,
+    pub database: DatabaseConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSettings {
+    pub host: String,
+    pub dns: String,
+    pub http_port: u16,
+    pub game_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuipConfig {
+    pub host: String,
+    pub port: u16,
+    pub token: String,
+    pub gm_host: String,
+    pub gm_port: u16,
+}
+
+impl Default for MuipConfig {
+    fn default() -> Self {
+        Self {
+            host: "0.0.0.0".to_string(),
+            port: 21100,
+            token: "1999".to_string(),
+            gm_host: "127.0.0.1".to_string(),
+            gm_port: 21101,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MuipGmConfig {
+    pub host: String,
+    pub port: u16,
+    pub enabled: bool,
+}
+
+impl Default for MuipGmConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 21101,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathConfig {
+    pub excel_data: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseConfig {
+    pub path: PathBuf,
+}
+
+impl ServerConfig {
+    pub fn load_or_create(path: &Path) -> anyhow::Result<Self> {
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, CONFIG_TEMPLATE)?;
+        }
+
+        let content = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    pub fn resolve_paths(&mut self, config_dir: &Path) {
+        if self.database.path.is_relative() {
+            self.database.path = config_dir.join(&self.database.path);
+        }
+        if self.paths.excel_data.is_relative() {
+            self.paths.excel_data = config_dir.join(&self.paths.excel_data);
+        }
+    }
+
+    pub fn validate_paths(&self) -> anyhow::Result<()> {
+        if !self.paths.excel_data.exists() {
+            anyhow::bail!(
+                "excel data directory not found: {}",
+                self.paths.excel_data.display()
+            );
+        }
+
+        if let Some(parent) = self.database.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn load_or_create_writes_missing_config() {
+        let name = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("enigma-config-{name}"));
+        let path = dir.join("config.toml");
+
+        let cfg = ServerConfig::load_or_create(&path).unwrap();
+
+        assert!(path.exists());
+        assert_eq!(cfg.server.http_port, 21000);
+        assert_eq!(cfg.server.game_port, 23301);
+        assert_eq!(cfg.muip.port, 21100);
+        assert_eq!(cfg.muip_gm.port, 21101);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

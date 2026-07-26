@@ -1,0 +1,218 @@
+use crate::engine::{
+    manager::{
+        buff::{
+            BuffAmount, BuffChangeDuration, BuffChildUidReservation, BuffCommand, BuffConsume,
+            BuffConvert, BuffDispel, BuffGrant, BuffGrantChild, BuffRemove, BuffRemoveSelector,
+            BuffReplace, BuffSelector, BuffSetAmount, BuffStatus, CommandOrigin, DepletedBuff,
+        },
+        card::{CardCommand, CardConsumeForEffect},
+        eureka::{EUREKA_RESOURCE_ID, EurekaChange, EurekaCommand},
+        shield::ShieldCommand,
+    },
+    skill::{
+        behavior::{
+            BehaviorOpContext,
+            classify::BehaviorKind,
+            registry::{BehaviorHandler, OutputOwner},
+        },
+        buff_act::{is_kind, registry::BuffActKind},
+        effect::ParsedBehavior,
+        rule::{
+            RuleDomain, RuleReferences,
+            output::{BattleCommand, RuleOp},
+        },
+        target::{TargetRequest, TargetResolver},
+    },
+};
+
+#[cfg(test)]
+use crate::engine::{manager::BattleManagers, skill::target::TargetPool};
+
+mod application;
+mod copy;
+mod dispel;
+mod distribute;
+mod grant;
+mod layer;
+mod poison;
+mod replace;
+
+pub(super) use super::{command_origin, registry};
+use application::*;
+use copy::copy_status_ops;
+pub(super) use copy::supports_status_copy;
+use dispel::{damage_window_remove_ops, dispel_commands, sort_buff_by_hp_ops, spread_buff_ops};
+pub(super) use dispel::{
+    supports_dispel, supports_disperse_force, supports_exact_buff_dispel, supports_status_dispel,
+};
+use distribute::*;
+pub use grant::random_buff_pool;
+use grant::{grant_command, random_pool_grant_commands};
+use layer::*;
+use poison::*;
+use replace::*;
+
+pub(super) struct Handler;
+
+impl BehaviorHandler for Handler {
+    fn emit_ops(
+        mut context: BehaviorOpContext<'_>,
+        behavior: &ParsedBehavior,
+    ) -> Option<Vec<RuleOp>> {
+        match behavior.spec.kind {
+            BehaviorKind::AddTargetBuffByPoison => {
+                add_target_buff_by_poison_ops(&context, behavior)
+            }
+            BehaviorKind::AddBuffRanId => random_pool_grant_commands(&mut context, behavior),
+            BehaviorKind::AddBuffByHeroId => hero_grant_command(&context, behavior)
+                .map(|command| vec![RuleOp::Command(BattleCommand::Buff(command))]),
+            BehaviorKind::DisperseForce2 => damage_window_remove_ops(context.target_uid, behavior),
+            BehaviorKind::Disperse1
+            | BehaviorKind::Disperse2
+            | BehaviorKind::Purify1
+            | BehaviorKind::PurifyX => {
+                dispel_commands(context.target_uid, behavior).map(|commands| {
+                    commands
+                        .into_iter()
+                        .map(|command| RuleOp::Command(BattleCommand::Buff(command)))
+                        .collect()
+                })
+            }
+            BehaviorKind::ReplaceBuff2 => replace_buff2_ops(&context, behavior),
+            BehaviorKind::ConsumePowerAddBuff => consume_power_add_buff_ops(&context, behavior),
+            BehaviorKind::ReplaceBuff => replace_buff_ops(&context, behavior),
+            BehaviorKind::ConsumePowerAddMultiBuff1 => {
+                consume_power_add_multi_buff_ops(&context, behavior)
+            }
+            BehaviorKind::AddBuffBasedOnEnemyBurnUseCount => {
+                add_buff_from_enemy_burn_ops(&context, behavior)
+            }
+            BehaviorKind::BuffSpread => spread_buff_ops(&context, behavior),
+            BehaviorKind::BuffSortByHp => sort_buff_by_hp_ops(&context, behavior),
+            BehaviorKind::AddBuffByBuffLayerRange => {
+                add_buff_by_layer_range_ops(&context, behavior)
+            }
+            BehaviorKind::ConsumeBuffLayerAndOtherAddBuff => {
+                consume_buff_layer_and_team_grant_ops(&mut context, behavior)
+            }
+            BehaviorKind::DistributeBuff => distribute_buff_ops(&context, behavior),
+            BehaviorKind::SelfRandomCopyBuffs => copy_status_ops(&mut context, behavior),
+            BehaviorKind::ConsumeCardAddBuff => {
+                consume_card_grant_ops(&context, context.target_uid, behavior)
+            }
+            BehaviorKind::ConsumeBuffByTypeId | BehaviorKind::ConsumeBuffByTypeId2 => {
+                consume_buff_command(context.target_uid, behavior)
+                    .map(|command| vec![RuleOp::Command(BattleCommand::Buff(command))])
+            }
+            BehaviorKind::AddBuffDuration => {
+                change_duration_command(context.target_uid, behavior, BuffSelector::ExactId)
+                    .map(|command| vec![RuleOp::Command(BattleCommand::Buff(command))])
+            }
+            BehaviorKind::AddBuffRound => {
+                change_duration_command(context.target_uid, behavior, BuffSelector::IdOrType)
+                    .map(|command| vec![RuleOp::Command(BattleCommand::Buff(command))])
+            }
+            BehaviorKind::AddBuff | BehaviorKind::AddBuffPowerUse | BehaviorKind::AddBuffRound2 => {
+                shield_grant_ops(&context, behavior)
+                    .or_else(|| heat_scale_snapshot_grant_ops(&context, behavior))
+                    .or_else(|| team_energy_snapshot_grant_ops(&context, behavior))
+                    .or_else(|| {
+                        grant_command(
+                            context.source_uid,
+                            context.target_uid,
+                            context.transfer_count.max(0) as u32,
+                            behavior,
+                        )
+                        .map(|command| vec![RuleOp::Command(BattleCommand::Buff(command))])
+                    })
+            }
+            BehaviorKind::RemoveBuffToAddBuff => remove_buff_to_add_buff_ops(&context, behavior),
+            _ => None,
+        }
+    }
+
+    fn output_owner(behavior: &ParsedBehavior, index: usize) -> Option<OutputOwner> {
+        matches!(
+            (behavior.spec.kind, index),
+            (BehaviorKind::ConsumePowerAddBuff, 0)
+        )
+        .then_some(OutputOwner::Parent)
+    }
+
+    fn references(behavior: &ParsedBehavior) -> RuleReferences {
+        references(behavior)
+    }
+}
+
+fn references(behavior: &ParsedBehavior) -> RuleReferences {
+    let buffs = match behavior.spec.kind {
+        BehaviorKind::AddBuff
+        | BehaviorKind::AddBuffPowerUse
+        | BehaviorKind::AddBuffRound
+        | BehaviorKind::AddBuffRound2
+        | BehaviorKind::ConsumeCardAddBuff => behavior.arg(0).into_iter().collect(),
+        BehaviorKind::AddTargetBuffByPoison => behavior.arg(2).into_iter().collect(),
+        BehaviorKind::ConsumePowerAddBuff => behavior.arg_list(1).unwrap_or_default(),
+        BehaviorKind::ConsumePowerAddMultiBuff1 => [2, 5, 6]
+            .into_iter()
+            .filter_map(|index| behavior.arg(index))
+            .collect(),
+        BehaviorKind::RemoveBuffToAddBuff => [0, 1]
+            .into_iter()
+            .filter_map(|index| behavior.arg(index))
+            .collect(),
+        // AddBuffDuration selects an existing buff by id or type; it does not
+        // introduce a concrete buff dependency.
+        BehaviorKind::AddBuffDuration => Vec::new(),
+        // 60010 owns an id-or-type selector, so its operand is not necessarily
+        // a concrete buff dependency (for example type 8112).
+        BehaviorKind::DisperseForce2 => Vec::new(),
+        BehaviorKind::BuffSortByHp | BehaviorKind::BuffSpread => {
+            behavior.arg(0).into_iter().collect()
+        }
+        BehaviorKind::ReplaceBuff => [0, 2, 3]
+            .into_iter()
+            .filter_map(|index| behavior.arg(index))
+            .collect(),
+        BehaviorKind::ReplaceBuff2 => behavior
+            .arg_list(0)
+            .into_iter()
+            .flatten()
+            .chain(behavior.arg(1))
+            .collect(),
+        BehaviorKind::AddBuffBasedOnEnemyBurnUseCount => behavior.arg(0).into_iter().collect(),
+        BehaviorKind::AddBuffByBuffLayerRange => behavior
+            .arg(0)
+            .into_iter()
+            .chain(behavior.arg_list(1).into_iter().flatten())
+            .collect(),
+        BehaviorKind::ConsumeBuffLayerAndOtherAddBuff => [1, 3]
+            .into_iter()
+            .filter_map(|index| behavior.arg(index))
+            .collect(),
+        BehaviorKind::DistributeBuff => behavior.args.clone(),
+        BehaviorKind::AddBuffByHeroId => behavior
+            .raw_args
+            .iter()
+            .skip(1)
+            .flat_map(|raw| raw.split(','))
+            .filter_map(|raw| raw.trim().parse().ok())
+            .collect(),
+        _ => Vec::new(),
+    };
+    RuleReferences {
+        skills: Vec::new(),
+        buffs,
+        models: Vec::new(),
+    }
+}
+
+fn pool_buff_ids(raw: &str) -> Vec<i32> {
+    raw.split('#')
+        .filter_map(|entry| entry.split(',').next()?.trim().parse().ok())
+        .filter(|buff_id| *buff_id > 0)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests;

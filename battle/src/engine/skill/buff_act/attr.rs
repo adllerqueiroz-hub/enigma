@@ -1,0 +1,130 @@
+use crate::engine::{
+    entity::attr::AttrId,
+    manager::{
+        BattleManagers,
+        buff::ActiveBuffFeature,
+        hp::{HpCommand, MaxHpAdjust},
+    },
+    skill::{
+        buff_act::{self, registry::BuffActKind},
+        rule::output::{BattleCommand, RuleOp},
+    },
+};
+
+pub fn max_hp_rule_op(
+    managers: &BattleManagers,
+    feature: &ActiveBuffFeature,
+    amount_delta: i32,
+) -> Option<RuleOp> {
+    if !buff_act::is_kind(feature, BuffActKind::Attr) {
+        return None;
+    }
+    let [_, raw_attr_id, permille] = feature.values.as_slice() else {
+        return None;
+    };
+    if AttrId::from_raw(*raw_attr_id) != Some(AttrId::Hp) || amount_delta == 0 {
+        return None;
+    }
+    let origin = buff_act::feature_command_origin(feature)?;
+    let after_permille = managers
+        .buff
+        .active_features(&managers.hp)
+        .iter()
+        .filter(|active| active.owner_uid == feature.owner_uid)
+        .filter_map(hp_permille)
+        .sum::<i32>();
+    let before_permille = after_permille.saturating_sub(permille.saturating_mul(amount_delta));
+    let base_max = managers.hp.base_max(feature.owner_uid);
+    let delta = scaled_hp(base_max, after_permille) - scaled_hp(base_max, before_permille);
+    (delta != 0).then_some(RuleOp::Command(BattleCommand::Hp(HpCommand::AdjustMax(
+        MaxHpAdjust {
+            origin,
+            source_uid: feature.source_uid,
+            target_uid: feature.owner_uid,
+            delta,
+        },
+    ))))
+}
+
+pub fn transaction_rule_ops(
+    managers: &BattleManagers,
+    event: &crate::engine::event::payload::BattleEvent,
+) -> Vec<(ActiveBuffFeature, RuleOp)> {
+    super::attribute_transaction_rule_ops(managers, event, BuffActKind::Attr, max_hp_rule_op)
+}
+
+fn hp_permille(feature: &ActiveBuffFeature) -> Option<i32> {
+    if !buff_act::is_kind(feature, BuffActKind::Attr) {
+        return None;
+    }
+    let [_, raw_attr_id, permille] = feature.values.as_slice() else {
+        return None;
+    };
+    (AttrId::from_raw(*raw_attr_id) == Some(AttrId::Hp))
+        .then_some(permille.saturating_mul(feature.amount))
+}
+
+fn scaled_hp(base_max: i32, permille: i32) -> i32 {
+    ((i64::from(base_max) * i64::from(permille)) / 1000) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use sonettobuf::{BuffInfo, Fight, FightEntityInfo, FightTeam, HeroAttribute};
+
+    use super::*;
+    use crate::engine::{event::bus::EventBus, runtime::executor::execute_rule_op};
+
+    #[test]
+    fn configured_hp_rate_emits_one_max_hp_command() {
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(1_000),
+                    attr: Some(HeroAttribute {
+                        hp: Some(1_000),
+                        ..Default::default()
+                    }),
+                    buffs: vec![BuffInfo {
+                        uid: Some(20),
+                        buff_id: Some(70015),
+                        from_uid: Some(10),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut managers = BattleManagers::seeded(&fight);
+        let feature = ActiveBuffFeature {
+            owner_uid: 10,
+            source_uid: 10,
+            buff_uid: 20,
+            buff_id: 70015,
+            amount: 1,
+            team_type: 1,
+            owner_alive: true,
+            act_type: "Attr".to_owned(),
+            effect_time: 0,
+            effect_condition: 0,
+            raw: "100#101#500".to_owned(),
+            values: vec![100, 101, 500],
+        };
+        let output = max_hp_rule_op(&managers, &feature, 1).unwrap();
+
+        execute_rule_op(&mut managers, &mut EventBus::default(), output).unwrap();
+
+        assert_eq!(managers.hp.max(10), 1_500);
+        assert_eq!(managers.hp.current(10), 1_500);
+    }
+
+    #[test]
+    fn aggregate_rate_keeps_fractional_progress_between_stacks() {
+        assert_eq!(scaled_hp(18_148, 150) - scaled_hp(18_148, 120), 545);
+        assert_eq!(scaled_hp(18_148, 120) - scaled_hp(18_148, 90), 544);
+    }
+}

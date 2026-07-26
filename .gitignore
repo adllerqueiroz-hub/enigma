@@ -1,0 +1,10 @@
+*.proto
+/db/
+/target/
+/battle_preview/fixtures/
+/docs/
+/trace/
+Todo.txt
+/changelog/
+config.toml
+/data/

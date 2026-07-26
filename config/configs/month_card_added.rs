@@ -1,0 +1,74 @@
+// Auto-generated from JSON data
+// Do not edit manually
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonthCardAdded {
+    pub days: i32,
+    pub id: i32,
+    #[serde(rename = "itemSource")]
+    pub item_source: i32,
+    pub limit: i32,
+    pub month_id: i32,
+    #[serde(rename = "onceBonus")]
+    pub once_bonus: String,
+    #[serde(rename = "overMaxDayBonus")]
+    pub over_max_day_bonus: String,
+    #[serde(rename = "signatureDays")]
+    pub signature_days: i32,
+    #[serde(rename = "signingItem")]
+    pub signing_item: i32,
+}
+use std::collections::HashMap;
+
+pub struct MonthCardAddedTable {
+    records: Vec<MonthCardAdded>,
+    by_id: HashMap<i32, usize>,
+}
+
+impl MonthCardAddedTable {
+    pub fn load(path: &str) -> anyhow::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+
+        let records: Vec<MonthCardAdded> = if let Some(array) = value.as_array() {
+            if array.len() >= 2 && array[1].is_array() {
+                serde_json::from_value(array[1].clone())?
+            } else {
+                serde_json::from_value(value)?
+            }
+        } else {
+            serde_json::from_value(value)?
+        };
+
+        let mut by_id = HashMap::with_capacity(records.len());
+
+        for (idx, record) in records.iter().enumerate() {
+            by_id.insert(record.id, idx);
+        }
+
+        Ok(Self {
+            records,
+            by_id,
+        })
+    }
+
+    #[inline]
+    pub fn get(&self, id: i32) -> Option<&MonthCardAdded> {
+        self.by_id.get(&id).map(|&i| &self.records[i])
+    }
+
+    #[inline]
+    pub fn all(&self) -> &[MonthCardAdded] {
+        &self.records
+    }
+
+    #[inline]
+    pub fn iter(&self) -> std::slice::Iter<'_, MonthCardAdded> {
+        self.records.iter()
+    }
+
+    pub fn len(&self) -> usize { self.records.len() }
+    pub fn is_empty(&self) -> bool { self.records.is_empty() }
+}

@@ -1,0 +1,1270 @@
+use super::*;
+use crate::engine::skill::condition::{buff::BuffConditionMode, none::NoneMode};
+
+#[test]
+fn generic_round_end_keys_keep_their_exact_timing() {
+    assert_eq!(
+        parse(301, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::SmallRoundEnd))
+    );
+    assert_eq!(
+        parse(302, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::RoundEnd))
+    );
+    assert_eq!(
+        parse(305, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::RoundEnd))
+    );
+}
+
+#[test]
+fn entity_settlement_frames_target_the_settled_owner() {
+    assert_eq!(
+        find_key(303, "None").map(|definition| definition.reaction_frame_target),
+        Some(ReactionFrameTarget::Owner)
+    );
+}
+
+#[test]
+fn post_settlement_frames_target_the_passive_owner() {
+    assert_eq!(
+        find_key(304, "None").map(|definition| definition.reaction_frame_target),
+        Some(ReactionFrameTarget::Owner)
+    );
+}
+
+#[test]
+fn accumulated_team_buff_frames_target_the_passive_owner() {
+    assert_eq!(
+        find_key(583004, "AccTeamAddBuffCountByBuffId")
+            .map(|definition| definition.reaction_frame_target),
+        Some(ReactionFrameTarget::Owner)
+    );
+}
+
+#[test]
+fn cast_time_effect_tag_uses_the_pre_effect_event() {
+    assert_eq!(
+        find_key(34203, "UseSkillEffectTag").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillEffectStarted,
+            phase: Some(SkillPhase::Immediate),
+        })
+    );
+}
+
+#[test]
+fn post_damage_and_buff_id_conditions_keep_exact_route_roles() {
+    assert_eq!(
+        parse(208, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::SkillActionAfterDamage))
+    );
+    assert_eq!(
+        find_key(210, "None").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterHit),
+        })
+    );
+    assert_eq!(
+        parse(19004, "HasBuffId", &["30631".into()]),
+        Some(ParsedConditionKind::BuffId {
+            mode: BuffConditionMode::Present,
+            buff_ids: vec![30631],
+        })
+    );
+    assert_eq!(
+        find_key(19004, "HasBuffId").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+    assert_eq!(
+        find_key(19004, "HasBuffId").map(|definition| definition.dependencies),
+        Some(&[EventKind::BuffAdded, EventKind::BuffChanged][..])
+    );
+    assert!(parse(210, "HasBuffId", &[]).is_none());
+}
+
+#[test]
+fn static_buff_id_conditions_keep_their_exact_dependencies() {
+    for opcode in [19002, 19003] {
+        assert_eq!(
+            parse(opcode, "HasBuffId", &["1163852061".into()]),
+            Some(ParsedConditionKind::BuffId {
+                mode: BuffConditionMode::Present,
+                buff_ids: vec![1163852061],
+            })
+        );
+        assert_eq!(
+            find_key(opcode, "HasBuffId").map(|definition| definition.role),
+            Some(ConditionRole::Predicate)
+        );
+    }
+    assert_eq!(
+        find_key(19002, "HasBuffId").map(|definition| definition.dependencies),
+        Some(&[][..])
+    );
+    assert_eq!(
+        find_key(19003, "HasBuffId").map(|definition| definition.dependencies),
+        Some(&[EventKind::BuffAdded, EventKind::BuffChanged][..])
+    );
+}
+
+#[test]
+fn before_ap_resolution_keeps_its_exact_event_and_queue_preparation_roles() {
+    let definition = find_key(107, "None").unwrap();
+
+    assert_eq!(
+        parse(107, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::BeforeApResolve))
+    );
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::ActionQueueCommitted,
+            phase: None,
+        }
+    );
+    assert_eq!(
+        definition.companion_setup,
+        &[(SetupStage::GeneratedCard, 0)]
+    );
+    assert_eq!(
+        parse(1061, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::ActionQueueCommitted))
+    );
+}
+
+#[test]
+fn lethal_injury_add_buff_condition_owns_the_immediate_skill_phase() {
+    assert_eq!(
+        parse(205, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::SkillActionStart))
+    );
+    assert_eq!(
+        find_key(205, "None").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::Immediate),
+        })
+    );
+    assert!(find_key(205, "HasBuffId").is_none());
+}
+
+#[test]
+fn after_attack_opcode_uses_the_skills_own_after_hit_phase() {
+    assert_eq!(
+        find_key(402, "None").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterHit),
+        })
+    );
+}
+
+#[test]
+fn static_buff_gate_opcodes_have_distinct_setup_stages() {
+    for (opcode, stage) in [(19103, SetupStage::BuffGate), (19104, SetupStage::BuffSync)] {
+        let definition = find_key(opcode, "HasBuffId").unwrap();
+        assert_eq!(definition.role, ConditionRole::Setup { stage, priority: 0 });
+        assert!(definition.dependencies.is_empty());
+    }
+    assert_eq!(
+        find_key(19104, "HasBuffId").map(|definition| definition.setup_frame_scope),
+        Some(SetupFrameScope::Entity)
+    );
+}
+
+#[test]
+fn static_team_battle_tag_threshold_runs_at_battle_start() {
+    assert_eq!(
+        find_key(762021, "BattleTagNum").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::BattleStart,
+            priority: 0,
+        })
+    );
+    assert_eq!(
+        find_key(762103, "BattleTagNum").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: 1,
+        })
+    );
+}
+
+#[test]
+fn next_round_buff_gate_runs_after_round_start() {
+    let definition = find_key(19105, "HasBuffId").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Setup {
+            stage: SetupStage::AfterRoundStart,
+            priority: 0,
+        }
+    );
+    assert_eq!(
+        parse(19105, "HasBuffId", &["31490004".into()]),
+        Some(ParsedConditionKind::BuffId {
+            mode: BuffConditionMode::Present,
+            buff_ids: vec![31490004],
+        })
+    );
+}
+
+#[test]
+fn round_start_buff_type_threshold_runs_after_duration() {
+    let definition = find_key(51104, "HasTypeIdBuffMoreThan").unwrap();
+    assert_eq!(
+        definition.role,
+        ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: 4,
+        }
+    );
+    assert_eq!(definition.dependencies, &[EventKind::BuffChanged]);
+}
+
+#[test]
+fn round_start_none_103_keeps_its_entity_frame() {
+    let definition = find_key(103, "None").unwrap();
+    assert_eq!(
+        definition.role,
+        ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: 1,
+        }
+    );
+    assert_eq!(definition.setup_frame_scope, SetupFrameScope::Entity);
+}
+
+#[test]
+fn round_end_buff_type_threshold_keeps_its_exact_route() {
+    let definition = find_key(51302, "HasTypeIdBuffMoreThan").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::RoundEnd,
+            phase: None,
+        }
+    );
+}
+
+#[test]
+fn dream_visit_threshold_runs_during_entity_settlement() {
+    let definition = find_key(51303, "HasTypeIdBuffMoreThan").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::RoundEndEntitySettlement,
+            phase: None,
+        }
+    );
+}
+
+#[test]
+fn dreamscape_active_skill_condition_runs_after_hit() {
+    let definition = find_key(502210, "ActiveUseSkill").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterHit),
+        }
+    );
+}
+
+#[test]
+fn immediate_buff_type_threshold_observes_add_and_update() {
+    assert_eq!(
+        find_key(51213999, "HasTypeIdBuffMoreThan").map(|definition| definition.dependencies),
+        Some(&[EventKind::BuffAdded, EventKind::BuffChanged][..])
+    );
+}
+
+#[test]
+fn buff_presence_action_opcodes_keep_their_exact_phases() {
+    for (opcode, type_name, phase) in [
+        (19203, "HasBuffId", SkillPhase::Immediate),
+        (19208, "HasBuffId", SkillPhase::AfterDamage),
+        (57208, "NoBuffId", SkillPhase::AfterDamage),
+    ] {
+        let definition = find_key(opcode, type_name).unwrap();
+        assert_eq!(
+            definition.role,
+            ConditionRole::Trigger {
+                event: EventKind::SkillAction,
+                phase: Some(phase),
+            }
+        );
+        assert!(definition.dependencies.is_empty());
+    }
+}
+
+#[test]
+fn post_hit_buff_presence_conditions_are_filters_with_event_dependencies() {
+    for (opcode, type_name) in [(19210, "HasBuffId"), (57210, "NoBuffId")] {
+        let definition = find_key(opcode, type_name).unwrap();
+        assert_eq!(definition.role, ConditionRole::Predicate);
+        assert_eq!(definition.dependencies, &[EventKind::SkillAction]);
+        assert!(definition.filters_behavior_targets);
+    }
+}
+
+#[test]
+fn lethal_injury_skill_rate_gate_has_its_own_immediate_route() {
+    let definition = find_key(51201, "HasTypeIdBuffMoreThan").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::Immediate),
+        }
+    );
+    assert!(find_key(51201, "HasBuffId").is_none());
+}
+
+#[test]
+fn conduit_attack_count_threshold_runs_after_hit() {
+    let definition = find_key(51210, "HasTypeIdBuffMoreThan").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterHit),
+        }
+    );
+    assert_eq!(
+        parse(
+            51210,
+            "HasTypeIdBuffMoreThan",
+            &["31490008".into(), "3".into()]
+        ),
+        Some(ParsedConditionKind::BuffTypeCount {
+            type_ids: vec![31490008],
+            compare: crate::engine::skill::condition::ConditionCompare::GreaterThanOrEqual,
+            threshold: 3,
+        })
+    );
+}
+
+#[test]
+fn trigger_families_reject_unconfigured_ids_and_wrong_types() {
+    assert_eq!(
+        parse(741402, "TriggerTypeBullet", &[]),
+        Some(ParsedConditionKind::BuffFeatureTriggered { act_id: 827 })
+    );
+    assert!(parse(741999, "TriggerTypeBullet", &[]).is_none());
+    assert!(parse(25210, "BeAttacked", &[]).is_none());
+    assert_eq!(
+        find_key(25210, "UseExSkill").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterHit),
+        })
+    );
+    assert_eq!(
+        find_key(22213, "BeAttacked").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::HitPassives),
+        })
+    );
+    assert_eq!(
+        find_key(22213, "BeAttacked").map(|definition| definition.skill_action_observer),
+        Some(SkillActionObserver::AllyOfAttackedTarget)
+    );
+    assert_eq!(
+        find_key(1001212, "Assassinate")
+            .map(|definition| { (definition.role, definition.skill_action_observer) }),
+        Some((
+            ConditionRole::Trigger {
+                event: EventKind::SkillAction,
+                phase: Some(SkillPhase::AfterHit),
+            },
+            SkillActionObserver::Team,
+        ))
+    );
+    assert_eq!(
+        find_key(1000212, "TeamContainHero").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+}
+
+#[test]
+fn unregistered_family_parsers_do_not_bypass_exact_lookup() {
+    for (opcode, type_name, args) in [
+        (45, "HeroRoundInterval", vec!["1".into()]),
+        (19, "HasBuffId", vec!["101".into()]),
+        (51, "HasTypeIdBuffMoreThan", vec!["101".into(), "1".into()]),
+        (6208, "UseSkillStar", vec!["2".into()]),
+        (616208, "TeammateAliveNumNoSp", vec!["2".into()]),
+    ] {
+        assert!(parse(opcode, type_name, &args).is_none());
+    }
+    assert_eq!(
+        parse(45102, "HeroRoundInterval", &["1".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 1,
+            period: 0,
+        })
+    );
+}
+
+#[test]
+fn hero_round_interval_keeps_its_exact_round_transition_lane() {
+    assert_eq!(
+        parse(45102, "HeroRoundInterval", &["4".into(), "1".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 4,
+            period: 1,
+        })
+    );
+    assert_eq!(
+        parse(45104, "HeroRoundInterval", &["2".into(), "1".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 1,
+            period: 2,
+        })
+    );
+    assert_eq!(
+        parse(45104, "HeroRoundInterval", &["2".into(), "2".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 2,
+            period: 2,
+        })
+    );
+    assert_eq!(parse(45104, "HeroRoundInterval", &["2".into()]), None);
+    assert_eq!(
+        find_key(45102, "HeroRoundInterval").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundTransitionStart,
+            priority: 0,
+        })
+    );
+    assert_eq!(
+        find_key(45104, "HeroRoundInterval").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundTransitionStart,
+            priority: 1,
+        })
+    );
+}
+
+#[test]
+fn card_setup_interval_keeps_its_exact_lane() {
+    assert_eq!(
+        parse(45106, "HeroRoundInterval", &["4".into(), "2".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 2,
+            period: 4,
+        })
+    );
+    assert_eq!(
+        find_key(45106, "HeroRoundInterval").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::CardSetup,
+            priority: 0,
+        })
+    );
+}
+
+#[test]
+fn round_start_interval_keeps_its_exact_lane() {
+    assert_eq!(
+        parse(45100, "HeroRoundInterval", &["1".into(), "5".into()]),
+        Some(ParsedConditionKind::RoundInterval {
+            start_round: 5,
+            period: 1,
+        })
+    );
+    assert_eq!(
+        find_key(45100, "HeroRoundInterval").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: -1,
+        })
+    );
+    assert!(parse(45100, "Other", &["1".into(), "5".into()]).is_none());
+}
+
+#[test]
+fn none_round_start_opcodes_keep_their_exact_lanes() {
+    assert_eq!(
+        find_key(100, "None").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: -1,
+        })
+    );
+    for opcode in [101, 102] {
+        assert_eq!(
+            find_key(opcode, "None").map(|definition| definition.role),
+            Some(ConditionRole::Setup {
+                stage: SetupStage::RoundStartCondition,
+                priority: opcode,
+            })
+        );
+    }
+    assert_eq!(
+        find_key(103, "None").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStart,
+            priority: 1,
+        })
+    );
+    assert_eq!(
+        find_key(104, "None").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStartLate,
+            priority: 0,
+        })
+    );
+}
+
+#[test]
+fn exact_dead_alias_subscribes_to_entity_death() {
+    assert_eq!(
+        parse(812, "Dead", &[]),
+        Some(ParsedConditionKind::EntityDead)
+    );
+    assert_eq!(
+        find_key(812, "Dead").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::EntityDied,
+            phase: None,
+        })
+    );
+    assert_eq!(
+        find_key(812, "Dead").map(|definition| definition.reaction_frame_target),
+        Some(ReactionFrameTarget::Owner)
+    );
+}
+
+#[test]
+fn exact_alive_team_count_rechecks_on_entity_death() {
+    assert!(matches!(
+        parse(616012, "TeammateAliveNumNoSp", &["0".into()]),
+        Some(ParsedConditionKind::EntityCount {
+            scope: super::super::parse::EntityCountScope::AliveTeammatesNoSp,
+            compare: super::super::parse::ConditionCompare::Equal,
+            count: 0,
+        })
+    ));
+    assert_eq!(
+        find_key(616012, "TeammateAliveNumNoSp").map(|definition| definition.dependencies),
+        Some(&[EventKind::EntityDied][..])
+    );
+    assert!(find_key(616208, "TeammateAliveNumNoSp").is_none());
+}
+
+#[test]
+fn exact_enter_battle_none_alias_waits_for_an_entity_entry() {
+    assert_eq!(
+        parse(55, "None", &[]),
+        Some(ParsedConditionKind::None(NoneMode::EnterBattle))
+    );
+    assert_eq!(
+        find_key(55, "None").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::EntityEntered,
+            phase: None,
+        })
+    );
+}
+
+#[test]
+fn multi_hp_segment_is_a_predicate_not_a_second_trigger() {
+    assert_eq!(
+        parse(510, "MultiHpXIn", &["2".into()]),
+        Some(ParsedConditionKind::MultiHpSegment(2))
+    );
+    assert_eq!(
+        find_key(510, "MultiHpXIn").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+}
+
+#[test]
+fn resource_change_reactions_use_their_exact_publication_phase() {
+    assert_eq!(
+        parse(40, "LostExPoint", &["0".into()]),
+        Some(ParsedConditionKind::ExPointLost)
+    );
+    assert_eq!(
+        find_key(40, "LostExPoint").map(|definition| definition.publication),
+        Some(PublicationPhase::AfterPublish)
+    );
+    assert_eq!(
+        parse(566, "PowerUseAddBuff", &["2".into()]),
+        Some(ParsedConditionKind::PowerUseAddBuff { threshold: 2 })
+    );
+    assert_eq!(
+        find_key(566, "PowerUseAddBuff").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::EurekaChanged,
+            phase: None,
+        })
+    );
+    assert_eq!(
+        find_key(566, "PowerUseAddBuff").map(|definition| definition.publication),
+        Some(PublicationPhase::AfterPublish)
+    );
+    assert_eq!(
+        find_key(566, "PowerUseAddBuff").map(|definition| definition.reaction_timing),
+        Some(ReactionTiming::AfterSkill)
+    );
+    assert_eq!(
+        find_key(566, "PowerUseAddBuff").map(|definition| definition.reaction_frame_target),
+        Some(ReactionFrameTarget::Owner)
+    );
+    assert_eq!(
+        find_key(660008, "PerDecrExPoint").map(|definition| definition.publication),
+        Some(PublicationPhase::BeforePublish)
+    );
+    assert_eq!(
+        find_key(579018, "ExPointIncrChange").map(|definition| definition.publication),
+        Some(PublicationPhase::BeforePublish)
+    );
+    assert_eq!(
+        find_key(579023, "ExPointIncrChange").map(|definition| definition.publication),
+        Some(PublicationPhase::BeforePublish)
+    );
+    for opcode in [579018, 579023] {
+        assert_eq!(
+            find_key(opcode, "ExPointIncrChange")
+                .map(|definition| definition.reaction_frame_target),
+            Some(ReactionFrameTarget::Owner)
+        );
+    }
+    assert_eq!(
+        parse(579018, "ExPointIncrChange", &["1".into(), "0".into()]),
+        Some(ParsedConditionKind::ExPointIncrChange {
+            threshold: 1,
+            kind: 0,
+            scope: crate::engine::skill::condition::parse::ExPointIncreaseScope::SelfOnly,
+        })
+    );
+    assert_eq!(
+        parse(579023, "ExPointIncrChange", &["1".into(), "0".into()]),
+        Some(ParsedConditionKind::ExPointIncrChange {
+            threshold: 1,
+            kind: 0,
+            scope: crate::engine::skill::condition::parse::ExPointIncreaseScope::OtherAlly,
+        })
+    );
+}
+
+#[test]
+fn conduit_cost_uses_its_exact_activation_subscription() {
+    assert_eq!(
+        parse(788210, "PerDeviceCurrCost", &["1".into()]),
+        Some(ParsedConditionKind::PerConduitCurrentCost { threshold: 1 })
+    );
+    let definition = find_key(788210, "PerDeviceCurrCost").unwrap();
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::ConduitActivated,
+            phase: None,
+        }
+    );
+    assert_eq!(definition.reaction_timing, ReactionTiming::AfterSkill);
+    assert_eq!(definition.reaction_frame_target, ReactionFrameTarget::Owner);
+}
+
+#[test]
+fn conduit_meter_and_group_conditions_keep_their_setup_stages() {
+    assert_eq!(
+        parse(787105, "DeviceExPoint", &["1".into(), "100".into()]),
+        Some(ParsedConditionKind::ConduitExPoint {
+            compare_code: 1,
+            threshold: 100,
+        })
+    );
+    assert_eq!(
+        parse(794103, "DeviceSkillIndex", &["3".into()]),
+        Some(ParsedConditionKind::ConduitSkillGroup { group: 3 })
+    );
+    assert_eq!(
+        find_key(787105, "DeviceExPoint").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::AfterRoundStart,
+            priority: 0,
+        })
+    );
+    for key in [(787103, "DeviceExPoint"), (794103, "DeviceSkillIndex")] {
+        assert_eq!(
+            find_key(key.0, key.1).map(|definition| definition.role),
+            Some(ConditionRole::Setup {
+                stage: SetupStage::RoundStart,
+                priority: 1,
+            })
+        );
+    }
+}
+
+#[test]
+fn actor_post_hit_filter_publishes_before_team_observers() {
+    let definition = find_key(34210, "UseSkillEffectTag").unwrap();
+
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::HitPassives),
+        }
+    );
+    assert_eq!(definition.publication, PublicationPhase::BeforePublish);
+}
+
+#[test]
+fn post_hit_specific_skill_is_a_filter_with_an_event_dependency() {
+    let definition = find_key(66210, "UseSpecificSkill").unwrap();
+
+    assert_eq!(definition.role, ConditionRole::Predicate);
+    assert_eq!(definition.dependencies, &[EventKind::SkillAction]);
+}
+
+#[test]
+fn skill_target_count_is_a_filter_with_an_event_dependency() {
+    let definition = find_key(500210, "SkillType").unwrap();
+
+    assert_eq!(definition.role, ConditionRole::Predicate);
+    assert_eq!(definition.dependencies, &[EventKind::SkillAction]);
+}
+
+#[test]
+fn child_buff_allocation_is_owned_by_the_exact_condition_route() {
+    assert_eq!(
+        find_key(662208, "ActiveUseSkillId").map(|definition| definition.consequence),
+        Some(ConsequencePolicy::ChildBuffGrant)
+    );
+    assert_eq!(
+        find_key(502208, "ActiveUseSkill").map(|definition| definition.consequence),
+        Some(ConsequencePolicy::Default)
+    );
+    assert_eq!(
+        find_key(502212, "ActiveUseSkill").map(|definition| definition.consequence),
+        Some(ConsequencePolicy::NormalBuffGrant)
+    );
+    assert_eq!(
+        find_key(662208, "ActiveUseSkillId").map(|definition| definition.behavior_target_source),
+        Some(BehaviorTargetSource::ActiveSkillTargets)
+    );
+}
+
+#[test]
+fn hurt_kind_opcodes_keep_exact_attacker_type_predicates() {
+    assert_eq!(
+        parse(20202, "HurtReal", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Reality,
+        ))
+    );
+    assert_eq!(
+        find_key(20202, "HurtReal").and_then(|definition| definition.attack_modifier_side),
+        Some(AttackModifierSide::IncomingTarget)
+    );
+    assert_eq!(
+        parse(20209, "HurtReal", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Reality,
+        ))
+    );
+    assert_eq!(
+        parse(21209, "HurtMagic", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Mental,
+        ))
+    );
+    assert_eq!(
+        parse(21204, "HurtMagic", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Mental,
+        ))
+    );
+    assert_eq!(
+        find_key(21204, "HurtMagic").and_then(|definition| definition.attack_modifier_side),
+        Some(AttackModifierSide::IncomingTarget)
+    );
+    assert_eq!(
+        parse(538203, "EntityHurtMagic", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Mental,
+        ))
+    );
+    assert_eq!(
+        parse(540203, "EntityHurtReal", &[]),
+        Some(ParsedConditionKind::AttackerDamageType(
+            crate::engine::skill::target::EntityDamageType::Reality,
+        ))
+    );
+    assert!(find_key(20210, "HurtReal").is_none());
+    assert!(find_key(20201, "HurtReal").is_none());
+    assert!(find_key(21210, "HurtMagic").is_none());
+    assert!(find_key(538204, "EntityHurtMagic").is_none());
+    assert!(find_key(540204, "EntityHurtReal").is_none());
+}
+
+#[test]
+fn other_ally_damage_type_condition_keeps_its_configured_cap() {
+    assert_eq!(
+        parse(
+            573002,
+            "PerTeamOtherEntityDmgType",
+            &["2".into(), "2".into()],
+        ),
+        Some(ParsedConditionKind::OtherAllyDamageTypeCount {
+            damage_type: crate::engine::skill::target::EntityDamageType::Mental,
+            max_count: 2,
+        })
+    );
+}
+
+#[test]
+fn force_field_condition_keeps_its_exact_psychube_route() {
+    assert_eq!(
+        parse(701210, "HasMasterHalo", &[]),
+        Some(ParsedConditionKind::MasterHalo)
+    );
+    assert!(find_key(701211, "HasMasterHalo").is_none());
+}
+
+#[test]
+fn loop_chain_thresholds_keep_their_three_exact_events() {
+    for (opcode, event) in [
+        (535214, EventKind::TargetAttacked),
+        (535215, EventKind::AllyAction),
+        (535303, EventKind::RoundEndEntitySettlement),
+    ] {
+        assert_eq!(
+            find_key(opcode, "TypeIdBuffCountMoreThan").map(|definition| definition.role),
+            Some(ConditionRole::Trigger { event, phase: None })
+        );
+    }
+    assert!(find_key(535216, "TypeIdBuffCountMoreThan").is_none());
+}
+
+#[test]
+fn incoming_attack_modifier_conditions_keep_their_exact_side() {
+    for (opcode, type_name) in [
+        (18202, "HasBuff"),
+        (19204, "HasBuffId"),
+        (33204, "HurtRestraint"),
+        (47204, "HurtNotRestraint"),
+        (1204, "LifeLess"),
+    ] {
+        assert_eq!(
+            find_key(opcode, type_name).and_then(|definition| definition.attack_modifier_side),
+            Some(AttackModifierSide::IncomingTarget)
+        );
+    }
+    assert_eq!(
+        find_key(18203, "HasBuff").and_then(|definition| definition.attack_modifier_side),
+        None
+    );
+    assert_eq!(
+        find_key(19201, "HasBuffId").and_then(|definition| definition.attack_modifier_side),
+        None
+    );
+    let nested = ParsedCondition {
+        opcode: 0,
+        type_name: "Any".into(),
+        kind: ParsedConditionKind::Any(vec![vec![ParsedCondition {
+            opcode: 18202,
+            type_name: "HasBuff".into(),
+            ..ParsedCondition::always()
+        }]]),
+        raw_args: Vec::new(),
+    };
+    assert_eq!(
+        attack_modifier_side(&[nested]),
+        Some(AttackModifierSide::IncomingTarget)
+    );
+}
+
+#[test]
+fn static_status_predicate_keeps_its_exact_source_side_route() {
+    let definition = find_key(18201, "HasBuff").unwrap();
+    assert_eq!(definition.role, ConditionRole::Predicate);
+    assert_eq!(definition.dependencies, &[EventKind::BuffChanged]);
+    assert_eq!(definition.attack_modifier_side, None);
+    assert_eq!(
+        parse(18201, "HasBuff", &["1".into(), "5".into()]),
+        Some(ParsedConditionKind::BuffStatusCount {
+            status_ids: vec![1, 5],
+            compare: crate::engine::skill::condition::ConditionCompare::GreaterThanOrEqual,
+            threshold: 1,
+        })
+    );
+    assert!(find_key(18201, "HasBuffId").is_none());
+}
+
+#[test]
+fn after_damage_status_condition_filters_behavior_targets() {
+    let definition = find_key(18208, "HasBuff").unwrap();
+    assert_eq!(
+        definition.role,
+        ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterDamage),
+        }
+    );
+    assert!(definition.filters_behavior_targets);
+    assert_eq!(
+        parse(18208, "HasBuff", &["2".into(), "4".into(), "6".into()]),
+        Some(ParsedConditionKind::BuffStatusCount {
+            status_ids: vec![2, 4, 6],
+            compare: crate::engine::skill::condition::ConditionCompare::GreaterThanOrEqual,
+            threshold: 1,
+        })
+    );
+}
+
+#[test]
+fn firebud_rank_gate_uses_the_exact_after_damage_lane() {
+    for (opcode, type_name) in [(66208, "UseSpecificSkill"), (501208, "UseHurtSkill")] {
+        assert_eq!(
+            find_key(opcode, type_name).map(|definition| definition.role),
+            Some(ConditionRole::Trigger {
+                event: EventKind::SkillAction,
+                phase: Some(SkillPhase::AfterDamage),
+            })
+        );
+    }
+    assert_eq!(
+        parse(66208, "UseSpecificSkill", &["5".to_owned(), "3".to_owned()]),
+        Some(ParsedConditionKind::SpecificSkill { group: 5, rank: 3 })
+    );
+    assert_eq!(
+        parse(501208, "UseHurtSkill", &[]),
+        Some(ParsedConditionKind::UseHurtSkill)
+    );
+}
+
+#[test]
+fn ally_incantation_rank_uses_the_exact_ally_action_lane() {
+    assert_eq!(
+        find_key(620212, "CurrSkillLevel").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::AllyAction,
+            phase: None,
+        })
+    );
+    assert_eq!(
+        parse(620212, "CurrSkillLevel", &["1".to_owned()]),
+        Some(ParsedConditionKind::ActiveSkillRank {
+            compare: crate::engine::skill::condition::ConditionCompare::Equal,
+            ranks: vec![1],
+        })
+    );
+}
+
+#[test]
+fn ultimate_blood_pool_threshold_is_an_exact_static_predicate() {
+    let definition = find_key(726210, "BloodPoolValue").unwrap();
+    assert_eq!(definition.role, ConditionRole::Predicate);
+    assert!(definition.dependencies.is_empty());
+    assert!(find_key(726211, "BloodPoolValue").is_none());
+}
+
+#[test]
+fn attack_crit_after_damage_route_is_exact() {
+    assert_eq!(
+        find_key(30208, "AttackCrit").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterDamage),
+        })
+    );
+    assert_eq!(
+        find_key(30402, "AttackCrit").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::AfterDamage),
+        })
+    );
+    assert_eq!(
+        find_key(30210, "AttackCrit").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+    assert!(find_key(30209, "AttackCrit").is_none());
+}
+
+#[test]
+fn before_crit_has_its_own_pre_damage_route() {
+    assert_eq!(
+        parse(7203, "BeforeCrit", &[]),
+        Some(ParsedConditionKind::BeforeCrit)
+    );
+    assert_eq!(
+        find_key(7203, "BeforeCrit").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::SkillAction,
+            phase: Some(SkillPhase::Damage),
+        })
+    );
+    assert!(find_key(7204, "BeforeCrit").is_none());
+}
+
+#[test]
+fn active_life_more_gate_keeps_its_exact_static_route() {
+    assert_eq!(
+        find_key(2203, "LifeMore").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+    assert_eq!(
+        parse(2203, "LifeMore", &["500".into()]),
+        Some(ParsedConditionKind::HpPermille {
+            compare: super::super::parse::ConditionCompare::GreaterThan,
+            threshold: 500,
+        })
+    );
+    assert!(find_key(2204, "LifeMore").is_none());
+}
+
+#[test]
+fn round_start_hp_gates_keep_their_exact_setup_stages() {
+    for (opcode, type_name, stage) in [
+        (1104, "LifeLess", SetupStage::RoundStartLate),
+        (1105, "LifeLess", SetupStage::AfterRoundStart),
+        (2104, "LifeMore", SetupStage::RoundStartLate),
+    ] {
+        assert_eq!(
+            find_key(opcode, type_name).map(|definition| definition.role),
+            Some(ConditionRole::Setup { stage, priority: 0 })
+        );
+    }
+    assert_eq!(
+        parse(2104, "LifeMore", &["500".into()]),
+        Some(ParsedConditionKind::HpPermille {
+            compare: super::super::parse::ConditionCompare::GreaterThan,
+            threshold: 500,
+        })
+    );
+}
+
+#[test]
+fn incoming_life_less_gate_keeps_its_exact_modifier_route() {
+    assert_eq!(
+        parse(1204, "LifeLess", &["500".into()]),
+        Some(ParsedConditionKind::HpPermille {
+            compare: super::super::parse::ConditionCompare::LessThan,
+            threshold: 500,
+        })
+    );
+    assert!(find_key(2204, "LifeLess").is_none());
+}
+
+#[test]
+fn per_buff_type_layer_is_an_exact_static_multiplier() {
+    assert_eq!(
+        parse(
+            518203,
+            "PerHasBuffTypeLayer",
+            &["1".into(), "100".into(), "31280114".into()]
+        ),
+        Some(ParsedConditionKind::PerBuffTypeLayer {
+            type_ids: vec![31280114],
+            min: 1,
+            max: 100,
+        })
+    );
+    assert_eq!(
+        find_key(518203, "PerHasBuffTypeLayer").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+    assert!(find_key(518204, "PerHasBuffTypeLayer").is_none());
+}
+
+#[test]
+fn round_start_team_buff_type_gate_keeps_its_exact_payload_order() {
+    assert_eq!(
+        parse(
+            514100,
+            "SelfTeamHasBuffTypeLayerLessThan",
+            &["0".into(), "30650104".into()]
+        ),
+        Some(ParsedConditionKind::BuffTypeCount {
+            type_ids: vec![30650104],
+            compare: super::super::parse::ConditionCompare::LessThanOrEqual,
+            threshold: 0,
+        })
+    );
+    assert_eq!(
+        find_key(514100, "SelfTeamHasBuffTypeLayerLessThan").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStartCondition,
+            priority: 100,
+        })
+    );
+    assert!(find_key(514101, "SelfTeamHasBuffTypeLayerLessThan").is_none());
+}
+
+#[test]
+fn round_start_power_gate_keeps_its_exact_phase_and_payload_order() {
+    assert_eq!(
+        parse(
+            180102,
+            "PowerCompare",
+            &["1".into(), "11".into(), "2".into()]
+        ),
+        Some(ParsedConditionKind::PowerCompare {
+            compare_code: 1,
+            power_id: 11,
+            threshold: 2,
+        })
+    );
+    assert_eq!(
+        find_key(180102, "PowerCompare").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStartCondition,
+            priority: 102,
+        })
+    );
+    assert!(find_key(180101, "PowerCompare").is_none());
+}
+
+#[test]
+fn enter_fight_team_career_threshold_keeps_its_exact_key() {
+    assert_eq!(
+        parse(562002, "CareerGroupHeroCountGE", &["3".into(), "3".into()]),
+        Some(ParsedConditionKind::TeamCareerCount {
+            careers: vec![3],
+            compare: super::super::parse::ConditionCompare::GreaterThanOrEqual,
+            threshold: 3,
+        })
+    );
+    assert_eq!(
+        find_key(562002, "CareerGroupHeroCountGE").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::EnterFight,
+            priority: 0,
+        })
+    );
+    assert_eq!(
+        parse(
+            562101,
+            "CareerGroupHeroCountGE",
+            &["3,5,6".into(), "3".into()],
+        ),
+        Some(ParsedConditionKind::TeamCareerCount {
+            careers: vec![3, 5, 6],
+            compare: super::super::parse::ConditionCompare::GreaterThanOrEqual,
+            threshold: 3,
+        })
+    );
+    assert_eq!(
+        find_key(562101, "CareerGroupHeroCountGE").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStartCondition,
+            priority: 101,
+        })
+    );
+    assert_eq!(
+        parse(
+            560100,
+            "CareerGroupHeroCountLE",
+            &["3,5,6".into(), "2".into()],
+        ),
+        Some(ParsedConditionKind::TeamCareerCount {
+            careers: vec![3, 5, 6],
+            compare: super::super::parse::ConditionCompare::LessThanOrEqual,
+            threshold: 2,
+        })
+    );
+    assert_eq!(
+        find_key(560100, "CareerGroupHeroCountLE").map(|definition| definition.role),
+        Some(ConditionRole::Setup {
+            stage: SetupStage::RoundStartCondition,
+            priority: 100,
+        })
+    );
+    assert!(find_key(562003, "CareerGroupHeroCountGE").is_none());
+}
+
+#[test]
+fn only_the_proven_enter_fight_key_reactivates_after_transform() {
+    assert_eq!(
+        find_key(5, "EnterFight").unwrap().reactivation_events,
+        &[EventKind::EntityTransformed]
+    );
+    assert!(
+        find_key(595002, "TargetIncludeHero")
+            .unwrap()
+            .reactivation_events
+            .is_empty()
+    );
+}
+
+#[test]
+fn target_career_selects_matching_behavior_targets() {
+    let condition = ParsedCondition {
+        opcode: 16210,
+        type_name: "TargetCareer".into(),
+        kind: ParsedConditionKind::TargetCareer(vec![3]),
+        raw_args: vec!["3".into()],
+    };
+
+    assert!(conditions_filter_behavior_targets(&[condition]));
+    assert_eq!(
+        find_key(16210, "TargetCareer").map(|definition| definition.role),
+        Some(ConditionRole::Predicate)
+    );
+    assert!(conditions_filter_behavior_targets(&[ParsedCondition {
+        opcode: 16002,
+        type_name: "TargetCareer".into(),
+        kind: ParsedConditionKind::TargetCareer(vec![3]),
+        raw_args: vec!["3".into()],
+    }]));
+    assert!(conditions_filter_behavior_targets(&[ParsedCondition {
+        opcode: 16210,
+        type_name: "TargetCareer".into(),
+        kind: ParsedConditionKind::TargetCareer(vec![3]),
+        raw_args: vec!["3".into()],
+    }]));
+    assert!(
+        !find_key(16203, "TargetCareer")
+            .is_some_and(|definition| definition.filters_behavior_targets)
+    );
+}
+
+#[test]
+fn round_start_buff_gates_keep_their_exact_registered_keys() {
+    for (opcode, priority) in [(19100, 100), (19101, 101)] {
+        assert_eq!(
+            find_key(opcode, "HasBuffId").map(|definition| definition.role),
+            Some(ConditionRole::Setup {
+                stage: SetupStage::RoundStartCondition,
+                priority,
+            })
+        );
+        assert_eq!(
+            find_key(opcode, "HasBuffId").map(|definition| definition.dependencies),
+            Some(&[][..])
+        );
+    }
+    assert!(find_key(19102, "HasBuffId").is_none());
+}
+
+#[test]
+fn nested_no_action_teammate_death_keeps_its_exact_event_key() {
+    assert_eq!(
+        parse(17012, "TeammateDead", &[]),
+        Some(ParsedConditionKind::TeammateDead)
+    );
+    assert_eq!(
+        find_key(17012, "TeammateDead").map(|definition| definition.role),
+        Some(ConditionRole::Trigger {
+            event: EventKind::EntityDied,
+            phase: None,
+        })
+    );
+    assert!(find_key(17013, "TeammateDead").is_none());
+}

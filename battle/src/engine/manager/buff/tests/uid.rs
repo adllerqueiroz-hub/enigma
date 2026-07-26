@@ -1,0 +1,192 @@
+use super::*;
+
+#[test]
+fn add_enriches_buff_from_config_and_allocates_transaction_uid() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                buffs: vec![BuffInfo {
+                    uid: Some(41),
+                    buff_id: Some(101),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = BuffManager::default();
+    manager.seed(&fight);
+
+    let added = manager.add(&HpManager::default(), 10, 10, 101, 2).unwrap();
+
+    assert_eq!(added.buff.uid, Some(43));
+    assert_eq!(added.buff.buff_id, Some(101));
+    assert_eq!(added.buff.from_uid, Some(10));
+    assert_eq!(added.buff.layer, Some(2));
+    assert_eq!(added.buff.count, Some(0));
+    assert_eq!(manager.buff_type_amount(10, 1000), 3);
+}
+
+#[test]
+fn version_seven_shares_one_buff_uid_lane_across_both_sides() {
+    init_config();
+    let fight = |version| Fight {
+        version: Some(version),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                team_type: Some(2),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let hp = HpManager::default();
+
+    let mut current = BuffManager::default();
+    current.seed(&fight(7));
+    let attacker = current.add(&hp, 10, 10, 101, 1).unwrap();
+    let defender = current.add(&hp, -1, -1, 101, 1).unwrap();
+    assert_eq!(attacker.buff.uid, Some(1002));
+    assert_eq!(defender.buff.uid, Some(1004));
+
+    let mut legacy = BuffManager::default();
+    legacy.seed(&fight(6));
+    let attacker = legacy.add(&hp, 10, 10, 101, 1).unwrap();
+    let defender = legacy.add(&hp, -1, -1, 101, 1).unwrap();
+    assert_eq!(attacker.buff.uid, Some(2));
+    assert_eq!(defender.buff.uid, Some(100001));
+}
+
+#[test]
+fn repeated_condition_grant_uses_the_final_layer_child_uid() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                current_hp: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = BuffManager::default();
+    manager.seed(&fight);
+
+    let repeated =
+        manager.add_repeated_replacing_excluded(&HpManager::default(), 10, 10, 31170006, 4);
+    let following = manager
+        .add(&HpManager::default(), 10, 10, 31080141, 0)
+        .unwrap();
+
+    assert_eq!(repeated.added.unwrap().buff.uid, Some(4));
+    assert_eq!(following.buff.uid, Some(8));
+}
+
+#[test]
+fn hidden_three_stack_buff_reserves_a_child_after_its_first_apply() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                buffs: vec![BuffInfo {
+                    uid: Some(58),
+                    buff_id: Some(31070111),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = BuffManager::default();
+    manager.seed(&fight);
+
+    let stacked = manager.add_replacing_excluded_with_layer_specified(
+        &HpManager::default(),
+        10,
+        10,
+        435011,
+        0,
+        false,
+    );
+    let following = manager.add(&HpManager::default(), 10, 10, 101, 0).unwrap();
+
+    assert_eq!(stacked.added.unwrap().buff.uid, Some(59));
+    assert_eq!(following.buff.uid, Some(62));
+}
+
+#[test]
+fn timed_independent_stack_does_not_reserve_an_unobserved_uid_slot() {
+    init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                buffs: vec![BuffInfo {
+                    uid: Some(1044),
+                    buff_id: Some(31280113),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = BuffManager::default();
+    manager.seed(&fight);
+
+    let timed = manager
+        .add(&HpManager::default(), 10, 10, 31280114, 1)
+        .unwrap();
+    let following = manager.add(&HpManager::default(), 10, 10, 101, 0).unwrap();
+
+    assert_eq!(timed.buff.uid, Some(1045));
+    assert_eq!(following.buff.uid, Some(1047));
+}
+
+#[test]
+fn defender_buffs_use_defender_uid_band() {
+    init_config();
+    let fight = Fight {
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-10),
+                team_type: Some(2),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = BuffManager::default();
+    manager.seed(&fight);
+
+    let added = manager
+        .add(&HpManager::default(), -10, -10, 101, 1)
+        .unwrap();
+
+    assert_eq!(added.buff.uid, Some(100001));
+}

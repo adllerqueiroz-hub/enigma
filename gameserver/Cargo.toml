@@ -1,0 +1,27 @@
+[package]
+name = "gameserver"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byteorder.workspace = true
+tokio.workspace = true
+common.workspace = true
+config.workspace = true
+database.workspace = true
+protocol.workspace = true
+bytes.workspace = true
+flate2.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dashmap.workspace = true
+sqlx.workspace = true
+prost.workspace = true
+chrono.workspace = true
+battle.workspace = true
+rand.workspace = true
+muipserver.workspace = true

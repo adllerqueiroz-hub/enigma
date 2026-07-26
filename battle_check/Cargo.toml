@@ -1,0 +1,15 @@
+[package]
+name = "battle_check"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+private-fixtures = []
+
+[dependencies]
+anyhow.workspace = true
+battle.workspace = true
+config.workspace = true
+protocol.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,151 @@
+use super::*;
+
+#[test]
+fn repeated_absence_conditions_require_every_buff_to_be_absent() {
+    init_config();
+    let fight = Fight {
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(1),
+                buffs: vec![BuffInfo {
+                    buff_id: Some(530000111),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let conditions = [530000111, 530000112].map(|buff_id| ParsedCondition {
+        opcode: 57104,
+        type_name: String::new(),
+        kind: ParsedConditionKind::BuffId {
+            mode: BuffConditionMode::Absent,
+            buff_ids: vec![buff_id],
+        },
+
+        raw_args: vec![buff_id.to_string()],
+    });
+
+    assert!(!conditions_match(
+        &conditions,
+        -1,
+        &[-1],
+        Some(&managers),
+        &TargetPool::from_fight(&fight),
+        TargetContext::default(),
+    ));
+
+    let managers = BattleManagers::seeded(&Fight {
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert!(conditions_match(
+        &conditions,
+        -1,
+        &[-1],
+        Some(&managers),
+        &TargetPool::from_fight(&fight),
+        TargetContext::default(),
+    ));
+}
+
+#[test]
+fn master_halo_requires_active_state_not_an_owned_passive_definition() {
+    init_config();
+    let fight_with = |buffs| Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(1),
+                passive_skill: vec![30860161],
+                buffs,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let condition = ParsedCondition {
+        opcode: 701201,
+        type_name: "HasMasterHalo".into(),
+        kind: ParsedConditionKind::MasterHalo,
+        raw_args: Vec::new(),
+    };
+    let matches = |fight: &Fight| {
+        let managers = BattleManagers::seeded(fight);
+        conditions_match(
+            std::slice::from_ref(&condition),
+            10,
+            &[10],
+            Some(&managers),
+            &TargetPool::from_fight(fight),
+            TargetContext::default(),
+        )
+    };
+
+    assert!(!matches(&fight_with(Vec::new())));
+    assert!(matches(&fight_with(vec![BuffInfo {
+        buff_id: Some(30860161),
+        ..Default::default()
+    }])));
+}
+
+#[test]
+fn career_check_parameter_selects_share_or_not_share() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(10),
+                    career: Some(1),
+                    current_hp: Some(1),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(11),
+                    career: Some(1),
+                    current_hp: Some(1),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let condition = |param| ParsedCondition {
+        opcode: 508104,
+        type_name: String::new(),
+        kind: ParsedConditionKind::TargetSharesCasterCareer { param },
+        raw_args: vec![param.to_string()],
+    };
+
+    assert!(conditions_match(
+        &[condition(0)],
+        10,
+        &[11],
+        None,
+        &pool,
+        TargetContext::default(),
+    ));
+    assert!(!conditions_match(
+        &[condition(1)],
+        10,
+        &[11],
+        None,
+        &pool,
+        TargetContext::default(),
+    ));
+}

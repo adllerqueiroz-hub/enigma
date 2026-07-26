@@ -1,0 +1,197 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: linux-amd64
+          # - os: ubuntu-latest
+          #   target: aarch64-unknown-linux-gnu
+          #   artifact_name: linux-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: windows-amd64
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: windows-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: org
+
+      - name: Clone Sonetto-Data from GitLab
+        run: |
+          git clone https://gitlab.com/yoncodes/sonetto-data.git sonetto-data
+        shell: bash
+
+      - name: Prepare data files
+        run: |
+          mkdir -p data
+          cp -r sonetto-data/excel2json data/
+        shell: bash
+
+      - name: Set JSON_DATA_DIR for build (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: echo "JSON_DATA_DIR=${{ github.workspace }}/sonetto-data/excel2json" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Set JSON_DATA_DIR for build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $path = "${{ github.workspace }}\sonetto-data\excel2json"
+          echo "JSON_DATA_DIR=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        shell: pwsh
+
+      - name: Fix config file case (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp common/Config.toml common/config.toml
+        shell: bash
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-12-06
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-target-
+
+      - name: Clean generated config files to force regeneration
+        run: |
+          if [ -d "lib/config/configs" ]; then
+            rm -rf lib/config/configs
+          fi
+        shell: bash
+        continue-on-error: true
+
+      - name: Build gameserver
+        run: cargo build --release --target ${{ matrix.target }} -p gameserver
+
+      - name: Build sdkserver
+        run: cargo build --release --target ${{ matrix.target }} -p sdkserver
+
+      - name: Build muipserver
+        run: cargo build --release --target ${{ matrix.target }} -p muipserver
+
+      - name: Prepare artifacts (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifacts/data
+          cp target/${{ matrix.target }}/release/gameserver artifacts/
+          cp target/${{ matrix.target }}/release/sdkserver artifacts/
+          cp target/${{ matrix.target }}/release/muipserver artifacts/
+          cp common/Config.toml artifacts/config.toml
+          cp -r data/excel2json artifacts/data/
+          cd artifacts
+          tar -czf ../gameserver-${{ matrix.artifact_name }}.tar.gz gameserver config.toml data
+          tar -czf ../sdkserver-${{ matrix.artifact_name }}.tar.gz sdkserver config.toml data
+          tar -czf ../muipserver-${{ matrix.artifact_name }}.tar.gz muipserver config.toml data
+
+      - name: Prepare artifacts (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir artifacts\data
+          copy target\${{ matrix.target }}\release\gameserver.exe artifacts\
+          copy target\${{ matrix.target }}\release\sdkserver.exe artifacts\
+          copy target\${{ matrix.target }}\release\muipserver.exe artifacts\
+          copy common\Config.toml artifacts\config.toml
+          xcopy /E /I data\excel2json artifacts\data\excel2json
+          cd artifacts
+          tar -czf ..\gameserver-${{ matrix.artifact_name }}.tar.gz gameserver.exe config.toml data
+          tar -czf ..\sdkserver-${{ matrix.artifact_name }}.tar.gz sdkserver.exe config.toml data
+          tar -czf ..\muipserver-${{ matrix.artifact_name }}.tar.gz muipserver.exe config.toml data
+
+      - name: Upload gameserver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gameserver-${{ matrix.artifact_name }}
+          path: gameserver-${{ matrix.artifact_name }}.tar.gz
+
+      - name: Upload sdkserver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdkserver-${{ matrix.artifact_name }}
+          path: sdkserver-${{ matrix.artifact_name }}.tar.gz
+
+      - name: Upload muipserver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: muipserver-${{ matrix.artifact_name }}
+          path: muipserver-${{ matrix.artifact_name }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get release info
+        id: release_info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=latest" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: ${{ steps.release_info.outputs.is_tag == 'true' && steps.release_info.outputs.tag_name || 'Latest Build' }}
+          files: artifacts/**/*.tar.gz
+          draft: false
+          prerelease: ${{ steps.release_info.outputs.is_tag == 'false' }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

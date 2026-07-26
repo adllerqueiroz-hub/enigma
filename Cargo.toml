@@ -1,0 +1,84 @@
+[workspace]
+members = [
+    "common",
+    "protocol",
+    "database",
+    "gameserver",
+    "sdkserver",
+    "battle",
+    "battle_check",
+    "muipserver",
+    "config",
+    "battle_preview",
+]
+default-members = [
+    "common",
+    "protocol",
+    "database",
+    "gameserver",
+    "sdkserver",
+    "battle",
+    "muipserver",
+    "config",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+axum = "0.8.4"
+axum-server = { version = "0.7.2" }
+reqwest = "0.13.4"
+tokio = { version = "1.52.3", features = ["full"] }
+flate2 = "1.1.9"
+base64 = "0.22.1"
+heck = "0.5"
+
+# protobuf
+prost-build = "0.14.4"
+prost = "0.14.4"
+prost-types = "0.14.4"
+walkdir = "2"
+
+
+byteorder = "1.5.0"
+bytes = "1.12"
+bcrypt = "0.19.2"
+
+#logging
+ansi_term = "0.12.1"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+# errors
+thiserror = "2.0.18"
+anyhow = "1.0.103"
+async-trait = "0.1"
+
+#utils
+chrono = "0.4.45"
+dashmap = "6.2.1"
+paste = "1.0"
+rand = "0.9"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+# Database
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
+
+
+common = { path = "common" }
+database = { path = "database" }
+protocol = { path = "protocol" }
+config = { path = "config" }
+battle = { path = "battle" }
+muipserver = { path = "muipserver" }
