@@ -28,6 +28,8 @@ pub async fn on_finish_guide(
         .finish(ctx.state.db, msg.guide_id, msg.step_id)
         .await?;
 
+    // UpdateGuide advances the client into the local reward-view step, so the
+    // reward state must arrive before that push and its reply, as live sends it.
     push::send_applied_reward_pushes(
         ctx,
         player_id,

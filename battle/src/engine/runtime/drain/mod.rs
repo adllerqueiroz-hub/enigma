@@ -401,6 +401,22 @@ fn drain_queue_with_deferred(
                 if !skill_from_buff_act && let Some(group) = &frame_group {
                     *group.borrow_mut() = Some(frame_path.clone());
                 }
+                if matches!(trigger, SkillOpTrigger::Active)
+                    && invocation.phase
+                        == Some(crate::engine::skill::action::SkillPhase::AfterDamage)
+                    && let Some(deaths) = state.take_deaths(&frame_path)
+                {
+                    for death in deaths
+                        .into_iter()
+                        .filter(|death| managers.hp.current(death.target_uid) == 0)
+                    {
+                        push_change(
+                            &mut result.frames,
+                            &frame_path,
+                            crate::engine::runtime::change::BattleChange::Death(death),
+                        );
+                    }
+                }
                 let mut execution = skill_execution.unwrap_or_else(|| SkillExecution::new(context));
                 if matches!(trigger, SkillOpTrigger::Active)
                     && let Some(additional_count) = state.take_target_modifier(&frame_path)

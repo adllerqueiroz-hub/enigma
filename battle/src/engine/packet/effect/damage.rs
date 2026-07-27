@@ -168,7 +168,8 @@ impl EffectPacket {
                 toughness_point: Some(0),
                 broken: Some(false),
                 absorb_hurt_param: Some(
-                    r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#.into(),
+                    r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
+                        .into(),
                 ),
                 hurt_merge_flag: Some(0),
                 ..common

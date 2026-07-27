@@ -57,6 +57,7 @@ pub enum FrameOwner {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundPhase {
+    CardRefill,
     RoundStartEvent,
     RoundStartSettlement,
     RoundStartCapacitySync,
@@ -110,7 +111,9 @@ pub enum RoundCue {
     SmallRoundEnd {
         team_type: i32,
     },
-    ChangeRound,
+    ChangeRound {
+        round: i32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -23,7 +23,10 @@ use crate::engine::{
 
 use super::super::{
     SkillExecution, SkillOpError, SkillOpTrigger,
-    invoke::{active_skill_targets, apply_event_context, resource_event, resource_fire_count},
+    invoke::{
+        active_skill_hit_targets, active_skill_targets, apply_event_context, resource_event,
+        resource_fire_count,
+    },
     plan,
 };
 use super::*;
@@ -472,21 +475,38 @@ pub(in crate::engine::runtime) fn emit_ops(
             continue;
         }
         let consequence = consequence_policy(slot, &invocation, trigger)?;
-        let condition_uses_active_skill_targets = condition_key.is_some_and(|key| {
-            crate::engine::skill::condition::registry::find_key(key.opcode, key.type_name)
-                .is_some_and(|definition| {
-                    definition.behavior_target_source
-                        == crate::engine::skill::condition::registry::BehaviorTargetSource::ActiveSkillTargets
-                })
-        }) || crate::engine::skill::condition::registry::conditions_use_active_skill_targets(
-            &conditions,
+        let behavior_target_source = condition_key
+            .and_then(|key| {
+                crate::engine::skill::condition::registry::find_key(key.opcode, key.type_name)
+            })
+            .map(|definition| definition.behavior_target_source)
+            .unwrap_or_default();
+        let condition_uses_active_skill_targets = behavior_target_source
+            == crate::engine::skill::condition::registry::BehaviorTargetSource::ActiveSkillTargets
+            || crate::engine::skill::condition::registry::conditions_use_active_skill_targets(
+                &conditions,
+            );
+        let condition_uses_hit_targets = behavior_target_source
+            == crate::engine::skill::condition::registry::BehaviorTargetSource::HitTargets;
+        let uses_action_targets = uses_action_targets(
+            slot,
+            condition_uses_active_skill_targets || condition_uses_hit_targets,
         );
-        let uses_action_targets = uses_action_targets(slot, condition_uses_active_skill_targets);
-        let event_targets = condition_uses_active_skill_targets
-            .then(|| selected_event.and_then(active_skill_targets))
-            .flatten();
+        let event_targets = if condition_uses_hit_targets {
+            selected_event.and_then(active_skill_hit_targets)
+        } else if condition_uses_active_skill_targets {
+            selected_event.and_then(active_skill_targets)
+        } else {
+            None
+        };
         let mut targets = if let Some(targets) = event_targets {
             targets.to_vec()
+        } else if active_phase.is_some()
+            && has_row_damage
+            && condition_uses_hit_targets
+            && uses_action_targets
+        {
+            execution.attacked_targets.clone()
         } else if active_phase.is_some()
             && uses_action_targets
             && let Some(targets) = &execution.configured_targets

@@ -36,6 +36,22 @@ pub fn run_action_queue_committed(
     )
 }
 
+pub fn run_action_phase_start(
+    managers: &mut BattleManagers,
+    pool: &TargetPool,
+    catalog: &SkillEffectCatalog,
+    determinism: &mut RoundDeterminism,
+    context: TargetContext,
+    team: i32,
+) -> Result<DrainResult, DrainError> {
+    let ops = managers
+        .conduit
+        .action_phase_start_commands(team)
+        .into_iter()
+        .map(|command| RuleOp::Command(BattleCommand::Conduit(command)));
+    drain::run_command_group(managers, pool, catalog, determinism, context, ops)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_conduit_phase(
     fight: &sonettobuf::Fight,

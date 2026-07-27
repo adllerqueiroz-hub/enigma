@@ -60,22 +60,10 @@ pub fn emit_table_store(
 
     out.push(format!("impl {}Table {{", struct_name));
     out.push("    pub fn load(path: &str) -> anyhow::Result<Self> {".into());
-    out.push("        let json = std::fs::read_to_string(path)?;".into());
-    out.push("        let value: serde_json::Value = serde_json::from_str(&json)?;".into());
-    out.push("".into());
-
     out.push(format!(
-        "        let records: Vec<{}> = if let Some(array) = value.as_array() {{",
+        "        let records: Vec<{}> = crate::load_rows(path)?;",
         struct_name
     ));
-    out.push("            if array.len() >= 2 && array[1].is_array() {".into());
-    out.push("                serde_json::from_value(array[1].clone())?".into());
-    out.push("            } else {".into());
-    out.push("                serde_json::from_value(value)?".into());
-    out.push("            }".into());
-    out.push("        } else {".into());
-    out.push("            serde_json::from_value(value)?".into());
-    out.push("        };".into());
     out.push("".into());
 
     if has_id_index || has_group_index {

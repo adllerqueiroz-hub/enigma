@@ -48,6 +48,7 @@ impl BattleRuntime {
         &mut self,
         request: &BeginRoundRequest,
     ) -> Result<FightRound, String> {
+        let active_round = self.round_state.cur_round;
         self.round_state.begin_round();
         self.fight.cur_round = Some(self.round_state.cur_round);
         if let Some(attacker) = self.fight.attacker.as_mut() {
@@ -98,6 +99,9 @@ impl BattleRuntime {
         };
         let commands = commands_from_opers(&request.opers);
         let fight_version = self.fight.version.unwrap_or_default();
+        let uses_action_phase_power_clear =
+            crate::engine::fight::versions::round_start_setup_layout(fight_version)
+                == Some(crate::engine::fight::versions::RoundStartSetupLayout::Version7);
 
         let conduit_selection = drain::run(
             &mut self.managers,
@@ -245,6 +249,20 @@ impl BattleRuntime {
             self.round_state.team_a_cards2 = round_field_cards(self.managers.card.refilled());
         }
         if !ended_after_attacker_settlement {
+            if uses_action_phase_power_clear {
+                fight_steps.extend(project_result(
+                    schedule::run_action_phase_start(
+                        &mut self.managers,
+                        &pool,
+                        catalog,
+                        &mut self.determinism,
+                        context,
+                        2,
+                    )
+                    .map_err(|error| format!("{error:?}"))?,
+                    fight_version,
+                )?);
+            }
             fight_steps.extend(project_result(
                 schedule::run_before_ai_round_start(
                     &mut self.managers,
@@ -357,8 +375,20 @@ impl BattleRuntime {
             next_round_dealt_cards,
             next_round_prepared,
         ) = if self.round_state.is_finish {
-            let (round_start, next_round) = schedule::run_finished_round_transition(&self.managers);
-            (round_start, next_round, Vec::new(), Vec::new(), false)
+            if uses_action_phase_power_clear {
+                let (_, next_round) = schedule::run_finished_round_transition(&self.managers);
+                (
+                    Default::default(),
+                    next_round,
+                    Vec::new(),
+                    Vec::new(),
+                    false,
+                )
+            } else {
+                let (round_start, next_round) =
+                    schedule::run_finished_round_transition(&self.managers);
+                (round_start, next_round, Vec::new(), Vec::new(), false)
+            }
         } else {
             // Snapshot next-round AP before lifecycle cleanup removes one-round
             // modifiers that have already contributed to this value.
@@ -390,17 +420,14 @@ impl BattleRuntime {
         finish_if_battle_ended(&mut self.round_state, &self.fight, &pool, &self.managers);
         fight_steps.extend(project_result(round_start, fight_version)?);
         if !self.round_state.is_finish {
-            let cards = self
-                .determinism
-                .take_next_ai_card_snapshot()
-                .unwrap_or_else(|| {
-                    crate::engine::manager::card::start_decks_from_fight(
-                        &self.fight,
-                        self.round_state.cur_round,
-                        None,
-                    )
-                    .0
-                });
+            let cards = crate::engine::manager::card::start_decks_from_fight(
+                &self.fight,
+                self.round_state.cur_round,
+                self.determinism
+                    .take_next_ai_card_snapshot()
+                    .map(|cards| (cards, Vec::new())),
+            )
+            .0;
             catalog.extend_roots_and_warn(
                 config::configs::get(),
                 cards.iter().filter_map(|card| card.skill_id),
@@ -422,6 +449,9 @@ impl BattleRuntime {
         let next_round_begin_step = project_result(next_round, fight_version)?;
 
         self.managers.sync_entities(&mut self.fight);
+        if uses_action_phase_power_clear && self.round_state.is_finish {
+            self.round_state.cur_round = active_round;
+        }
         self.round_state.hero_sp_attributes = self.managers.hero_sp_attributes(&self.fight);
         self.round_state.last_change_hero_uid = self.fight.last_change_hero_uid;
         self.fight.cur_round = Some(self.round_state.cur_round);

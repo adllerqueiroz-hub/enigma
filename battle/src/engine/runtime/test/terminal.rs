@@ -29,6 +29,7 @@ fn terminal_attacker_settlement_does_not_enter_defender_card_cleanup() {
         .unwrap();
 
     assert_eq!(round.is_finish, Some(true));
+    assert_eq!(round.cur_round, Some(2));
     assert!(round.fight_step.iter().all(|step| {
         step.act_effect.iter().all(|effect| {
             effect.effect_type
@@ -38,12 +39,46 @@ fn terminal_attacker_settlement_does_not_enter_defender_card_cleanup() {
 }
 
 #[test]
+fn version_seven_terminal_round_does_not_advance_to_an_unplayed_round() {
+    crate::test_support::init_config();
+    let entity = |uid, hp, team_type| FightEntityInfo {
+        uid: Some(uid),
+        team_type: Some(team_type),
+        current_hp: Some(hp),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(Fight {
+        cur_round: Some(3),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![entity(10, 100, 1)],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![entity(-1, 100, 2)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    runtime.managers.hp.lose(-1, 100, 10);
+
+    let round = runtime
+        .build_begin_round_from_schedule(&BeginRoundRequest::default())
+        .unwrap();
+
+    assert_eq!(round.is_finish, Some(true));
+    assert_eq!(round.cur_round, Some(3));
+    assert_eq!(runtime.fight.cur_round, Some(3));
+}
+
+#[test]
 fn next_ai_snapshot_is_published_after_current_ai_settlement() {
     crate::test_support::init_config();
-    let entity = |uid, team_type| FightEntityInfo {
+    let entity = |uid, team_type, skill_group1| FightEntityInfo {
         uid: Some(uid),
         team_type: Some(team_type),
         current_hp: Some(100),
+        skill_group1,
         attr: Some(sonettobuf::HeroAttribute {
             hp: Some(100),
             ..Default::default()
@@ -52,13 +87,13 @@ fn next_ai_snapshot_is_published_after_current_ai_settlement() {
     };
     let mut runtime = BattleRuntime::new(Fight {
         cur_round: Some(1),
-        version: Some(6),
+        version: Some(7),
         attacker: Some(FightTeam {
-            entitys: vec![entity(10, 1)],
+            entitys: vec![entity(10, 1, Vec::new())],
             ..Default::default()
         }),
         defender: Some(FightTeam {
-            entitys: vec![entity(-1, 2)],
+            entitys: vec![entity(-1, 2, vec![40340111])],
             ..Default::default()
         }),
         ..Default::default()
@@ -68,16 +103,23 @@ fn next_ai_snapshot_is_published_after_current_ai_settlement() {
         skill_id: Some(40340111),
         ..Default::default()
     };
-    runtime
-        .determinism
-        .enqueue_next_ai_card_snapshot(vec![next.clone()]);
+    runtime.determinism.enqueue_next_ai_card_snapshot(vec![
+        sonettobuf::CardInfo {
+            uid: Some(-1),
+            skill_id: Some(999),
+            ..Default::default()
+        },
+        next.clone(),
+    ]);
 
     let round = runtime
         .build_begin_round_from_schedule(&BeginRoundRequest::default())
         .unwrap();
 
     assert_eq!(runtime.managers.ex_point.get(-1), 0);
-    assert_eq!(round.ai_use_cards, vec![next]);
+    assert_eq!(round.ai_use_cards.len(), 1);
+    assert_eq!(round.ai_use_cards[0].uid, next.uid);
+    assert_eq!(round.ai_use_cards[0].skill_id, next.skill_id);
 }
 
 #[test]

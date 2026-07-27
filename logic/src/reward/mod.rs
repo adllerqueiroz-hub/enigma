@@ -313,9 +313,6 @@ pub(crate) async fn consume(
             return Err(AppError::InsufficientCurrency);
         }
         consumed.currency_ids.push((currency_id, -amount));
-        consumed
-            .material_changes
-            .push((2, currency_id as u32, -amount));
     }
 
     Ok(consumed)

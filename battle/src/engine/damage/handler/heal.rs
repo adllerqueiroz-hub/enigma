@@ -21,14 +21,7 @@ pub(super) fn attribute_amount(
         return None;
     };
     let basis_uid = if *mode == 0 { source_uid } else { target_uid };
-    let hp = managers.hp.get(basis_uid);
-    let basis = match AttrId::from_raw(*attr_id) {
-        Some(AttrId::LostHp) => (hp.max - hp.current).max(0),
-        Some(AttrId::CurrentHp) => hp.current,
-        Some(AttrId::Hp) => hp.max,
-        Some(attr) => managers.attribute.get(basis_uid, attr),
-        None => return None,
-    };
+    let basis = managers.origin_attribute(basis_uid, AttrId::from_raw(*attr_id)?);
     Some(modified(
         scale_permille(basis, *rate),
         source_uid,
@@ -122,14 +115,7 @@ pub(super) fn amount(
 ) -> Option<i32> {
     let amount = if let [mode, attr_id, rate] = behavior.args.as_slice() {
         let basis_uid = if *mode == 0 { source_uid } else { target_uid };
-        let attr_id = AttrId::from_raw(*attr_id)?;
-        let hp = managers.hp.get(basis_uid);
-        let basis = match attr_id {
-            AttrId::LostHp => (hp.max - hp.current).max(0),
-            AttrId::CurrentHp => hp.current,
-            AttrId::Hp => hp.max,
-            attr => managers.attribute.get(basis_uid, attr),
-        };
+        let basis = managers.origin_attribute(basis_uid, AttrId::from_raw(*attr_id)?);
         modified(
             scale_permille(basis, *rate),
             source_uid,

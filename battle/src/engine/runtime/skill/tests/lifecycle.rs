@@ -544,48 +544,7 @@ fn configured_after_damage_buff_targets_every_resolved_action_target() {
         }),
         ..Default::default()
     };
-    let managers = BattleManagers::seeded(&fight);
     let pool = TargetPool::from_fight(&fight);
-    let mut determinism = RoundDeterminism::default();
-    determinism.enqueue_skill_target_choices([
-        crate::engine::runtime::determinism::SkillTargetChoice {
-            skill_id: 30810481,
-            source_uid: 10,
-            target_code: 201,
-            targets: vec![-1, -2],
-            additional_targets: Vec::new(),
-            crit_targets: Vec::new(),
-            additional_crit_targets: Vec::new(),
-        },
-    ]);
-
-    let ops = emit_all_ops(
-        SkillRequest {
-            source_uid: 10,
-            skill_id: 30810481,
-        }
-        .into(),
-        &managers,
-        &pool,
-        crate::engine::skill::effect::catalog::global(),
-        &mut determinism,
-        TargetContext::default(),
-        &SkillOpTrigger::Active,
-    )
-    .unwrap();
-    let grants = ops
-        .iter()
-        .filter_map(|op| match op {
-            RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(grant)))
-                if grant.buff_id == 4150001 =>
-            {
-                Some((grant.target_uid, grant.amount))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    assert_eq!(grants, vec![(-1, Some(2)), (-2, Some(2))]);
     let mut managers = BattleManagers::seeded(&fight);
     let mut determinism = RoundDeterminism::default();
     determinism.enqueue_skill_target_choices([

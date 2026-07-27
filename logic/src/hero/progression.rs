@@ -6,13 +6,38 @@ impl HeroManager {
         db: &SqlitePool,
         hero_id: i32,
         new_level: i32,
-    ) -> Result<(HeroLevelUpReply, HeroInfo), AppError> {
-        config::configs::get()
-            .character_level(hero_id, new_level)
-            .ok_or(AppError::InvalidRequest)?;
-
+    ) -> Result<(HeroLevelUpReply, HeroInfo, ConsumedRewards), AppError> {
+        let tables = config::configs::get();
         let hero = UserHeroModel::new(self.player_id, db.clone());
-        hero.level_up(hero_id, new_level).await?;
+        let current = hero.get(hero_id).await?;
+        let max_level = tables
+            .character_rank_level_limit(hero_id, current.record.rank)
+            .ok_or(AppError::InvalidRequest)?;
+        if new_level <= current.record.level || new_level > max_level {
+            return Err(AppError::InvalidRequest);
+        }
+        let rare = tables
+            .character
+            .get(hero_id)
+            .map(|hero| hero.rare)
+            .ok_or(AppError::InvalidRequest)?;
+        let mut costs = reward::RewardSet::default();
+        for level in current.record.level + 1..=new_level {
+            let row = tables
+                .character_level_cost(rare, level)
+                .ok_or(AppError::InvalidRequest)?;
+            costs.extend(reward::parse(&row.cosume));
+        }
+
+        let mut tx = db.begin().await?;
+        let consumed = reward::consume(&mut tx, self.player_id, &costs).await?;
+        if !hero
+            .level_up(&mut tx, hero_id, current.record.level, new_level)
+            .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        tx.commit().await?;
         let updated = snapshot(db, hero.get(hero_id).await?).await?;
 
         Ok((
@@ -21,6 +46,7 @@ impl HeroManager {
                 new_level: Some(new_level),
             },
             updated,
+            consumed,
         ))
     }
 

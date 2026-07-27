@@ -33,6 +33,7 @@ impl CardMechanic {
                 .max(0),
         )
         .unwrap_or(usize::MAX)
+        .max(managers.card.refill_floor())
     }
 
     pub fn ultimate_cost_offset(&self, managers: &BattleManagers, owner_uid: i64) -> i32 {

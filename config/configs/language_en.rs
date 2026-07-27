@@ -9,19 +9,7 @@ pub struct LanguageEnTable {
 
 impl LanguageEnTable {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let value: serde_json::Value = serde_json::from_str(&json)?;
-
-        let rows: Vec<(String, String)> = if let Some(array) = value.as_array() {
-            if array.len() >= 2 && array[1].is_array() {
-                serde_json::from_value(array[1].clone())?
-            } else {
-                serde_json::from_value(value)?
-            }
-        } else {
-            serde_json::from_value(value)?
-        };
-
+        let rows = crate::load_rows(path)?;
         let by_key: HashMap<String, String> = rows.into_iter().collect();
         Ok(Self { by_key })
     }

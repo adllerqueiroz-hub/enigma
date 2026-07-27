@@ -395,6 +395,69 @@ fn teaching_card_refill_follows_the_configured_draws_after_tutorial_plays() {
 }
 
 #[test]
+fn teaching_card_without_scripted_refills_preserves_its_composed_hand_size() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(11011),
+        episode_id: Some(10101),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(3028),
+                position: Some(1),
+                current_hp: Some(1_000),
+                skill_group1: vec![30280111, 30280112, 30280113],
+                skill_group2: vec![30280121, 30280122, 30280123],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+    runtime
+        .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
+        .unwrap();
+    let opening_size = runtime.managers.card.normal_hand_len();
+    assert_eq!(opening_size, 4);
+
+    runtime
+        .managers
+        .execute_card(crate::engine::manager::card::CardCommand::Play(
+            crate::engine::manager::card::CardPlay {
+                origin: crate::engine::manager::card::CARD_PLAY_ORIGIN,
+                hand_index: 0,
+                target_uid: None,
+                chosen_skill_id: None,
+                choice: None,
+                recorded_skill: None,
+            },
+        ))
+        .unwrap();
+    let pool = crate::engine::skill::target::TargetPool::from_fight(&runtime.fight);
+    let hand_size = crate::engine::mechanic::card::CardMechanic.normal_hand_limit(
+        crate::engine::manager::card::start::hand_size(&runtime.fight),
+        &runtime.managers,
+        &pool,
+    );
+    schedule::run_round_refill(
+        &mut runtime.managers,
+        &pool,
+        &runtime.catalog,
+        &mut runtime.determinism,
+        Default::default(),
+        hand_size,
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(runtime.managers.card.normal_hand_len(), opening_size);
+    assert!(!runtime.managers.card.refilled().is_empty());
+    assert_eq!(runtime.managers.card.deck_num(), 16);
+}
+
+#[test]
 fn next_round_snapshot_keeps_card_not_cal_size_ultimate() {
     crate::test_support::init_config();
     let ultimate = 31390131;

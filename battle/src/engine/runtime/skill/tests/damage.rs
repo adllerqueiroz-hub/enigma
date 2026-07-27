@@ -1123,3 +1123,53 @@ fn bloodlust_heals_from_committed_damage() {
             })
     )));
 }
+
+#[test]
+fn dodged_attack_does_not_apply_effects_to_the_target_hit() {
+    crate::test_support::init_config();
+    let attacker =
+        crate::engine::fight::defender::Defender::build_monster_with_uid(100109, 10, 1, 1).unwrap();
+    let mut defender =
+        crate::engine::fight::defender::Defender::build_monster_with_uid(100108, -1, 1, 2).unwrap();
+    defender.buffs.push(BuffInfo {
+        uid: Some(1002),
+        buff_id: Some(22181),
+        duration: Some(2),
+        from_uid: Some(-1),
+        ..Default::default()
+    });
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![attacker],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![defender],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let hp_before = managers.hp.current(-1);
+    let mut invocation: SkillInvocation = SkillRequest {
+        source_uid: 10,
+        skill_id: 30230112,
+    }
+    .into();
+    invocation.mode = SkillExecutionMode::Active;
+    invocation.target = SkillTarget::Explicit(-1);
+
+    crate::engine::runtime::drain::run(
+        &mut managers,
+        &pool,
+        crate::engine::skill::effect::catalog::global(),
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [RuleOp::Skill(invocation)],
+    )
+    .unwrap();
+
+    assert_eq!(managers.hp.current(-1), hp_before);
+    assert!(!managers.buff.has_buff_id(-1, 4051));
+}

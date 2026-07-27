@@ -293,6 +293,7 @@ pub struct CardConsumeForEffect {
 #[allow(clippy::large_enum_variant)]
 pub enum CardCommand {
     Setup(CardSetup),
+    PreserveRefillFloor,
     ConsumeForEffect(CardConsumeForEffect),
     Move {
         origin: CommandOrigin,
@@ -498,6 +499,17 @@ pub(super) fn execute(
                 return Err(CardCommandError::InvalidCommand);
             }
             manager.reset_with_draw_pile(setup.hand, setup.draw_pile, setup.deck_num);
+            (
+                None,
+                CardChangeKind::Setup,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+        CardCommand::PreserveRefillFloor => {
+            manager.preserve_refill_floor();
             (
                 None,
                 CardChangeKind::Setup,

@@ -594,10 +594,10 @@ behavior_definitions! {
     [60146] "OriginDamageByTeamAttr" => crate::engine::damage::handler::Handler, OriginDamageByTeamAttr, AfterDamage, plain, crate::engine::damage::handler::supports_team_attr_damage;
     [60127] "OriginDamageByAttrAndBuffGroupSize" => crate::engine::damage::handler::Handler, OriginDamageByAttrAndBuffGroupSize, AfterDamage, plain;
     [60282] "ButterflyDamage" => crate::engine::damage::handler::Handler, ButterflyDamage, AfterDamage, destination, crate::engine::damage::handler::supports_butterfly_damage;
-    [20001] "Heal" => crate::engine::damage::handler::Handler, Heal, Immediate, destination, crate::engine::damage::handler::supports_heal;
-    [90001] "Heal" => crate::engine::damage::handler::Handler, Heal, Immediate, destination, crate::engine::damage::handler::supports_heal;
-    [20016] "HealCantCrit" => crate::engine::damage::handler::Handler, HealCantCrit, Immediate, destination, crate::engine::damage::handler::supports_attr_heal;
-    [60232] "HealByTwoAttr" => crate::engine::damage::handler::Handler, HealByTwoAttr, Immediate, destination, crate::engine::damage::handler::supports_two_attr_heal;
+    [20001] "Heal" => crate::engine::damage::handler::Handler, Heal, AfterDamage, destination, crate::engine::damage::handler::supports_heal;
+    [90001] "Heal" => crate::engine::damage::handler::Handler, Heal, AfterDamage, destination, crate::engine::damage::handler::supports_heal;
+    [20016] "HealCantCrit" => crate::engine::damage::handler::Handler, HealCantCrit, AfterDamage, destination, crate::engine::damage::handler::supports_attr_heal;
+    [60232] "HealByTwoAttr" => crate::engine::damage::handler::Handler, HealByTwoAttr, AfterDamage, destination, crate::engine::damage::handler::supports_two_attr_heal;
     [20010] "Bloodlust" => crate::engine::damage::handler::Handler, Bloodlust, AfterDamage, destination, crate::engine::damage::handler::supports_bloodlust;
     [30005] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
     [30006] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;

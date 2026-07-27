@@ -57,6 +57,7 @@ pub enum BehaviorTargetSource {
     #[default]
     Resolved,
     ActiveSkillTargets,
+    HitTargets,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -238,6 +239,11 @@ pub const fn uses_active_skill_targets(mut metadata: ConditionMetadata) -> Condi
     metadata
 }
 
+pub const fn uses_hit_targets(mut metadata: ConditionMetadata) -> ConditionMetadata {
+    metadata.behavior_target_source = BehaviorTargetSource::HitTargets;
+    metadata
+}
+
 pub const fn reaction_targets_owner(mut metadata: ConditionMetadata) -> ConditionMetadata {
     metadata.reaction_frame_target = ReactionFrameTarget::Owner;
     metadata
@@ -311,7 +317,7 @@ condition_definitions! {
     [203] "None" => none::skill_action_start, event_trigger(EventKind::SkillAction, Some(SkillPhase::Immediate));
     [201] "None" => none::skill_action_start, event_trigger(EventKind::SkillAction, Some(SkillPhase::Immediate));
     [205] "None" => none::skill_action_start, event_trigger(EventKind::SkillAction, Some(SkillPhase::Immediate));
-    [208] "None" => none::skill_action_after_damage, event_trigger(EventKind::SkillAction, Some(SkillPhase::AfterDamage));
+    [208] "None" => none::skill_action_after_damage, uses_hit_targets(event_trigger(EventKind::SkillAction, Some(SkillPhase::AfterDamage)));
     [210] "None" => none::skill_action_after_hit, event_trigger(EventKind::SkillAction, Some(SkillPhase::AfterHit));
     [202, 204, 206, 207, 2011, 2082, 2092, 900, 901, 903, 905, 908, 910, 930, 1041] "None" => none::skill_action, event_trigger(EventKind::SkillAction, None);
     [1061] "None" => none::action_queue_committed, event_trigger(EventKind::ActionQueueCommitted, None);

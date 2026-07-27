@@ -116,6 +116,8 @@ async fn currency_reward_creates_missing_balance() {
 
 #[tokio::test]
 async fn cost_validation_does_not_partially_consume() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
     let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query(
         "CREATE TABLE items (
@@ -134,6 +136,10 @@ async fn cost_validation_does_not_partially_consume() {
                 last_recover_time INTEGER,
                 expired_time INTEGER,
                 PRIMARY KEY (user_id, currency_id)
+            );
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                level INTEGER NOT NULL
             );",
     )
     .execute(&pool)
@@ -143,10 +149,19 @@ async fn cost_validation_does_not_partially_consume() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO currencies (user_id, currency_id, quantity) VALUES (7, 4, 0)")
+    sqlx::query("INSERT INTO users (id, level) VALUES (7, 1)")
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query(
+        "INSERT INTO currencies
+         (user_id, currency_id, quantity, last_recover_time)
+         VALUES (7, 4, 0, ?)",
+    )
+    .bind(common::time::ServerTime::now_ms())
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let mut tx = pool.begin().await.unwrap();
     assert!(matches!(
@@ -160,6 +175,31 @@ async fn cost_validation_does_not_partially_consume() {
             .await
             .unwrap();
     assert_eq!(quantity, 1);
+}
+
+#[tokio::test]
+async fn consumed_currency_is_not_reported_as_a_material_delta() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE currencies (
+            user_id INTEGER NOT NULL,
+            currency_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            last_recover_time INTEGER,
+            expired_time INTEGER,
+            PRIMARY KEY (user_id, currency_id)
+        );
+        INSERT INTO currencies (user_id, currency_id, quantity) VALUES (7, 3, 100);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let consumed = consume(&mut tx, 7, &parse("2#3#10")).await.unwrap();
+
+    assert_eq!(consumed.currency_ids, vec![(3, -10)]);
+    assert!(consumed.material_changes.is_empty());
 }
 
 #[test]

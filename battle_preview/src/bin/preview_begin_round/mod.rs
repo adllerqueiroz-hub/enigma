@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env, fs, io,
     path::{Path, PathBuf},
 };
@@ -155,11 +155,58 @@ fn replay_to_round(path: &Path) -> anyhow::Result<FightRound> {
         let request = begin_round_request(&request_path)?;
         let captured = captured_round(&path.with_file_name(reply_name))?;
         report_rule_issues(&captured);
+        seed_captured_randomness(&mut runtime, &captured);
         round_reply = runtime.advance_round(request).map_err(io::Error::other)?;
         replay_cloth_input(path, index, &mut runtime)?;
     }
 
     Ok(round_reply)
+}
+
+fn seed_captured_randomness(runtime: &mut BattleRuntime, round: &FightRound) {
+    runtime.seed_card_draws(round.team_a_cards2.clone());
+    if runtime.fight_version() == 7 {
+        runtime.seed_next_ai_cards(round.ai_use_cards.clone());
+    }
+    for ((skill_id, source_uid), choices) in captured_hidden_crits(round) {
+        runtime.seed_hidden_crits(skill_id, source_uid, choices);
+    }
+}
+
+fn captured_hidden_crits(round: &FightRound) -> HashMap<(i32, i64), Vec<bool>> {
+    let damage = sonettobuf::effect_type_enum::EffectType::Damage as i32;
+    let critical = sonettobuf::effect_type_enum::EffectType::Crit as i32;
+    let heal = sonettobuf::effect_type_enum::EffectType::Heal as i32;
+    let critical_heal = sonettobuf::effect_type_enum::EffectType::Healcrit as i32;
+    let mut choices = HashMap::<(i32, i64), Vec<bool>>::new();
+    for step in nested_steps(round) {
+        let skill_id = step.act_id.unwrap_or_default();
+        let source_uid = step.from_id.unwrap_or_default();
+        if skill_id == 0 || source_uid == 0 {
+            continue;
+        }
+        let mut seen_targets = HashSet::new();
+        for effect in &step.act_effect {
+            let Some(is_critical) = effect
+                .effect_type
+                .and_then(|effect_type| match effect_type {
+                    value if value == damage || value == heal => Some(false),
+                    value if value == critical || value == critical_heal => Some(true),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            let target_uid = effect.target_id.unwrap_or_default();
+            if target_uid != 0 && seen_targets.insert(target_uid) {
+                choices
+                    .entry((skill_id, source_uid))
+                    .or_default()
+                    .push(is_critical);
+            }
+        }
+    }
+    choices
 }
 
 fn replay_cloth_input(

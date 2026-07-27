@@ -1,6 +1,171 @@
 use super::*;
 
 #[test]
+fn apple_rank_two_attack_heals_the_lowest_hp_ally() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(3028),
+                current_hp: Some(500),
+                skill_group2: vec![30280121, 30280122, 30280123],
+                attr: Some(HeroAttribute {
+                    hp: Some(1_250),
+                    attack: Some(231),
+                    ..Default::default()
+                }),
+                base_attr: Some(HeroAttribute {
+                    hp: Some(1_250),
+                    attack: Some(231),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(1_000),
+                attr: Some(HeroAttribute {
+                    hp: Some(1_000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    managers
+        .execute_card(CardCommand::Setup(CardSetup {
+            hand: vec![CardInfo {
+                uid: Some(10),
+                skill_id: Some(30280122),
+                ..Default::default()
+            }],
+            draw_pile: Vec::new(),
+            deck_num: 16,
+        }))
+        .unwrap();
+    let catalog = SkillEffectCatalog::from_fight(config::configs::get(), &fight);
+    run_player_action_queue(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [CardPlay {
+            origin: CARD_PLAY_ORIGIN,
+            hand_index: 0,
+            target_uid: Some(-1),
+            chosen_skill_id: None,
+            choice: None,
+            recorded_skill: None,
+        }],
+        1,
+        crate::engine::manager::emitter::UID,
+    )
+    .unwrap();
+
+    assert_eq!(managers.hp.current(10), 638);
+}
+
+#[test]
+fn apple_ultimate_settles_death_before_its_after_damage_heal() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(3028),
+                current_hp: Some(500),
+                ex_point: Some(5),
+                ex_skill: Some(30280131),
+                attr: Some(HeroAttribute {
+                    hp: Some(1_250),
+                    attack: Some(231),
+                    ..Default::default()
+                }),
+                base_attr: Some(HeroAttribute {
+                    hp: Some(1_250),
+                    attack: Some(231),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(225),
+                attr: Some(HeroAttribute {
+                    hp: Some(225),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    managers
+        .execute_card(CardCommand::Setup(CardSetup {
+            hand: vec![CardInfo {
+                uid: Some(10),
+                skill_id: Some(30280131),
+                ..Default::default()
+            }],
+            draw_pile: Vec::new(),
+            deck_num: 16,
+        }))
+        .unwrap();
+    let catalog = SkillEffectCatalog::from_fight(config::configs::get(), &fight);
+    let result = run_player_action_queue(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [CardPlay {
+            origin: CARD_PLAY_ORIGIN,
+            hand_index: 0,
+            target_uid: Some(-1),
+            chosen_skill_id: None,
+            choice: None,
+            recorded_skill: None,
+        }],
+        1,
+        crate::engine::manager::emitter::UID,
+    )
+    .unwrap();
+
+    let step = crate::engine::packet::timeline::project(&result.frames)
+        .unwrap()
+        .into_iter()
+        .find(|step| step.act_id == Some(30280131))
+        .unwrap();
+    assert_eq!(
+        step.act_effect
+            .iter()
+            .filter_map(|effect| effect.effect_type)
+            .collect::<Vec<_>>(),
+        vec![
+            sonettobuf::effect_type_enum::EffectType::Expointchange as i32,
+            sonettobuf::effect_type_enum::EffectType::Damage as i32,
+            sonettobuf::effect_type_enum::EffectType::Dead as i32,
+            sonettobuf::effect_type_enum::EffectType::Heal as i32,
+        ]
+    );
+}
+
+#[test]
 fn decoded_card_commands_share_the_command_only_player_schedule() {
     init_config();
     let fight = Fight {

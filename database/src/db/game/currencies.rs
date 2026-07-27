@@ -3,6 +3,8 @@ use common::time::ServerTime;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
 
+pub const POWER_CURRENCY_ID: i32 = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitedExchangeResult {
     Applied,
@@ -108,6 +110,9 @@ pub async fn consume_currency_in_transaction(
     amount: i32,
     now: i64,
 ) -> sqlx::Result<bool> {
+    if currency_id == POWER_CURRENCY_ID {
+        settle_power_recovery_in_transaction(tx, user_id, now).await?;
+    }
     Ok(sqlx::query(
         "UPDATE currencies
          SET quantity = quantity - ?,
@@ -133,6 +138,9 @@ pub(super) async fn add_currency_with_limit_in_transaction(
     limit: i32,
     now: i64,
 ) -> sqlx::Result<bool> {
+    if currency_id == POWER_CURRENCY_ID {
+        settle_power_recovery_in_transaction(tx, user_id, now).await?;
+    }
     Ok(sqlx::query(
         "INSERT INTO currencies
              (user_id, currency_id, quantity, last_recover_time, expired_time)
@@ -160,6 +168,9 @@ pub async fn add_currency_in_transaction(
     amount: i32,
     now: i64,
 ) -> sqlx::Result<()> {
+    if currency_id == POWER_CURRENCY_ID {
+        settle_power_recovery_in_transaction(tx, user_id, now).await?;
+    }
     sqlx::query(
         "INSERT INTO currencies
              (user_id, currency_id, quantity, last_recover_time, expired_time)
@@ -184,6 +195,9 @@ pub async fn get_currencies(
 ) -> sqlx::Result<Vec<Currency>> {
     if currency_ids.is_empty() {
         return Ok(Vec::new());
+    }
+    if currency_ids.contains(&POWER_CURRENCY_ID) {
+        settle_power_recovery(pool, user_id).await?;
     }
 
     let placeholders = currency_ids
@@ -221,6 +235,9 @@ pub async fn get_currency(
     user_id: i64,
     currency_id: i32,
 ) -> sqlx::Result<Option<Currency>> {
+    if currency_id == POWER_CURRENCY_ID {
+        settle_power_recovery(pool, user_id).await?;
+    }
     sqlx::query_as::<_, Currency>(
         "SELECT user_id, currency_id, quantity, last_recover_time, expired_time
          FROM currencies
@@ -230,6 +247,84 @@ pub async fn get_currency(
     .bind(currency_id)
     .fetch_optional(pool)
     .await
+}
+
+pub async fn settle_power_recovery(pool: &SqlitePool, user_id: i64) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    settle_power_recovery_in_transaction(&mut tx, user_id, ServerTime::now_ms()).await?;
+    tx.commit().await
+}
+
+async fn settle_power_recovery_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    now: i64,
+) -> sqlx::Result<()> {
+    let Some((quantity, last_recover_time, level)) = sqlx::query_as::<_, (i32, Option<i64>, i32)>(
+        "SELECT currencies.quantity, currencies.last_recover_time, users.level
+         FROM currencies
+         JOIN users ON users.id = currencies.user_id
+         WHERE currencies.user_id = ? AND currencies.currency_id = ?",
+    )
+    .bind(user_id)
+    .bind(POWER_CURRENCY_ID)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Ok(());
+    };
+
+    let tables = config::configs::get();
+    let currency = tables
+        .currency
+        .get(POWER_CURRENCY_ID)
+        .ok_or_else(|| sqlx::Error::Protocol("missing power currency config".to_string()))?;
+    let recover_limit = tables
+        .player_level(level)
+        .ok_or_else(|| sqlx::Error::Protocol(format!("missing player level {level}")))?
+        .max_auto_recover_power;
+    if quantity >= recover_limit {
+        return Ok(());
+    }
+
+    let Some(last_recover_time) = last_recover_time else {
+        sqlx::query(
+            "UPDATE currencies SET last_recover_time = ?
+             WHERE user_id = ? AND currency_id = ?",
+        )
+        .bind(now)
+        .bind(user_id)
+        .bind(POWER_CURRENCY_ID)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(());
+    };
+    let interval = i64::from(currency.recover_time) * 1_000;
+    if interval <= 0 || currency.recover_num <= 0 {
+        return Ok(());
+    }
+    let ticks = now.saturating_sub(last_recover_time) / interval;
+    if ticks == 0 {
+        return Ok(());
+    }
+
+    let recovered = ticks.saturating_mul(i64::from(currency.recover_num));
+    let quantity = i64::from(quantity)
+        .saturating_add(recovered)
+        .min(i64::from(recover_limit)) as i32;
+    let last_recover_time = last_recover_time.saturating_add(ticks.saturating_mul(interval));
+    sqlx::query(
+        "UPDATE currencies
+         SET quantity = ?, last_recover_time = ?
+         WHERE user_id = ? AND currency_id = ?",
+    )
+    .bind(quantity)
+    .bind(last_recover_time)
+    .bind(user_id)
+    .bind(POWER_CURRENCY_ID)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub async fn save_currency(pool: &SqlitePool, currency: &Currency) -> sqlx::Result<()> {

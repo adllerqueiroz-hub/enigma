@@ -115,7 +115,9 @@ fn version_seven_embeds_shield_absorption_in_hurt_info() {
             .unwrap()
             .absorb_hurt_param
             .as_deref(),
-        Some(r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":"77#40"}"#)
+        Some(
+            r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":"77#40"}"#
+        )
     );
 }
 
@@ -181,7 +183,9 @@ fn version_seven_embeds_team_shared_shield_consumption_in_hurt_info() {
             .unwrap()
             .absorb_hurt_param
             .as_deref(),
-        Some(r#"{"reduceTeamShareShieldBuffMap":"77#349","reduceShieldBuffMap":""}"#)
+        Some(
+            r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"77#349","reduceShieldBuffMap":""}"#
+        )
     );
 }
 
@@ -270,7 +274,9 @@ fn reduce_hp_wire_value_is_gated_by_fight_protocol_version() {
             .unwrap()
             .absorb_hurt_param
             .as_deref(),
-        Some(r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#)
+        Some(
+            r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
+        )
     );
 }
 

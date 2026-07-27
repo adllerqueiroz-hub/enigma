@@ -87,13 +87,13 @@ fn run_card_refill(
     opening_draws: Vec<sonettobuf::CardInfo>,
 ) -> Result<DrainResult, DrainError> {
     let mut opening_draws = opening_draws.into_iter();
-    let mut result = DrainResult::default();
+    let mut result = begin_round_phase(RoundPhase::CardRefill);
     let origin = CommandOrigin {
         domain: RuleDomain::Lifecycle,
         key: DefinitionKey::new(0, "RoundRefill"),
     };
     if stage == RefillStage::AfterActions {
-        append(
+        append_round_phase(
             &mut result,
             drain::run(
                 managers,
@@ -128,9 +128,7 @@ fn run_card_refill(
         .copied()
         .filter(|owner_uid| managers.ex_point.gains_composition_ex_point(*owner_uid))
         .collect::<Vec<_>>();
-    let mut composed = 0;
-    append(&mut result, composition);
-    append(
+    append_round_phase(
         &mut result,
         run_card_composition_rewards(
             managers,
@@ -142,6 +140,7 @@ fn run_card_refill(
             initial_composed.into_iter().map(|owner_uid| (owner_uid, 1)),
         )?,
     );
+    append_round_phase(&mut result, composition);
     loop {
         let ready_normal = if stage != RefillStage::Opening {
             crate::engine::mechanic::card::CardMechanic.normal_ultimate_cards(pool, managers)
@@ -245,7 +244,10 @@ fn run_card_refill(
                     origin,
                     card,
                     consume_draw_pile: stage != RefillStage::Opening && !is_ultimate,
-                    consume_deck: stage != RefillStage::Opening && !is_ultimate && !is_device,
+                    consume_deck: stage != RefillStage::Opening
+                        && !is_ultimate
+                        && !is_device
+                        && managers.card.refill_consumes_deck(),
                 }),
             ))],
         )?;
@@ -259,14 +261,14 @@ fn run_card_refill(
             .flatten()
             .copied()
             .collect::<Vec<_>>();
-        append(&mut result, refill);
-        composed += composed_owners.len();
+        let composed_count = composed_owners.len();
+        append_round_phase(&mut result, refill);
         let reward_owners = composed_owners
             .into_iter()
             .filter(|owner_uid| managers.ex_point.gains_composition_ex_point(*owner_uid))
             .map(|owner_uid| (owner_uid, 1))
             .collect::<Vec<_>>();
-        append(
+        append_round_phase(
             &mut result,
             run_card_composition_rewards(
                 managers,
@@ -278,17 +280,25 @@ fn run_card_refill(
                 reward_owners,
             )?,
         );
+        if composed_count != 0 {
+            let mut cues = DrainResult::default();
+            push_cues(
+                &mut cues.frames,
+                std::iter::repeat_n(RoundCue::CardsCompose { team_type }, composed_count),
+            );
+            append_round_phase(&mut result, cues);
+        }
     }
-    if stage != RefillStage::RoundStart {
+    if stage == RefillStage::AfterActions {
+        let mut summary = DrainResult::default();
         push_cues(
-            &mut result.frames,
-            std::iter::repeat_n(RoundCue::CardsCompose { team_type }, composed).chain([
-                RoundCue::DeckCount {
-                    count: managers.card.deck_num(),
-                    team_type,
-                },
-            ]),
+            &mut summary.frames,
+            [RoundCue::DeckCount {
+                count: managers.card.deck_num(),
+                team_type,
+            }],
         );
+        append_round_phase(&mut result, summary);
     }
     Ok(result)
 }

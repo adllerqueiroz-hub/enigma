@@ -2,7 +2,7 @@ use super::ProfileManager;
 use crate::{error::AppError, reward};
 use chrono::{Datelike, NaiveDate};
 use database::db::{
-    game::{items, open_infos, player_card, player_infos},
+    game::{currencies, items, open_infos, player_card, player_infos},
     user::account,
 };
 use sonettobuf::{
@@ -202,14 +202,12 @@ impl ProfileManager {
 }
 
 pub fn level_up_rewards(change: player_infos::PlayerLevelChange) -> reward::RewardSet {
-    const POWER_CURRENCY_ID: i32 = 4;
-
     let mut rewards = reward::RewardSet::default();
     for level in config::configs::get().player_levels_between(change.from, change.to) {
         rewards.extend(reward::parse_bonus(level.bonus));
         rewards
             .currencies
-            .push((POWER_CURRENCY_ID, level.add_up_recover_power));
+            .push((currencies::POWER_CURRENCY_ID, level.add_up_recover_power));
     }
     rewards
 }

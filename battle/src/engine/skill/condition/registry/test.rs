@@ -60,6 +60,10 @@ fn post_damage_and_buff_id_conditions_keep_exact_route_roles() {
         Some(ParsedConditionKind::None(NoneMode::SkillActionAfterDamage))
     );
     assert_eq!(
+        find_key(208, "None").map(|definition| definition.behavior_target_source),
+        Some(BehaviorTargetSource::HitTargets)
+    );
+    assert_eq!(
         find_key(210, "None").map(|definition| definition.role),
         Some(ConditionRole::Trigger {
             event: EventKind::SkillAction,

@@ -1,7 +1,8 @@
 use super::{
-    buy_power, exchange_diamond, exchange_same_currency, item_rewards, pop_exchange_same_currency,
-    use_insight_item, use_items, use_power_item,
+    buy_power, currency_list, exchange_diamond, exchange_same_currency, item_rewards,
+    pop_exchange_same_currency, use_insight_item, use_items, use_power_item,
 };
+use common::time::ServerTime;
 use database::models::game::heros::{InsightUpgrade, UserHeroModel};
 use sonettobuf::M2qEntry;
 use sqlx::SqlitePool;
@@ -126,6 +127,96 @@ async fn power_item_use_updates_the_owned_stack_and_stamina_together() {
 }
 
 #[tokio::test]
+async fn starter_power_matches_level_cap_and_recovers_while_offline() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (31, 'power-recovery', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 31)
+        .await
+        .unwrap();
+
+    let initial = currency_list(
+        &pool,
+        31,
+        vec![database::db::game::currencies::POWER_CURRENCY_ID],
+    )
+    .await
+    .unwrap();
+    assert_eq!(initial.currency_list[0].quantity, Some(170));
+
+    let power = config::configs::get()
+        .currency
+        .get(database::db::game::currencies::POWER_CURRENCY_ID)
+        .unwrap();
+    let interval = i64::from(power.recover_time) * 1_000;
+    let last_recover_time = ServerTime::now_ms() - interval * 3;
+    sqlx::query(
+        "UPDATE currencies
+         SET quantity = 100, last_recover_time = ?
+         WHERE user_id = 31 AND currency_id = ?",
+    )
+    .bind(last_recover_time)
+    .bind(database::db::game::currencies::POWER_CURRENCY_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let recovered = currency_list(
+        &pool,
+        31,
+        vec![database::db::game::currencies::POWER_CURRENCY_ID],
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.currency_list[0].quantity, Some(103));
+    assert_eq!(
+        recovered.currency_list[0].last_recover_time,
+        Some((last_recover_time + interval * 3) as u64)
+    );
+
+    let spend_time = ServerTime::now_ms();
+    sqlx::query(
+        "UPDATE currencies
+         SET quantity = 0, last_recover_time = ?
+         WHERE user_id = 31 AND currency_id = ?",
+    )
+    .bind(spend_time - interval * 3)
+    .bind(database::db::game::currencies::POWER_CURRENCY_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        database::db::game::currencies::consume_currency_in_transaction(
+            &mut tx,
+            31,
+            database::db::game::currencies::POWER_CURRENCY_ID,
+            2,
+            spend_time,
+        )
+        .await
+        .unwrap()
+    );
+    tx.commit().await.unwrap();
+    let remaining: i32 = sqlx::query_scalar(
+        "SELECT quantity FROM currencies WHERE user_id = 31 AND currency_id = ?",
+    )
+    .bind(database::db::game::currencies::POWER_CURRENCY_ID)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining, 1);
+}
+
+#[tokio::test]
 async fn diamond_exchange_moves_the_requested_amount_atomically() {
     let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
     let _ = config::init(&data_dir);
@@ -174,8 +265,10 @@ async fn power_purchase_uses_the_next_configured_price() {
         .unwrap();
     sqlx::query(
         "INSERT INTO currencies (user_id, currency_id, quantity, last_recover_time, expired_time)
-             VALUES (23, 2, 200, 0, 0), (23, 4, 0, 0, 0)",
+             VALUES (23, 2, 200, ?, 0), (23, 4, 0, ?, 0)",
     )
+    .bind(ServerTime::now_ms())
+    .bind(ServerTime::now_ms())
     .execute(&pool)
     .await
     .unwrap();

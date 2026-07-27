@@ -44,6 +44,7 @@ impl UserCurrencyModel {
 #[async_trait::async_trait]
 impl CurrencyModel<Currency> for UserCurrencyModel {
     async fn get_all(&self) -> Result<Vec<Currency>, sqlx::Error> {
+        crate::db::game::currencies::settle_power_recovery(&self.pool, self.user_id).await?;
         sqlx::query_as::<_, Currency>(
             "SELECT user_id, currency_id, quantity, last_recover_time, expired_time
              FROM currencies
@@ -55,15 +56,7 @@ impl CurrencyModel<Currency> for UserCurrencyModel {
     }
 
     async fn get(&self, currency_id: i32) -> Result<Option<Currency>, sqlx::Error> {
-        sqlx::query_as::<_, Currency>(
-            "SELECT user_id, currency_id, quantity, last_recover_time, expired_time
-             FROM currencies
-             WHERE user_id = ? AND currency_id = ?",
-        )
-        .bind(self.user_id)
-        .bind(currency_id)
-        .fetch_optional(&self.pool)
-        .await
+        crate::db::game::currencies::get_currency(&self.pool, self.user_id, currency_id).await
     }
 
     async fn create(&self, currency_id: i32, amount: i32) -> Result<Vec<i32>, sqlx::Error> {

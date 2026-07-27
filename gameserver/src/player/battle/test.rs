@@ -181,6 +181,8 @@ async fn malformed_checkpoint_is_the_only_discardable_restore_error() {
 
 #[tokio::test]
 async fn activation_rolls_back_cost_when_an_active_fight_already_exists() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     database::run_migrations(&pool).await.unwrap();
     sqlx::query(
@@ -191,9 +193,10 @@ async fn activation_rolls_back_cost_when_an_active_fight_already_exists() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO currencies (user_id, currency_id, quantity)
-         VALUES (9, 4, 5)",
+        "INSERT INTO currencies (user_id, currency_id, quantity, last_recover_time)
+         VALUES (9, 4, 5, ?)",
     )
+    .bind(common::time::ServerTime::now_ms())
     .execute(&pool)
     .await
     .unwrap();

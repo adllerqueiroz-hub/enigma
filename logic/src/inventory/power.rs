@@ -47,7 +47,6 @@ pub(super) async fn buy_power(
     player_id: i64,
 ) -> Result<(BuyPowerReply, (i32, i32)), AppError> {
     const POWER_BUY_COST_ID: i32 = 25;
-    const POWER_CURRENCY_ID: i32 = 4;
 
     let max_buys = power_max_buy_count()?;
     let (used, level) = player_infos::power_purchase_state(db, player_id).await?;
@@ -82,7 +81,7 @@ pub(super) async fn buy_power(
         .add_buy_recover_power;
     let stamina_limit = config::configs::get()
         .currency
-        .get(POWER_CURRENCY_ID)
+        .get(currencies::POWER_CURRENCY_ID)
         .ok_or(AppError::InvalidRequest)?
         .max_limit;
 
@@ -92,7 +91,7 @@ pub(super) async fn buy_power(
             user_id: player_id,
             source_currency_id: cost.0,
             cost: cost.1,
-            power_currency_id: POWER_CURRENCY_ID,
+            power_currency_id: currencies::POWER_CURRENCY_ID,
             power: stamina,
             power_limit: stamina_limit,
             expected_purchase_count: used,
@@ -150,7 +149,15 @@ pub(super) async fn auto_use_expired_power_items(
     }
 
     let uids = expired.iter().map(|item| item.uid).collect::<Vec<_>>();
-    if !items::convert_expired_power_items(db, player_id, &uids, 4, stamina).await? {
+    if !items::convert_expired_power_items(
+        db,
+        player_id,
+        &uids,
+        currencies::POWER_CURRENCY_ID,
+        stamina,
+    )
+    .await?
+    {
         return Err(AppError::InvalidRequest);
     }
 
@@ -230,16 +237,22 @@ async fn consume_power_items(
 
     let power = config::configs::get()
         .currency
-        .get(4)
+        .get(currencies::POWER_CURRENCY_ID)
         .ok_or(AppError::InvalidRequest)?;
     let uses = owned
         .iter()
         .map(|(item, amount)| (item.uid, *amount))
         .collect::<Vec<_>>();
-    let updates =
-        items::consume_power_items_for_currency(db, player_id, &uses, 4, gained, power.max_limit)
-            .await?
-            .ok_or(AppError::InvalidRequest)?;
+    let updates = items::consume_power_items_for_currency(
+        db,
+        player_id,
+        &uses,
+        currencies::POWER_CURRENCY_ID,
+        gained,
+        power.max_limit,
+    )
+    .await?
+    .ok_or(AppError::InvalidRequest)?;
 
     Ok(updates.into_iter().map(Into::into).collect())
 }

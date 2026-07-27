@@ -163,7 +163,7 @@ fn round_refill_commits_draw_compose_moxie_and_deck_count_in_order() {
         step.act_effect
             .iter()
             .filter_map(|effect| effect.effect_type)
-            .eq([compose, deck])
+            .eq([ex_point, compose, deck])
     }));
 }
 

@@ -1,5 +1,6 @@
 use crate::{
-    GameDB, character_data::CharacterData, character_destiny::CharacterDestiny,
+    GameDB, character_cosume::CharacterCosume, character_data::CharacterData,
+    character_destiny::CharacterDestiny,
     character_destiny_facets_consume::CharacterDestinyFacetsConsume,
     character_destiny_slots::CharacterDestinySlots, character_level::CharacterLevel,
     character_rank::CharacterRank, character_talent::CharacterTalent,
@@ -47,6 +48,22 @@ impl GameDB {
         self.character_level
             .iter()
             .find(|row| row.hero_id == hero_id && row.level == level)
+    }
+
+    pub fn character_rank_level_limit(&self, hero_id: i32, rank: i32) -> Option<i32> {
+        self.character_rank
+            .iter()
+            .find(|row| row.hero_id == hero_id && row.rank == rank)?
+            .effect
+            .split('|')
+            .filter_map(|entry| entry.split_once('#'))
+            .find_map(|(kind, value)| (kind == "1").then(|| value.parse().ok()).flatten())
+    }
+
+    pub fn character_level_cost(&self, rare: i32, level: i32) -> Option<&CharacterCosume> {
+        self.character_cosume
+            .iter()
+            .find(|row| row.rare == rare && row.level == level)
     }
 
     pub fn max_character_level(&self) -> i32 {

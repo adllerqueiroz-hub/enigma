@@ -20,18 +20,7 @@ pub struct Activity166ConstTable {
 
 impl Activity166ConstTable {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let value: serde_json::Value = serde_json::from_str(&json)?;
-
-        let records: Vec<Activity166Const> = if let Some(array) = value.as_array() {
-            if array.len() >= 2 && array[1].is_array() {
-                serde_json::from_value(array[1].clone())?
-            } else {
-                serde_json::from_value(value)?
-            }
-        } else {
-            serde_json::from_value(value)?
-        };
+        let records: Vec<Activity166Const> = crate::load_rows(path)?;
 
         let mut by_id = HashMap::with_capacity(records.len());
 

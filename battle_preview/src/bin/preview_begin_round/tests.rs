@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn generated_round_does_not_depend_on_captured_outcomes() {
+fn generated_round_uses_captured_rng_but_not_damage_amounts() {
     init_config().unwrap();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/battles/battle8");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/battles/battle62");
     let temporary = std::env::temp_dir().join(format!(
         "enigma-preview-{}-{}",
         std::process::id(),
@@ -25,17 +25,21 @@ fn generated_round_does_not_depend_on_captured_outcomes() {
     let reply_path = temporary.join("BeginRoundReply_1.json");
     let mut captured: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&reply_path).unwrap()).unwrap();
+    expand_compressed_fight_steps(&mut captured).unwrap();
     let round = captured.get_mut("round").unwrap();
-    round["fightStep"] = serde_json::json!([]);
-    round["aiUseCards"] = serde_json::json!([]);
-    round["teamACards2"] = serde_json::json!([]);
     round["nextRoundBeginStep"] = serde_json::json!([]);
+    round["fightStep"][2]["actEffect"][0]["effectNum"] = serde_json::json!(999_999);
+    round["fightStep"][2]["actEffect"][0]["hurtInfo"]["damage"] = serde_json::json!(999_999);
     fs::write(&reply_path, serde_json::to_vec(&captured).unwrap()).unwrap();
 
-    let actual = replay_to_round(&reply_path);
+    let actual = replay_to_round(&reply_path).unwrap();
+    captured.get_mut("round").unwrap()["teamACards2"] = serde_json::json!([]);
+    fs::write(&reply_path, serde_json::to_vec(&captured).unwrap()).unwrap();
+    let without_card_choices = replay_to_round(&reply_path).unwrap();
     fs::remove_dir_all(temporary).unwrap();
 
-    assert_eq!(actual.unwrap(), expected);
+    assert_eq!(actual, expected);
+    assert_ne!(without_card_choices, expected);
 }
 
 #[test]

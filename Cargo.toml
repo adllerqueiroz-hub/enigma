@@ -86,3 +86,9 @@ protocol = { path = "protocol" }
 config = { path = "config" }
 battle = { path = "battle" }
 muipserver = { path = "muipserver" }
+
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 0

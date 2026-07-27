@@ -973,7 +973,7 @@ fn apply_absorbed_shield_wire(
         .map(|change| format!("{}#{}", change.buff_uid, change.absorbed))
         .unwrap_or_default();
     hurt.absorb_hurt_param = Some(format!(
-        r#"{{"reduceTeamShareShieldBuffMap":"{team_shared}","reduceShieldBuffMap":"{shield}"}}"#
+        r#"{{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"{team_shared}","reduceShieldBuffMap":"{shield}"}}"#
     ));
 }
 
@@ -1040,7 +1040,7 @@ fn project_cue(cue: &RoundCue) -> Vec<ActEffect> {
         RoundCue::SmallRoundEnd { team_type } => {
             vec![EffectPacket::small_round_end(*team_type)]
         }
-        RoundCue::ChangeRound => vec![EffectPacket::change_round()],
+        RoundCue::ChangeRound { round } => vec![EffectPacket::change_round(*round)],
     }
 }
 

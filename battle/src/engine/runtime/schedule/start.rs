@@ -121,7 +121,18 @@ pub fn run_round_start_after_ai_split(
     owner_uids.extend(pool.assist_boss(crate::engine::fight::rules::ATTACKER_SIDE_UID));
     let duration_snapshot = duration_snapshot(managers, &owner_uids);
     let mut fight_steps = DrainResult::default();
-    push_cue(&mut fight_steps.frames, RoundCue::ChangeRound);
+    push_cue(
+        &mut fight_steps.frames,
+        RoundCue::ChangeRound {
+            round: if crate::engine::fight::versions::writes_change_round_number(
+                managers.fight_version(),
+            ) {
+                context.current_round
+            } else {
+                0
+            },
+        },
+    );
     if !entering_uids.is_empty() {
         append(
             &mut fight_steps,
@@ -263,6 +274,12 @@ pub fn run_round_start_after_ai_split(
             defeated_defenders,
         )?,
     );
+    if setup_layout == Some(crate::engine::fight::versions::RoundStartSetupLayout::Version7) {
+        append(
+            &mut fight_steps,
+            run_action_phase_start(managers, pool, catalog, determinism, context, 1)?,
+        );
+    }
     push_cue(
         &mut fight_steps.frames,
         RoundCue::DeckCount {
@@ -447,7 +464,7 @@ fn duration_snapshot(managers: &BattleManagers, owner_uids: &[i64]) -> Vec<(i64,
 
 pub fn run_finished_round_transition(managers: &BattleManagers) -> (DrainResult, DrainResult) {
     let mut fight_steps = DrainResult::default();
-    push_cue(&mut fight_steps.frames, RoundCue::ChangeRound);
+    push_cue(&mut fight_steps.frames, RoundCue::ChangeRound { round: 0 });
 
     let mut next_round_begin_steps = DrainResult::default();
     push_cue(
@@ -492,6 +509,7 @@ pub fn run_start(
     }
     let mut card_setup = Some(card_setup);
     let mut dealt_cards = None;
+    let mut opening_deck_counts = None;
     let mut opening_draws = Vec::new();
     let owner_uids = pool
         .attacker_main
@@ -570,12 +588,14 @@ pub fn run_start(
                 )?,
                 version7_opening,
             );
-            let reset_ops = managers
-                .conduit
-                .opening_reset_commands()
-                .into_iter()
-                .map(|command| RuleOp::Command(BattleCommand::Conduit(command)))
-                .collect::<Vec<_>>();
+            let reset_ops = if version7_opening {
+                managers.conduit.action_phase_start_commands(1)
+            } else {
+                managers.conduit.opening_reset_commands()
+            }
+            .into_iter()
+            .map(|command| RuleOp::Command(BattleCommand::Conduit(command)))
+            .collect::<Vec<_>>();
             if !reset_ops.is_empty() {
                 append_round_phase(
                     &mut settlement,
@@ -652,19 +672,7 @@ pub fn run_start(
             );
             dealt_cards = Some(managers.card.hand().to_vec());
             push_cue(&mut result.frames, RoundCue::EnterFightDeal);
-            push_cues(
-                &mut result.frames,
-                [
-                    RoundCue::DeckCount {
-                        count: initial_deck_num,
-                        team_type: 1,
-                    },
-                    RoundCue::DeckCount {
-                        count: managers.card.deck_num(),
-                        team_type: 1,
-                    },
-                ],
-            );
+            opening_deck_counts = Some((initial_deck_num, managers.card.deck_num()));
         }
         let stage_result = if stage == SetupStage::RoundStart && priority == 2 {
             drain::run_buff_act_setup_stage_for_owners(
@@ -820,18 +828,39 @@ pub fn run_start(
             );
         }
     }
-    append(
-        &mut result,
-        super::run_opening_hand_refill(
-            managers,
-            pool,
-            catalog,
-            determinism,
-            context,
-            crate::engine::mechanic::card::CardMechanic
-                .normal_hand_limit(hand_size, managers, pool),
-            opening_draws,
-        )?,
+    let mut opening_refill = super::run_opening_hand_refill(
+        managers,
+        pool,
+        catalog,
+        determinism,
+        context,
+        crate::engine::mechanic::card::CardMechanic.normal_hand_limit(hand_size, managers, pool),
+        opening_draws,
+    )?;
+    let (initial_deck_num, setup_deck_num) =
+        opening_deck_counts.expect("start schedule has one CardSetup stage");
+    let mut setup_deck_counts = DrainResult::default();
+    push_cues(
+        &mut setup_deck_counts.frames,
+        [
+            RoundCue::DeckCount {
+                count: initial_deck_num,
+                team_type: 1,
+            },
+            RoundCue::DeckCount {
+                count: setup_deck_num,
+                team_type: 1,
+            },
+        ],
+    );
+    append_round_phase(&mut opening_refill, setup_deck_counts);
+    append(&mut result, opening_refill);
+    push_cue(
+        &mut result.frames,
+        RoundCue::DeckCount {
+            count: managers.card.deck_num(),
+            team_type: 1,
+        },
     );
     dealt_cards
         .as_mut()

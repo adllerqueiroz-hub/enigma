@@ -106,6 +106,25 @@ impl BattleRuntime {
         }
     }
 
+    /// Seeds externally observed random draws without bypassing legal draw candidates.
+    pub fn seed_card_draws(&mut self, cards: Vec<CardInfo>) {
+        self.determinism.enqueue_card_draws(cards);
+    }
+
+    pub fn seed_next_ai_cards(&mut self, cards: Vec<CardInfo>) {
+        self.determinism.enqueue_next_ai_card_snapshot(cards);
+    }
+
+    pub fn seed_hidden_crits(
+        &mut self,
+        skill_id: i32,
+        source_uid: i64,
+        choices: impl IntoIterator<Item = bool>,
+    ) {
+        self.determinism
+            .enqueue_hidden_crits(skill_id, source_uid, choices);
+    }
+
     pub fn conduit_operations(&self) -> Vec<sonettobuf::FightDeviceOper> {
         self.managers
             .conduit

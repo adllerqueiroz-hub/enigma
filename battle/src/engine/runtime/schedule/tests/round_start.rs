@@ -276,7 +276,7 @@ fn round_start_resolves_field_with_configured_allied_threshold_modifiers() {
         matches!(
             frame.items.as_slice(),
             [crate::engine::runtime::record::FrameItem::Cue(
-                RoundCue::ChangeRound
+                RoundCue::ChangeRound { .. }
             )]
         )
     }));

@@ -55,6 +55,7 @@ pub struct CardManager {
     played_history: HashMap<i64, Vec<i32>>,
     expiring_temporary: Vec<CardInstanceId>,
     hand_limit_bonus: i32,
+    refill_floor: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -86,6 +87,7 @@ impl CardManager {
             played_history: HashMap::new(),
             expiring_temporary: Vec::new(),
             hand_limit_bonus: 0,
+            refill_floor: 0,
         }
     }
 
@@ -104,6 +106,7 @@ impl CardManager {
             played_history: HashMap::new(),
             expiring_temporary: Vec::new(),
             hand_limit_bonus: 0,
+            refill_floor: 0,
         }
     }
 
@@ -129,6 +132,18 @@ impl CardManager {
 
     pub fn hand_limit_bonus(&self) -> i32 {
         self.hand_limit_bonus
+    }
+
+    pub fn refill_floor(&self) -> usize {
+        self.refill_floor
+    }
+
+    pub fn refill_consumes_deck(&self) -> bool {
+        self.refill_floor == 0
+    }
+
+    pub(crate) fn preserve_refill_floor(&mut self) {
+        self.refill_floor = self.normal_hand_len();
     }
 
     pub(crate) fn add_hand_limit_bonus(&mut self, delta: i32) {
@@ -223,6 +238,7 @@ impl CardManager {
         self.cast_channels.clear();
         self.played_history.clear();
         self.expiring_temporary.clear();
+        self.refill_floor = 0;
     }
 
     pub fn seed(&mut self, fight: &sonettobuf::Fight) {

@@ -240,6 +240,20 @@ impl ConduitManager {
             .collect()
     }
 
+    pub fn action_phase_start_commands(&self, team: i32) -> Vec<ConduitCommand> {
+        std::iter::once(ConduitCommand::ResetPowers { team })
+            .chain(
+                self.areas
+                    .get(&team)
+                    .into_iter()
+                    .flat_map(|area| &area.devices)
+                    .map(|device| ConduitCommand::RestartDevice {
+                        source_uid: device.uid,
+                    }),
+            )
+            .collect()
+    }
+
     pub fn power(&self, team: i32, power_id: i32) -> i32 {
         self.areas
             .get(&team)
@@ -526,12 +540,10 @@ impl ConduitManager {
                 })
             }
             ConduitCommand::ResetPowers { team } => {
-                let area = self
-                    .areas
-                    .get_mut(&team)
-                    .ok_or(ConduitError::MissingArea(team))?;
-                for power in &mut area.powers {
-                    power.value = 0;
+                if let Some(area) = self.areas.get_mut(&team) {
+                    for power in &mut area.powers {
+                        power.value = 0;
+                    }
                 }
                 Ok(ConduitChange::PowersReset { team })
             }

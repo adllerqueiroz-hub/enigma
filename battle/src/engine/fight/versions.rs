@@ -14,6 +14,10 @@ pub(crate) fn writes_reduce_hp(version: i32) -> bool {
     version == 7
 }
 
+pub(crate) fn writes_change_round_number(version: i32) -> bool {
+    version == 7
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HurtInfoWireLayout {
     Version6,
@@ -46,13 +50,15 @@ pub(crate) const fn round_start_setup_layout(version: i32) -> Option<RoundStartS
 mod tests {
     use super::{
         HurtInfoWireLayout, RoundStartSetupLayout, hurt_info_wire_layout, round_start_setup_layout,
-        writes_reduce_hp,
+        writes_change_round_number, writes_reduce_hp,
     };
 
     #[test]
     fn reduce_hp_wire_field_is_confirmed_only_for_version_seven() {
         assert!(!writes_reduce_hp(6));
         assert!(writes_reduce_hp(7));
+        assert!(!writes_change_round_number(6));
+        assert!(writes_change_round_number(7));
     }
 
     #[test]

@@ -17,21 +17,13 @@ pub fn preview_attributes(fight: &Fight, battle_path: &Path) -> anyhow::Result<P
         .flat_map(|team| team.entitys.iter().chain(team.sub_entitys.iter()))
         .filter_map(|entity| {
             let uid = entity.uid?;
-            let hero = local.iter().find(|hero| hero.uid == uid);
-            let inputs = hero.map_or_else(
-                || preview_stat_inputs_from_entity(entity),
-                |hero| preview_stat_inputs(entity, hero),
-            );
+            let hero = local.iter().find(|hero| hero.uid == uid)?;
+            let inputs = preview_stat_inputs(entity, hero);
             let stats = Stats::build(&inputs);
             if battle::engine::diagnostics::enabled(battle::engine::diagnostics::TraceArea::Damage) {
                 eprintln!(
-                    "attribute preview uid={uid} hero={} source={} inputs={inputs:?} stats={stats:?}",
+                    "attribute preview uid={uid} hero={} source=hero-update inputs={inputs:?} stats={stats:?}",
                     entity.model_id.unwrap_or_default(),
-                    if hero.is_some() {
-                        "hero-update"
-                    } else {
-                        "config-default"
-                    },
                 );
             }
             Some((uid, stats))
@@ -74,23 +66,6 @@ fn battle_hero_updates(path: &Path) -> anyhow::Result<Vec<HeroInfo>> {
         }
     }
     Ok(heroes.into_values().collect())
-}
-
-fn preview_stat_inputs_from_entity(entity: &FightEntityInfo) -> StatInputs {
-    let hero_id = entity.model_id.unwrap_or_default();
-    let level = entity.level.unwrap_or_default();
-    let equip = entity.equips.first();
-    StatInputs {
-        hero_id,
-        level,
-        rank: rank_from_level(hero_id, level),
-        destiny_rank: entity.destiny_rank.unwrap_or_default(),
-        equip_id: equip.and_then(|equip| equip.equip_id).unwrap_or_default(),
-        equip_level: equip.and_then(|equip| equip.equip_lv).unwrap_or_default(),
-        equip_break_level: 0,
-        talent: 10,
-        ..Default::default()
-    }
 }
 
 fn preview_stat_inputs(entity: &FightEntityInfo, hero: &HeroInfo) -> StatInputs {
@@ -201,5 +176,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tutorial_trial_without_a_hero_update_does_not_invent_extended_attributes() {
+        crate::init_test_config();
+        let battle = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/battles/battle62/BeginRoundReply_1.json");
+        let mut start: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(battle.with_file_name("StartDungeonReply.json")).unwrap(),
+        )
+        .unwrap();
+        normalize_live_json(&mut start);
+        let fight: Fight = serde_json::from_value(start["fight"].clone()).unwrap();
+
+        let (extended, special) = preview_attributes(&fight, &battle).unwrap();
+
+        assert!(extended.is_empty());
+        assert!(special.is_empty());
     }
 }

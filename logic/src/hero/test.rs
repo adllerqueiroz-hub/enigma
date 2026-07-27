@@ -23,6 +23,32 @@ fn duplicate_item_id_comes_from_character_duplicate_item() {
     assert_eq!(duplicate_item_id(3125).unwrap(), 133125);
 }
 
+#[tokio::test]
+async fn hero_level_up_accepts_levels_between_stat_breakpoints_and_consumes_currency() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (22, 'level-up', 0, 0);
+         INSERT INTO currencies (user_id, currency_id, quantity) VALUES
+         (22, 3, 1000),
+         (22, 5, 1000);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let heroes = UserHeroModel::new(22, pool.clone());
+    heroes.create_hero(3023).await.unwrap();
+
+    let (_, updated, consumed) = HeroManager::new(22).level_up(&pool, 3023, 3).await.unwrap();
+
+    assert_eq!(updated.level, Some(3));
+    assert_eq!(consumed.currency_ids, vec![(3, -230), (5, -250)]);
+    assert!(consumed.material_changes.is_empty());
+}
+
 #[test]
 fn destiny_progression_follows_the_configured_slot_order() {
     let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));

@@ -20,18 +20,7 @@ pub struct Activity221MapTable {
 
 impl Activity221MapTable {
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let value: serde_json::Value = serde_json::from_str(&json)?;
-
-        let records: Vec<Activity221Map> = if let Some(array) = value.as_array() {
-            if array.len() >= 2 && array[1].is_array() {
-                serde_json::from_value(array[1].clone())?
-            } else {
-                serde_json::from_value(value)?
-            }
-        } else {
-            serde_json::from_value(value)?
-        };
+        let records: Vec<Activity221Map> = crate::load_rows(path)?;
 
         Ok(Self {
             records,

@@ -359,8 +359,16 @@ pub async fn on_hero_level_up(
     let msg = HeroLevelUpRequest::decode(&req.data[..])?;
     let hero_id = msg.hero_id.ok_or(AppError::InvalidRequest)?;
     let new_level = msg.expect_level.ok_or(AppError::InvalidRequest)?;
-    let (reply, hero_info) = heroes.level_up(ctx.state.db, hero_id, new_level).await?;
+    let (reply, hero_info, consumed) = heroes.level_up(ctx.state.db, hero_id, new_level).await?;
 
+    push::send_cost_pushes(
+        ctx,
+        player_id,
+        consumed.item_ids,
+        consumed.currency_ids,
+        consumed.material_changes,
+    )
+    .await?;
     push::send_hero_updates(ctx, player_id, vec![hero_info]).await?;
     task_events::notify(
         ctx,

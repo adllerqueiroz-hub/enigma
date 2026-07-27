@@ -146,11 +146,11 @@ impl EffectPacket {
         }
     }
 
-    pub fn change_round() -> ActEffect {
+    pub fn change_round(round: i32) -> ActEffect {
         ActEffect {
             target_id: Some(0),
             effect_type: Some(EffectType::Changeround as i32),
-            effect_num: Some(0),
+            effect_num: Some(round),
             ..Default::default()
         }
     }

@@ -27,7 +27,13 @@ pub trait HeroModel<T>: Send + Sync {
     async fn destiny_stone(&self, hero_id: i32, stone_id: i32) -> Result<()>;
     async fn update_destiny_progress(&self, hero_id: i32, rank: i32, level: i32) -> Result<()>;
     async fn unlock_destiny_stone(&self, hero_id: i32, stone_id: i32) -> Result<bool>;
-    async fn level_up(&self, hero_id: i32, new_level: i32) -> Result<()>;
+    async fn level_up(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        hero_id: i32,
+        current_level: i32,
+        new_level: i32,
+    ) -> Result<bool>;
     async fn read_hero_red_dot(&self, hero_id: i32, red_dot: i32) -> Result<()>;
     async fn upgrade_ex_skill(&self, hero_id: i32, levels: i32) -> Result<()>;
     async fn set_favor(&self, hero_id: i32, is_favor: bool) -> Result<()>;
@@ -1515,16 +1521,23 @@ impl HeroModel<HeroData> for UserHeroModel {
         Ok(result.rows_affected() == 1)
     }
 
-    async fn level_up(&self, hero_id: i32, new_level: i32) -> Result<()> {
+    async fn level_up(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        hero_id: i32,
+        current_level: i32,
+        new_level: i32,
+    ) -> Result<bool> {
         let hero_data = self.get(hero_id).await?;
 
-        sqlx::query("UPDATE heroes SET level = ? WHERE uid = ?")
+        let updated = sqlx::query("UPDATE heroes SET level = ? WHERE uid = ? AND level = ?")
             .bind(new_level)
             .bind(hero_data.record.uid)
-            .execute(&self.pool)
+            .bind(current_level)
+            .execute(&mut **tx)
             .await?;
 
-        Ok(())
+        Ok(updated.rows_affected() == 1)
     }
 
     async fn read_hero_red_dot(&self, hero_id: i32, red_dot: i32) -> Result<()> {

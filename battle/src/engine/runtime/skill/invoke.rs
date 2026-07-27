@@ -50,6 +50,13 @@ pub(super) fn active_skill_targets(event: &BattleEvent) -> Option<&[i64]> {
     }
 }
 
+pub(super) fn active_skill_hit_targets(event: &BattleEvent) -> Option<&[i64]> {
+    match event {
+        BattleEvent::SkillAction(action) => Some(&action.attacked_target_uids),
+        _ => None,
+    }
+}
+
 pub(super) fn resource_fire_count(
     conditions: &[ParsedCondition],
     skill_id: i32,

@@ -113,19 +113,19 @@ impl BattleRuntime {
             .iter()
             .filter(|card| !card.temp_card.unwrap_or_default())
             .count();
-        let opening_deal = if let Some(configured) =
+        let (opening_deal, preserve_refill_floor) = if let Some(configured) =
             crate::engine::manager::card::start::configured_opening_deal(&self.fight)?
         {
-            configured
+            (configured, true)
         } else {
             let drawn = self.determinism.draw_cards(
                 &available_player_cards(&self.fight, &self.managers),
                 opening_hand_size,
             );
             if drawn.len() == opening_hand_size {
-                drawn
+                (drawn, false)
             } else {
-                player_deck.clone()
+                (player_deck.clone(), false)
             }
         };
         self.determinism.enqueue_card_draws(
@@ -156,6 +156,11 @@ impl BattleRuntime {
             },
             None,
         )?;
+        if preserve_refill_floor {
+            self.managers
+                .execute_card(CardCommand::PreserveRefillFloor)
+                .map_err(|error| format!("{error:?}"))?;
+        }
         self.managers
             .execute_card(CardCommand::SetTeamCards(CardSetTeamCards {
                 origin: CommandOrigin {
