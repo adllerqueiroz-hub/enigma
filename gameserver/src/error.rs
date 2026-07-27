@@ -69,6 +69,7 @@ pub enum ClientErrorAction {
 #[repr(i16)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientResultCode {
+    Success = 0,
     ServerError = -1,
     ServiceUnavailable = -3,
     ParameterError = -4,
@@ -88,10 +89,11 @@ impl AppError {
         use ClientErrorAction::{Reconnect, Reply};
         use ClientResultCode::{
             InsufficientItems, InsufficientResources, InvalidOperation, ParameterError,
-            ServerError, ServiceUnavailable,
+            ServerError, ServiceUnavailable, Success,
         };
 
         match self {
+            Self::Cmd(CmdError::UnhandledCmd(_)) => Reply(Success),
             Self::Decode(_) | Self::InvalidRequest => Reply(ParameterError),
             Self::HeroNotFound
             | Self::BannerNotFound
@@ -139,14 +141,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_errors_reply_while_unsupported_commands_reconnect() {
+    fn request_errors_and_unsupported_commands_reply_without_reconnecting() {
         assert_eq!(
             AppError::InvalidRequest.client_action(),
             ClientErrorAction::Reply(ClientResultCode::ParameterError)
         );
         assert_eq!(
             AppError::Cmd(CmdError::UnhandledCmd(CmdId::GetServerTimeCmd)).client_action(),
-            ClientErrorAction::Reconnect(ClientResultCode::ServiceUnavailable)
+            ClientErrorAction::Reply(ClientResultCode::Success)
         );
     }
 }

@@ -510,6 +510,7 @@ async fn handle_command_error(
     up_tag: u8,
     error: AppError,
 ) -> Result<(), AppError> {
+    let is_unhandled = matches!(error, AppError::Cmd(CmdError::UnhandledCmd(_)));
     let action = error.client_action();
     let result_code = match action {
         ClientErrorAction::Reply(code) | ClientErrorAction::Reconnect(code) => code,
@@ -540,7 +541,7 @@ async fn handle_command_error(
         CmdId::ServerErrorInfoPushCmd,
         ServerErrorInfoPush {
             msg: Some(client_message),
-            is_alert: Some(true),
+            is_alert: Some(!is_unhandled),
         },
     )
     .await?;
