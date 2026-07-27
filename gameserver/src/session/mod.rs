@@ -96,6 +96,9 @@ pub async fn start_session(
 ) -> Result<Vec<UserTask>, AppError> {
     conn.load_player(session.user_id).await?;
     let db = conn.state.db;
+    if common::skip_tutorial() {
+        conn.player()?.guide.skip_initial_tutorial(db).await?;
+    }
     let now = ServerTime::now_ms();
     let today = ServerTime::server_day(now);
     let state = &conn.player()?.state;

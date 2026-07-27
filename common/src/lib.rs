@@ -29,6 +29,10 @@ pub fn game_port() -> u16 {
     config().server.game_port
 }
 
+pub fn skip_tutorial() -> bool {
+    config().server.skip_tutorial
+}
+
 pub fn muip_host() -> &'static str {
     &config().muip.host
 }

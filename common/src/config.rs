@@ -20,6 +20,8 @@ pub struct ServerSettings {
     pub dns: String,
     pub http_port: u16,
     pub game_port: u16,
+    #[serde(default)]
+    pub skip_tutorial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +129,7 @@ mod tests {
         assert!(path.exists());
         assert_eq!(cfg.server.http_port, 21000);
         assert_eq!(cfg.server.game_port, 23301);
+        assert!(!cfg.server.skip_tutorial);
         assert_eq!(cfg.muip.port, 21100);
         assert_eq!(cfg.muip_gm.port, 21101);
 

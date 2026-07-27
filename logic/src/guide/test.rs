@@ -127,3 +127,66 @@ async fn prologue_guide_grants_apple_after_story_once() {
     assert!(repeated.rewards.hero_ids.is_empty());
     assert_eq!(heroes.get_all_heroes().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn skip_initial_tutorial_applies_its_configured_progress_and_rewards_once() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (9, 'skip-prologue', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 9)
+        .await
+        .unwrap();
+
+    let manager = GuideManager::new(9);
+    manager.skip_initial_tutorial(&pool).await.unwrap();
+    manager.skip_initial_tutorial(&pool).await.unwrap();
+
+    assert_eq!(
+        guides::get_guide_progress(&pool, 9, 101)
+            .await
+            .unwrap()
+            .unwrap()
+            .step_id,
+        -1
+    );
+    assert_eq!(
+        guides::get_guide_progress(&pool, 9, 103)
+            .await
+            .unwrap()
+            .unwrap()
+            .step_id,
+        -1
+    );
+    for episode_id in [10001, 10002, 10003] {
+        assert_eq!(
+            dungeons::episode_star(&pool, 9, episode_id).await.unwrap(),
+            1
+        );
+    }
+    assert!(stories::is_story_finished(&pool, 9, 100017).await.unwrap());
+    let hero_ids = UserHeroModel::new(9, pool.clone())
+        .get_all_heroes()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|hero| hero.record.hero_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(hero_ids, [3023, 3028].into_iter().collect());
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>(
+            "SELECT quantity FROM items WHERE user_id = 9 AND item_id = 140001",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+}

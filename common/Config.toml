@@ -3,6 +3,7 @@ host = "127.0.0.1"
 dns = "localhost"
 http_port = 21000
 game_port = 23301
+skip_tutorial = false
 
 [muip]
 host = "0.0.0.0"
