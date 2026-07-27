@@ -1,5 +1,7 @@
 use super::*;
 
+pub use logic::dungeon::episode_cost_value;
+
 pub struct InstructionDungeonRewardClaim {
     pub reply: InstructionDungeonRewardReply,
     pub rewards: AppliedRewards,
@@ -31,46 +33,6 @@ pub async fn episode_battle_id(
         episode.first_battle_id
     } else {
         episode.battle_id
-    })
-}
-
-pub fn episode_player_exp(
-    episode: &config::episode::Episode,
-    first_pass: bool,
-    multiplier: i32,
-) -> i32 {
-    let cost = episode_cost_value(episode);
-
-    let normal = configs::get()
-        .bonus
-        .get(episode.bonus)
-        .map(|bonus| player_exp_value(&bonus.player_exp, cost))
-        .unwrap_or_default()
-        .saturating_mul(multiplier);
-    let first = first_pass
-        .then(|| configs::get().bonus.get(episode.first_bonus))
-        .flatten()
-        .map(|bonus| player_exp_value(&bonus.player_exp, cost))
-        .unwrap_or_default();
-
-    normal.saturating_add(first)
-}
-
-pub fn episode_cost_value(episode: &config::episode::Episode) -> i32 {
-    episode
-        .cost
-        .split('|')
-        .find_map(|part| part.rsplit('#').next()?.parse::<i32>().ok())
-        .unwrap_or_default()
-}
-
-fn player_exp_value(value: &str, cost: i32) -> i32 {
-    value.parse().unwrap_or_else(|_| {
-        value
-            .strip_suffix("*cost")
-            .and_then(|factor| factor.parse::<i32>().ok())
-            .map(|factor| factor.saturating_mul(cost))
-            .unwrap_or_default()
     })
 }
 

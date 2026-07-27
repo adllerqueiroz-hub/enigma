@@ -1,6 +1,6 @@
 use crate::{error::AppError, reward, types::hero_group_snapshot_type::HeroGroupSnapshotType};
 use database::{
-    db::game::{dungeons, guides, hero_group_snapshots, hero_groups, stories},
+    db::game::{dungeons, guides, hero_group_snapshots, hero_groups, open_infos, stories},
     models::game::heros::UserHeroModel,
 };
 use sonettobuf::{FinishGuideReply, GetGuideInfoReply, GuideInfo, UpdateHeroGroupSnapshotPush};
@@ -92,6 +92,70 @@ fn teaching_rewards(guide_id: i32, step_id: i32) -> reward::RewardSet {
         })
 }
 
+fn episode_condition(value: &str) -> Option<i32> {
+    value.strip_prefix("EpisodeFinish#")?.parse().ok()
+}
+
+fn configured_clear_star(episode: &config::episode::Episode) -> i32 {
+    let advanced = config::configs::get()
+        .battle
+        .get(episode.battle_id)
+        .map(|battle| {
+            battle
+                .advanced_condition
+                .split('|')
+                .filter(|condition| !condition.is_empty())
+                .count() as i32
+        })
+        .unwrap_or_default();
+    1 + advanced
+}
+
+async fn complete_skipped_episode(
+    db: &SqlitePool,
+    player_id: i64,
+    episode_id: i32,
+) -> Result<(), AppError> {
+    let episode = config::configs::get()
+        .episode
+        .get(episode_id)
+        .ok_or(AppError::InvalidRequest)?;
+    let star = configured_clear_star(episode);
+    let mut tx = db.begin().await?;
+    let previous_star =
+        dungeons::episode_star_in_transaction(&mut tx, player_id, episode_id).await?;
+    if previous_star < star {
+        dungeons::update_dungeon_progress_in_transaction(
+            &mut tx,
+            player_id,
+            episode.chapter_id,
+            episode.id,
+            star,
+        )
+        .await?;
+        let first_pass = previous_star == 0;
+        let completion = crate::dungeon::completion_rewards(
+            episode,
+            first_pass,
+            previous_star,
+            star,
+            i32::from(first_pass),
+        );
+        reward::RewardManager::new(player_id)
+            .apply_dungeon_in_transaction(&mut tx, completion.rewards)
+            .await?;
+        open_infos::reconcile_progression_in_transaction(&mut tx, player_id).await?;
+    }
+    for story_id in [episode.before_story, episode.after_story]
+        .into_iter()
+        .filter(|id| *id > 0)
+    {
+        stories::finish_story_in_transaction(&mut tx, player_id, story_id).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn apply_guide_world_progress(
     db: &SqlitePool,
     player_id: i64,
@@ -113,14 +177,7 @@ async fn apply_guide_world_progress(
         .iter()
         .flat_map(|step| action_ids(&step.action, GuideActionKind::EnterEpisode))
     {
-        if dungeons::episode_star(db, player_id, episode_id).await? == 0 {
-            let episode = tables
-                .episode
-                .get(episode_id)
-                .ok_or(AppError::InvalidRequest)?;
-            dungeons::update_dungeon_progress(db, player_id, episode.chapter_id, episode.id, 1)
-                .await?;
-        }
+        complete_skipped_episode(db, player_id, episode_id).await?;
     }
 
     steps
@@ -159,9 +216,41 @@ impl GuideManager {
         let initial_complete = guides::get_guide_progress(db, self.player_id, guide.id)
             .await?
             .is_some_and(|progress| progress.step_id == -1);
+        let completion_step = apply_guide_world_progress(db, self.player_id, guide.id).await?;
         if !initial_complete {
-            let completion_step = apply_guide_world_progress(db, self.player_id, guide.id).await?;
             self.finish(db, guide.id, completion_step).await?;
+        }
+
+        let tutorial_episodes = tables
+            .guide_step
+            .iter()
+            .filter(|step| step.id == guide.id)
+            .flat_map(|step| action_ids(&step.action, GuideActionKind::EnterEpisode))
+            .collect::<Vec<_>>();
+        let teaching_guides = tables
+            .teaching_summon
+            .iter()
+            .filter(|teaching| teaching.grant_guide_id == guide.id)
+            .map(|teaching| teaching.id)
+            .collect::<Vec<_>>();
+        for prerequisite in tables.guide.iter().filter(|candidate| {
+            !teaching_guides.contains(&candidate.id)
+                && episode_condition(&candidate.trigger)
+                    .is_some_and(|episode| tutorial_episodes.contains(&episode))
+                && episode_condition(&candidate.invalid).is_some()
+        }) {
+            let progress = guides::get_guide_progress(db, self.player_id, prerequisite.id).await?;
+            complete_skipped_episode(
+                db,
+                self.player_id,
+                episode_condition(&prerequisite.invalid).unwrap(),
+            )
+            .await?;
+            let completion_step =
+                apply_guide_world_progress(db, self.player_id, prerequisite.id).await?;
+            if progress.is_none_or(|progress| progress.step_id != -1) {
+                self.finish(db, prerequisite.id, completion_step).await?;
+            }
         }
 
         for teaching in tables

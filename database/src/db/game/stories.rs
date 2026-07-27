@@ -1,6 +1,6 @@
 use crate::models::game::stories::{HeroStoryState, ProcessingStory};
 use anyhow::Result;
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 pub async fn get_finished_stories(pool: &SqlitePool, user_id: i64) -> Result<Vec<i32>> {
     let stories = sqlx::query_scalar(
         "SELECT story_id FROM user_finished_stories WHERE user_id = ? ORDER BY story_id",
@@ -25,17 +25,28 @@ pub async fn get_processing_stories(
 }
 
 pub async fn finish_story(pool: &SqlitePool, user_id: i64, story_id: i32) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    finish_story_in_transaction(&mut tx, user_id, story_id).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn finish_story_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    story_id: i32,
+) -> Result<()> {
     // Move from processing to finished
     sqlx::query("DELETE FROM user_processing_stories WHERE user_id = ? AND story_id = ?")
         .bind(user_id)
         .bind(story_id)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
 
     sqlx::query("INSERT INTO user_finished_stories (user_id, story_id) VALUES (?, ?) ON CONFLICT DO NOTHING")
         .bind(user_id)
         .bind(story_id)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
 
     Ok(())

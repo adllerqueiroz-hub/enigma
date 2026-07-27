@@ -564,6 +564,7 @@ pub async fn on_dungeon_end_dungeon(
                 .await?;
             ctx.notify(CmdId::DungeonEndDungeonPushCmd, end_dungeon)
                 .await?;
+            push::send_end_fight_push(ctx, dungeon::abort_end_fight(active)).await?;
         } else if active.is_victory() {
             let star = active.star();
             let round = active.current_round();

@@ -93,6 +93,130 @@ fn abort_push_carries_the_abort_result_and_required_fight_group() {
 }
 
 #[tokio::test]
+async fn dungeon_abort_sends_terminal_fight_push_before_reply() {
+    use crate::{
+        handlers::dungeon::on_dungeon_end_dungeon,
+        net::{
+            app::AppState, context::ConnectionContext, outbound::CommandPacket,
+            packet::ClientPacket,
+        },
+        player::{Player, PlayerState},
+    };
+    use prost::Message;
+    use sonettobuf::CmdId;
+    use tokio::sync::mpsc;
+
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data/excel2json");
+    let _ = config::init(data_dir.to_str().unwrap());
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (29, 'abort-push', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 29)
+        .await
+        .unwrap();
+
+    let episode = configs::get().episode.get(10001).unwrap();
+    let fight_id = battle_db::create_fight_instance(
+        &pool,
+        battle_db::NewFightInstance {
+            user_id: 29,
+            episode_id: episode.id,
+            battle_id: episode.battle_id,
+            multiplication: 1,
+            entry_cost: "{}",
+            checkpoint: "{}",
+            created_at: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let active = ActiveBattle {
+        fight_id: Some(fight_id),
+        chapter_id: episode.chapter_id,
+        episode_id: episode.id,
+        battle_id: episode.battle_id,
+        fight_group: Some(Default::default()),
+        ..Default::default()
+    };
+
+    let state = Box::leak(Box::new(AppState::new(pool, configs::get())));
+    let (outbound, mut packets) = mpsc::channel(32);
+    let mut ctx = ConnectionContext::new(outbound, state);
+    ctx.player = Some(Player::new(29, PlayerState::new(29, 0)));
+    ctx.player_mut().unwrap().battle.restore_active(active);
+
+    let mut data = Vec::new();
+    sonettobuf::EndDungeonRequest {
+        is_abort: Some(true),
+        ..Default::default()
+    }
+    .encode(&mut data)
+    .unwrap();
+    on_dungeon_end_dungeon(
+        &mut ctx,
+        ClientPacket {
+            sequence: 0,
+            cmd_id: CmdId::DungeonEndDungeonCmd as i16,
+            up_tag: 7,
+            data,
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut end_dungeon = None;
+    let mut end_fight = None;
+    let mut reply = None;
+    let mut position = 0;
+    while let Ok(packet) = packets.try_recv() {
+        match packet {
+            CommandPacket::Push {
+                cmd_id: CmdId::DungeonEndDungeonPushCmd,
+                ..
+            } => {
+                end_dungeon = Some(position);
+            }
+            CommandPacket::Push {
+                cmd_id: CmdId::FightEndFightPushCmd,
+                body,
+                ..
+            } => {
+                let push = sonettobuf::EndFightPush::decode(&*body).unwrap();
+                assert_eq!(
+                    push.record.unwrap().fight_result,
+                    Some(FightResult::Abort as i32)
+                );
+                end_fight = Some(position);
+            }
+            CommandPacket::Reply {
+                cmd_id: CmdId::DungeonEndDungeonCmd,
+                ..
+            } => {
+                reply = Some(position);
+            }
+            _ => {}
+        }
+        position += 1;
+    }
+
+    let end_dungeon = end_dungeon.unwrap();
+    let end_fight = end_fight.unwrap();
+    let reply = reply.unwrap();
+    assert!(end_dungeon < end_fight);
+    assert!(end_fight < reply);
+    assert!(!ctx.player().unwrap().battle.has_active());
+}
+
+#[tokio::test]
 async fn abort_dungeon_keeps_saved_progress_but_reports_no_new_star() {
     let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -322,8 +446,8 @@ fn episode_exp_uses_cost_and_player_level_thresholds() {
     let _ = config::init(data_dir.to_str().unwrap());
     let episode = config::configs::get().episode.get(10101).unwrap();
 
-    assert_eq!(episode_player_exp(episode, false, 1), 80);
-    assert_eq!(episode_player_exp(episode, false, 2), 160);
+    assert_eq!(logic::dungeon::episode_player_exp(episode, false, 1), 80);
+    assert_eq!(logic::dungeon::episode_player_exp(episode, false, 2), 160);
     assert_eq!(episode_cost(episode, 2).currencies, vec![(4, 16)]);
     assert_eq!(failure_refund(episode, 2).currencies, vec![(4, 16)]);
     assert_eq!(database::db::game::player_infos::level_for_exp(199), 1);

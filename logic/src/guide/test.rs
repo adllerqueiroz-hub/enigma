@@ -165,13 +165,24 @@ async fn skip_initial_tutorial_applies_its_configured_progress_and_rewards_once(
             .step_id,
         -1
     );
+    assert_eq!(
+        guides::get_guide_progress(&pool, 9, 102)
+            .await
+            .unwrap()
+            .unwrap()
+            .step_id,
+        -1
+    );
     for episode_id in [10001, 10002, 10003] {
         assert_eq!(
             dungeons::episode_star(&pool, 9, episode_id).await.unwrap(),
             1
         );
     }
+    assert_eq!(dungeons::episode_star(&pool, 9, 10101).await.unwrap(), 2);
     assert!(stories::is_story_finished(&pool, 9, 100017).await.unwrap());
+    assert!(stories::is_story_finished(&pool, 9, 100009).await.unwrap());
+    assert!(stories::is_story_finished(&pool, 9, 100010).await.unwrap());
     let hero_ids = UserHeroModel::new(9, pool.clone())
         .get_all_heroes()
         .await
@@ -187,6 +198,49 @@ async fn skip_initial_tutorial_applies_its_configured_progress_and_rewards_once(
         .fetch_one(&pool)
         .await
         .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT exp FROM users WHERE id = 9")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        80
+    );
+}
+
+#[tokio::test]
+async fn skip_initial_tutorial_finishes_a_partially_completed_stage() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (10, 'partial-prologue', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 10)
+        .await
+        .unwrap();
+    let episode = config::configs::get().episode.get(10101).unwrap();
+    dungeons::update_dungeon_progress(&pool, 10, episode.chapter_id, episode.id, 1)
+        .await
+        .unwrap();
+
+    GuideManager::new(10)
+        .skip_initial_tutorial(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(dungeons::episode_star(&pool, 10, 10101).await.unwrap(), 2);
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT exp FROM users WHERE id = 10")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
         0
     );
 }

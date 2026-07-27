@@ -37,14 +37,6 @@ pub struct RefundSettlement {
     pub compose_push: Option<sonettobuf::TowerComposeFightSettlePush>,
 }
 
-struct CompletionRewards {
-    rewards: reward::RewardSet,
-    player_exp: i32,
-    first_bonus: Vec<(u32, u32, i32)>,
-    normal_bonus: Vec<(u32, u32, i32)>,
-    advanced_bonus: Vec<(u32, u32, i32)>,
-}
-
 pub async fn finish_fight_instance(
     db: &SqlitePool,
     player_id: i64,
@@ -149,7 +141,7 @@ async fn settle_completion_in_transaction(
         Vec::new()
     };
     let completion_rewards =
-        completion_rewards(episode, first_pass, previous_star, star, multiplier);
+        logic::dungeon::completion_rewards(episode, first_pass, previous_star, star, multiplier);
     let rewards = reward::RewardManager::new(player_id)
         .apply_dungeon_in_transaction(tx, completion_rewards.rewards)
         .await?;
@@ -242,44 +234,6 @@ async fn settle_refund_rewards(
         material_changes,
         compose_push,
     })
-}
-
-fn completion_rewards(
-    episode: &config::episode::Episode,
-    first_pass: bool,
-    previous_star: i32,
-    star: i32,
-    multiplier: i32,
-) -> CompletionRewards {
-    let cost = episode_cost_value(episode);
-    let player_exp = episode_player_exp(episode, first_pass, multiplier);
-    let mut normal_rewards = reward::parse_bonus_with_cost(episode.bonus, cost);
-    normal_rewards.scale(multiplier);
-    let first_rewards = if first_pass {
-        reward::parse_bonus_with_cost(episode.first_bonus, cost)
-    } else {
-        Default::default()
-    };
-    let advanced_rewards = if previous_star < 2 && star >= 2 {
-        reward::parse_bonus_with_cost(episode.advanced_bonus, cost)
-    } else {
-        Default::default()
-    };
-    let normal_bonus = normal_rewards.material_changes();
-    let first_bonus = first_rewards.material_changes();
-    let advanced_bonus = advanced_rewards.material_changes();
-    let mut rewards = normal_rewards;
-    rewards.extend(first_rewards);
-    rewards.extend(advanced_rewards);
-    rewards.player_exp = rewards.player_exp.saturating_add(player_exp);
-
-    CompletionRewards {
-        rewards,
-        player_exp,
-        first_bonus,
-        normal_bonus,
-        advanced_bonus,
-    }
 }
 
 fn material_data(changes: Vec<(u32, u32, i32)>) -> Vec<MaterialData> {

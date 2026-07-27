@@ -11,6 +11,7 @@ pub mod charge;
 pub mod collection;
 pub mod command_post;
 pub mod critter;
+pub mod dungeon;
 pub mod error;
 pub mod exploration;
 pub mod fairyland;
