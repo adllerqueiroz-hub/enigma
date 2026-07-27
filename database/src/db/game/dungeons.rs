@@ -24,7 +24,7 @@ pub async fn get_user_dungeons(pool: &SqlitePool, user_id: i64) -> Result<Vec<Us
     Ok(dungeons)
 }
 
-pub async fn get_user_dungeon(
+pub async fn get_user_dungeon_state(
     pool: &SqlitePool,
     user_id: i64,
     chapter_id: i32,
@@ -38,10 +38,35 @@ pub async fn get_user_dungeon(
     .bind(user_id)
     .bind(chapter_id)
     .bind(episode_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
 
-    Ok(dungeon)
+    if let Some(dungeon) = dungeon {
+        return Ok(dungeon);
+    }
+
+    let episode = configs::get()
+        .episode
+        .get(episode_id)
+        .with_context(|| format!("missing episode config {episode_id}"))?;
+    ensure!(
+        episode.chapter_id == chapter_id,
+        "episode {episode_id} does not belong to chapter {chapter_id}"
+    );
+    Ok(UserDungeon {
+        id: 0,
+        user_id,
+        chapter_id,
+        episode_id,
+        star: 0,
+        challenge_count: 0,
+        has_record: false,
+        left_return_all_num: 1,
+        today_pass_num: 0,
+        today_total_num: episode.day_num,
+        created_at: 0,
+        updated_at: 0,
+    })
 }
 
 pub async fn episode_star(pool: &SqlitePool, user_id: i64, episode_id: i32) -> Result<i32> {

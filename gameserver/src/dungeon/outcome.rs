@@ -33,7 +33,8 @@ pub async fn abort_dungeon_updates(
     active: &ActiveBattle,
 ) -> Result<(DungeonUpdatePush, EndDungeonPush), AppError> {
     let dungeon =
-        dungeons::get_user_dungeon(db, player_id, active.chapter_id, active.episode_id).await?;
+        dungeons::get_user_dungeon_state(db, player_id, active.chapter_id, active.episode_id)
+            .await?;
     let chapter_type_nums = dungeons::get_chapter_type_nums(db, player_id).await?;
 
     Ok((

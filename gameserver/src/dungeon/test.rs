@@ -107,15 +107,6 @@ async fn abort_dungeon_keeps_saved_progress_but_reports_no_new_star() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO user_dungeons
-             (user_id, chapter_id, episode_id, star, challenge_count, has_record,
-              left_return_all_num, today_pass_num, today_total_num, created_at, updated_at)
-             VALUES (18, 9000, 90002501, 2, 0, 0, 1, 0, 0, 0, 0)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
     let active = ActiveBattle {
         chapter_id: 9000,
         episode_id: 90002501,
@@ -127,10 +118,96 @@ async fn abort_dungeon_keeps_saved_progress_but_reports_no_new_star() {
     };
 
     let (update, end) = abort_dungeon_updates(&pool, 18, &active).await.unwrap();
+    assert_eq!(update.dungeon_info.unwrap().star, Some(0));
+    assert_eq!(end.star, Some(0));
+
+    sqlx::query(
+        "INSERT INTO user_dungeons
+             (user_id, chapter_id, episode_id, star, challenge_count, has_record,
+              left_return_all_num, today_pass_num, today_total_num, created_at, updated_at)
+             VALUES (18, 9000, 90002501, 2, 0, 0, 1, 0, 0, 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (update, end) = abort_dungeon_updates(&pool, 18, &active).await.unwrap();
 
     assert_eq!(update.dungeon_info.unwrap().star, Some(2));
     assert_eq!(end.star, Some(0));
     assert_eq!(end.total_round, Some(15));
+}
+
+#[tokio::test]
+async fn tutorial_trial_settlement_creates_its_first_progress_row() {
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data/excel2json");
+    let _ = config::init(data_dir.to_str().unwrap());
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (28, 'trial-settlement', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 28)
+        .await
+        .unwrap();
+
+    let episode = configs::get().episode.get(110101).unwrap();
+    let fight_id = battle_db::create_fight_instance(
+        &pool,
+        battle_db::NewFightInstance {
+            user_id: 28,
+            episode_id: episode.id,
+            battle_id: episode.battle_id,
+            multiplication: 1,
+            entry_cost: "{}",
+            checkpoint: "{}",
+            created_at: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let active = ActiveBattle {
+        fight_id: Some(fight_id),
+        chapter_id: episode.chapter_id,
+        episode_id: episode.id,
+        battle_id: episode.battle_id,
+        fight_group: Some(sonettobuf::FightGroup {
+            hero_list: vec![-3, -2, -1],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let settlement = settle_active(
+        &pool,
+        28,
+        &active,
+        DungeonCompletion {
+            star: 1,
+            total_round: 1,
+            multiplier: 1,
+            fight_group: active.fight_group.as_ref(),
+        },
+        &DungeonRecordStatus::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        settlement.dungeon_update.dungeon_info.unwrap().star,
+        Some(1)
+    );
+    assert_eq!(
+        dungeons::episode_star(&pool, 28, episode.id).await.unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
