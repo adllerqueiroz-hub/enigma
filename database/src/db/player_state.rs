@@ -9,36 +9,26 @@ pub async fn load(pool: &SqlitePool, player_id: i64) -> sqlx::Result<Option<Play
 }
 
 pub async fn save(pool: &SqlitePool, state: &PlayerStateRecord) -> sqlx::Result<()> {
-    sqlx::query(
+    let updated = sqlx::query(
         r#"
-        INSERT INTO player_state (
-            player_id, initial_login_complete, last_login_timestamp,
-            created_at, updated_at,
-            last_state_push_sent_timestamp, last_activity_push_sent_timestamp,
-            last_daily_reward_time, last_daily_reset_time,
-            month_card_claimed, last_month_card_claim_timestamp,
-            last_sign_in_day, last_sign_in_time,
-            vip_level,
-            last_energy_refill_time, last_weekly_reset_time, last_monthly_reset_time
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
-        ON CONFLICT(player_id) DO UPDATE SET
-            initial_login_complete = excluded.initial_login_complete,
-            last_login_timestamp = excluded.last_login_timestamp,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            last_state_push_sent_timestamp = excluded.last_state_push_sent_timestamp,
-            last_activity_push_sent_timestamp = excluded.last_activity_push_sent_timestamp,
-            last_daily_reward_time = excluded.last_daily_reward_time,
-            last_daily_reset_time = excluded.last_daily_reset_time,
-            month_card_claimed = excluded.month_card_claimed,
-            last_month_card_claim_timestamp = excluded.last_month_card_claim_timestamp,
-            last_sign_in_day = excluded.last_sign_in_day,
-            last_sign_in_time = excluded.last_sign_in_time,
-            vip_level = excluded.vip_level,
-            last_energy_refill_time = excluded.last_energy_refill_time,
-            last_weekly_reset_time = excluded.last_weekly_reset_time,
-            last_monthly_reset_time = excluded.last_monthly_reset_time
+        UPDATE player_state SET
+            initial_login_complete = ?2,
+            last_login_timestamp = ?3,
+            created_at = ?4,
+            updated_at = ?5,
+            last_state_push_sent_timestamp = ?6,
+            last_activity_push_sent_timestamp = ?7,
+            last_daily_reward_time = ?8,
+            last_daily_reset_time = ?9,
+            month_card_claimed = ?10,
+            last_month_card_claim_timestamp = ?11,
+            last_sign_in_day = ?12,
+            last_sign_in_time = ?13,
+            vip_level = ?14,
+            last_energy_refill_time = ?15,
+            last_weekly_reset_time = ?16,
+            last_monthly_reset_time = ?17
+        WHERE player_id = ?1
         "#,
     )
     .bind(state.player_id)
@@ -59,7 +49,8 @@ pub async fn save(pool: &SqlitePool, state: &PlayerStateRecord) -> sqlx::Result<
     .bind(state.last_weekly_reset_time)
     .bind(state.last_monthly_reset_time)
     .execute(pool)
-    .await?;
+    .await?
+    .rows_affected();
 
-    Ok(())
+    (updated != 0).then_some(()).ok_or(sqlx::Error::RowNotFound)
 }

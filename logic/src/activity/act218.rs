@@ -31,6 +31,7 @@ pub async fn act218_info(
     activity_id: Option<i32>,
 ) -> Result<Get218InfoReply, AppError> {
     let activity_id = resolve_activity_id(activity_id)?;
+    activity218::sync(db, player_id, activity_id).await?;
     let state = activity218::get(db, player_id, activity_id).await?;
 
     Ok(info_reply(activity_id, state))

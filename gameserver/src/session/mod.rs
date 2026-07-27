@@ -135,48 +135,13 @@ pub async fn start_session(
         state.last_sign_in_time = Some(now);
     }
 
-    logic::bp::BattlePassManager::new(session.user_id)
-        .sync_current(db)
-        .await?;
     let updated_tasks = conn.player_mut()?.tasks.sync_login(db, is_new_day).await?;
-    sync_login_catalog(db, session.user_id, conn.state.tables).await?;
+    logic::turnback::TurnbackManager::new(session.user_id)
+        .sync_state(db, conn.state.tables)
+        .await?;
 
     conn.save_player().await?;
     Ok(updated_tasks)
-}
-
-async fn sync_login_catalog(
-    db: &SqlitePool,
-    user_id: i64,
-    tables: &config::GameDB,
-) -> Result<(), AppError> {
-    logic::summon::SummonManager::new(user_id)
-        .sync_visible_pools(db)
-        .await?;
-    logic::collection::CollectionManager::new(user_id)
-        .sync_achievements(db)
-        .await?;
-    crate::dungeon::reconcile_instruction_dungeon(db, user_id).await?;
-    logic::profile::ProfileManager::new(user_id)
-        .reconcile_open_infos(db)
-        .await?;
-    crate::dungeon::reconcile_map_progression(db, user_id).await?;
-    logic::story::StoryManager::new(user_id)
-        .sync(db, tables)
-        .await?;
-    logic::odyssey::OdysseyManager::new(user_id)
-        .sync(db, tables)
-        .await?;
-    logic::room::RoomManager::new(user_id)
-        .sync_trade_tasks(db, tables)
-        .await?;
-    logic::activity::ActivityManager::new(user_id)
-        .sync_login_catalog(db, tables)
-        .await?;
-    logic::turnback::TurnbackManager::new(user_id)
-        .sync_state(db, tables)
-        .await?;
-    Ok(())
 }
 
 pub fn login_reply_payload(user_id: i64) -> Vec<u8> {

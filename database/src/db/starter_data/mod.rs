@@ -9,9 +9,10 @@ mod inventory;
 mod misc;
 mod room;
 mod summon;
+mod tasks;
 mod tower_player;
 
-use basic::{load_open_infos, load_player_info};
+use basic::{load_open_infos, load_player_info, load_player_state};
 use guide::load_starter_guides;
 use hero_group::{load_hero_touch_count, load_starter_hero_groups};
 use inventory::{load_starter_currencies, load_starter_user_stats};
@@ -21,6 +22,7 @@ use misc::{
 };
 use room::load_starter_room;
 use summon::load_starter_summon;
+use tasks::load_starter_tasks;
 use tower_player::load_tower_info;
 
 pub async fn load_all_starter_data(pool: &SqlitePool, uid: i64) -> sqlx::Result<()> {
@@ -42,12 +44,14 @@ pub async fn load_all_starter_data_tx(
 ) -> sqlx::Result<()> {
     ensure_game_data_loaded()?;
 
+    load_player_state(&mut *tx, uid).await?;
     load_player_info(&mut *tx, uid).await?;
     load_open_infos(&mut *tx, uid).await?;
     load_starter_guides(&mut *tx, uid).await?;
     load_hero_touch_count(&mut *tx, uid).await?;
     load_starter_currencies(&mut *tx, uid).await?;
     load_starter_user_stats(&mut *tx, uid).await?;
+    load_starter_tasks(tx, uid).await?;
     load_starter_hero_groups(&mut *tx, uid).await?;
     load_starter_settings(&mut *tx, uid).await?;
     load_starter_system_state(&mut *tx, uid).await?;

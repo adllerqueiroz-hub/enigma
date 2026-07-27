@@ -22,14 +22,6 @@ impl ActivityManager {
         dice_hero_info(db, self.player_id, tables).await
     }
 
-    pub async fn sync_dice_hero(
-        &self,
-        db: &SqlitePool,
-        tables: &config::GameDB,
-    ) -> Result<(), AppError> {
-        sync_state(db, self.player_id, tables).await
-    }
-
     pub async fn dice_hero_enter_story(
         &self,
         db: &SqlitePool,
@@ -56,6 +48,7 @@ async fn dice_hero_info(
     player_id: i64,
     tables: &config::GameDB,
 ) -> Result<DiceHeroGetInfoReply, AppError> {
+    sync_state(db, player_id, tables).await?;
     let chapters = dice_hero::get_chapters(db, player_id, chapter_ids(tables)).await?;
 
     Ok(DiceHeroGetInfoReply {

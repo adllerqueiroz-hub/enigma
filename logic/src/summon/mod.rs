@@ -32,12 +32,8 @@ impl SummonManager {
         Self { player_id }
     }
 
-    pub async fn sync_visible_pools(&self, db: &SqlitePool) -> Result<(), AppError> {
-        summon::sync_visible_pools(db, self.player_id).await?;
-        Ok(())
-    }
-
     pub async fn info(&self, db: &SqlitePool) -> Result<GetSummonInfoReply, AppError> {
+        summon::sync_visible_pools(db, self.player_id).await?;
         commands::summon_info(db, self.player_id).await
     }
 

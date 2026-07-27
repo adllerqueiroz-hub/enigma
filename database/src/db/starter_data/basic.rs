@@ -1,5 +1,25 @@
 use super::*;
 
+pub async fn load_player_state(tx: &mut Transaction<'_, Sqlite>, uid: i64) -> sqlx::Result<()> {
+    let now = common::time::ServerTime::now_ms();
+    sqlx::query(
+        "INSERT INTO player_state (
+            player_id, created_at, updated_at, last_daily_reset_time,
+            last_sign_in_day, last_weekly_reset_time, last_monthly_reset_time
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(uid)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(common::time::ServerTime::server_day(now))
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 pub async fn load_player_info(tx: &mut Transaction<'_, Sqlite>, uid: i64) -> sqlx::Result<()> {
     let now = common::time::ServerTime::now_ms();
     let portrait = crate::db::game::player_infos::default_portrait_id()

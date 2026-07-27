@@ -32,13 +32,6 @@ impl BattlePassManager {
         Self { player_id }
     }
 
-    pub async fn sync_current(self, db: &SqlitePool) -> Result<(), AppError> {
-        if let Some(bp_id) = task_db::current_battle_pass_id() {
-            battle_pass::get_or_create_state(db, self.player_id, bp_id).await?;
-        }
-        Ok(())
-    }
-
     pub async fn info(
         &self,
         db: &SqlitePool,

@@ -23,12 +23,6 @@ impl StoryManager {
         Self { player_id }
     }
 
-    pub async fn sync(self, db: &SqlitePool, tables: &config::GameDB) -> Result<(), AppError> {
-        stories::sync_hero_story_states(db, self.player_id, tables).await?;
-        necrologist_story::sync_stories(db, self.player_id, 0, tables).await?;
-        Ok(())
-    }
-
     pub async fn get(&self, db: &SqlitePool) -> Result<GetStoryReply, AppError> {
         Ok(GetStoryReply {
             finish_list: stories::get_finished_stories(db, self.player_id).await?,
@@ -73,6 +67,7 @@ impl StoryManager {
     }
 
     pub async fn hero_story(&self, db: &SqlitePool) -> Result<GetHeroStoryReply, AppError> {
+        stories::sync_hero_story_states(db, self.player_id, config::configs::get()).await?;
         let states = stories::get_hero_story_states(db, self.player_id).await?;
 
         Ok(GetHeroStoryReply {
@@ -96,6 +91,7 @@ impl StoryManager {
         story_id: i32,
         tables: &config::GameDB,
     ) -> Result<GetNecrologistStoryReply, AppError> {
+        necrologist_story::sync_stories(db, self.player_id, story_id, tables).await?;
         let states = necrologist_story::get_stories(db, self.player_id, story_id, tables).await?;
         let mut story = Vec::with_capacity(states.len());
 

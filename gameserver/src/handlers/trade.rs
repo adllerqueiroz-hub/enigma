@@ -29,7 +29,11 @@ pub async fn on_get_trade_task_info(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     GetTradeTaskInfoRequest::decode(&req.data[..])?;
-    let reply = ctx.player()?.room.trade_task_info(ctx.state.db).await?;
+    let reply = ctx
+        .player()?
+        .room
+        .trade_task_info(ctx.state.db, ctx.state.tables)
+        .await?;
     ctx.send_reply(CmdId::GetTradeTaskInfoCmd, reply, 0, req.up_tag)
         .await
 }

@@ -18,18 +18,21 @@ impl OdysseyManager {
         Self { player_id }
     }
 
-    pub async fn sync(self, db: &SqlitePool, tables: &config::GameDB) -> Result<(), AppError> {
-        odyssey::sync_info(db, self.player_id, tables).await?;
-        Ok(())
-    }
-
-    pub async fn info(self, db: &SqlitePool) -> Result<OdysseyGetInfoReply, AppError> {
-        get_info(db, self.player_id).await
+    pub async fn info(
+        self,
+        db: &SqlitePool,
+        tables: &config::GameDB,
+    ) -> Result<OdysseyGetInfoReply, AppError> {
+        get_info(db, self.player_id, tables).await
     }
 }
 
-async fn get_info(db: &SqlitePool, user_id: i64) -> Result<OdysseyGetInfoReply, AppError> {
-    let rows = odyssey::get_info(db, user_id).await?;
+async fn get_info(
+    db: &SqlitePool,
+    user_id: i64,
+    tables: &config::GameDB,
+) -> Result<OdysseyGetInfoReply, AppError> {
+    let rows = odyssey::sync_info(db, user_id, tables).await?;
     let state = rows.state;
 
     Ok(OdysseyGetInfoReply {

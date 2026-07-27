@@ -18,6 +18,7 @@ pub async fn act217_infos(
                 .min()
         })
         .ok_or(AppError::InvalidRequest)?;
+    activity217::sync(db, player_id, activity_id, tables).await?;
     let state = activity217::get(db, player_id, activity_id).await?;
 
     Ok(Get217InfosReply {

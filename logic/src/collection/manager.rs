@@ -26,11 +26,6 @@ impl CollectionManager {
         }
     }
 
-    pub async fn sync_achievements(&self, db: &SqlitePool) -> Result<(), AppError> {
-        achievements::reconcile_snapshot(db, self.player_id).await?;
-        Ok(())
-    }
-
     pub async fn sync_task_event(
         &mut self,
         db: &SqlitePool,
@@ -49,6 +44,7 @@ impl CollectionManager {
         &mut self,
         db: &SqlitePool,
     ) -> Result<GetAchievementInfoReply, AppError> {
+        achievements::reconcile_snapshot(db, self.player_id).await?;
         let achievements = achievements::get_achievements(db, self.player_id).await?;
         self.achievements = achievements
             .iter()

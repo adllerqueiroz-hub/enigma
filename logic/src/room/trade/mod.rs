@@ -8,16 +8,6 @@ use sonettobuf::{
 use sqlx::SqlitePool;
 
 impl RoomManager {
-    pub async fn sync_trade_tasks(
-        &self,
-        db: &SqlitePool,
-        tables: &config::GameDB,
-    ) -> Result<(), AppError> {
-        let level = manufacture::get_trade_level(db, self.player_id, tables).await?;
-        trade::sync_tasks(db, self.player_id, level, tables).await?;
-        Ok(())
-    }
-
     pub async fn order_info(
         &self,
         db: &SqlitePool,
@@ -29,8 +19,9 @@ impl RoomManager {
     pub async fn trade_task_info(
         &self,
         db: &SqlitePool,
+        tables: &config::GameDB,
     ) -> Result<GetTradeTaskInfoReply, AppError> {
-        trade_task_info(db, self.player_id).await
+        trade_task_info(db, self.player_id, tables).await
     }
 
     pub async fn read_new_trade_tasks(
@@ -73,7 +64,10 @@ async fn order_info(
 async fn trade_task_info(
     db: &SqlitePool,
     player_id: i64,
+    tables: &config::GameDB,
 ) -> Result<GetTradeTaskInfoReply, AppError> {
+    let level = manufacture::get_trade_level(db, player_id, tables).await?;
+    trade::sync_tasks(db, player_id, level, tables).await?;
     Ok(GetTradeTaskInfoReply {
         infos: trade::get_trade_tasks(db, player_id).await?,
         has_get_support_bonus: trade::get_support_bonus_ids(db, player_id).await?,

@@ -8,6 +8,14 @@ pub async fn act225_info(
     activity_id: Option<i32>,
 ) -> Result<GetAct225InfoReply, AppError> {
     let activity_id = activity_id.unwrap_or_else(default_activity_id);
+    let question_id = config::configs::get()
+        .activity225_question
+        .iter()
+        .filter(|row| row.activity_id == activity_id)
+        .map(|row| row.id)
+        .min()
+        .unwrap_or_default();
+    activity225::sync(db, player_id, activity_id, question_id).await?;
     let state = activity225::get(db, player_id, activity_id).await?;
 
     Ok(GetAct225InfoReply {

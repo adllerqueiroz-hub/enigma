@@ -43,25 +43,16 @@ impl ConnectionContext {
         self.logged_in = true;
         let now = ServerTime::now_ms();
 
-        let mut state = match player_state::load(self.state.db, player_id).await? {
-            Some(state) => {
-                tracing::info!("Loaded existing player state for player {}", player_id);
-                state.into()
-            }
-            None => {
-                tracing::info!("Creating new player state for player {}", player_id);
-                let new_state = PlayerState::new(player_id, now);
-
-                self.save_player_state(&new_state).await?;
-                new_state
-            }
-        };
+        let mut state: PlayerState = player_state::load(self.state.db, player_id)
+            .await?
+            .ok_or_else(|| AppError::Custom(format!("Missing player state for {player_id}")))?
+            .into();
 
         state.last_login_timestamp = Some(now);
         state.updated_at = now;
 
         self.player = Some(Player::new(player_id, state));
-        tracing::info!("Loaded player state for player {}", player_id);
+        tracing::info!("Loaded player state for player {player_id}");
         Ok(())
     }
 

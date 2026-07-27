@@ -14,6 +14,7 @@ pub async fn act199_info(
     activity_id: Option<i32>,
 ) -> Result<Get199InfoReply, AppError> {
     let activity_id = resolve_activity_id(activity_id)?;
+    activity199::sync(db, player_id, activity_id).await?;
     let hero_id = activity199::get(db, player_id, activity_id).await?;
 
     Ok(Get199InfoReply {

@@ -1,6 +1,6 @@
 use crate::models::game::tasks::UserTask;
 use common::time::ServerTime;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 use super::battle_pass;
 
@@ -8,8 +8,8 @@ mod activity;
 mod event;
 
 pub use activity::{
-    TaskActivitySeed, add_activity, add_activity_in_transaction, claim_activity_bonus,
-    claim_activity_bonus_in_transaction, list_activity, sync_activity,
+    add_activity, add_activity_in_transaction, claim_activity_bonus,
+    claim_activity_bonus_in_transaction, list_activity,
 };
 pub use event::{ProductionLineAction, TaskEvent, sync_event_tasks};
 
@@ -175,6 +175,16 @@ pub async fn ensure_tasks_for_type(
     user_id: i64,
     task_type: TaskType,
 ) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    ensure_tasks_for_type_in_transaction(&mut tx, user_id, task_type).await?;
+    tx.commit().await
+}
+
+async fn ensure_tasks_for_type_in_transaction(
+    pool: &mut SqliteConnection,
+    user_id: i64,
+    task_type: TaskType,
+) -> sqlx::Result<()> {
     let tables = config::configs::get();
 
     match task_type {
@@ -269,7 +279,7 @@ pub async fn ensure_tasks_for_type(
         }
         TaskType::BattlePass => {
             if let Some(bp_id) = current_battle_pass_id() {
-                ensure_battle_pass_tasks(pool, user_id, bp_id).await?;
+                ensure_battle_pass_tasks_in_transaction(pool, user_id, bp_id).await?;
             }
         }
         TaskType::Activity119 => {
@@ -474,8 +484,29 @@ pub async fn ensure_tasks_for_type(
     Ok(())
 }
 
+pub(crate) async fn seed_configured_tasks_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+) -> sqlx::Result<()> {
+    for task_type in TaskType::all() {
+        ensure_tasks_for_type_in_transaction(&mut *tx, user_id, *task_type).await?;
+    }
+    Ok(())
+}
+
 pub async fn ensure_turnback_tasks(
     pool: &SqlitePool,
+    user_id: i64,
+    turnback_id: i32,
+    tables: &config::GameDB,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    ensure_turnback_tasks_in_transaction(&mut tx, user_id, turnback_id, tables).await?;
+    tx.commit().await
+}
+
+async fn ensure_turnback_tasks_in_transaction(
+    conn: &mut SqliteConnection,
     user_id: i64,
     turnback_id: i32,
     tables: &config::GameDB,
@@ -487,7 +518,7 @@ pub async fn ensure_turnback_tasks(
     .bind(user_id)
     .bind(TaskType::Turnback.id())
     .bind(turnback_id)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     for task in tables
@@ -496,7 +527,7 @@ pub async fn ensure_turnback_tasks(
         .filter(|task| task.turnback_id == turnback_id && task.is_online != 0)
     {
         ensure_task(
-            pool,
+            conn,
             NewTask {
                 user_id,
                 task_type_id: TaskType::Turnback.id(),
@@ -519,6 +550,16 @@ pub async fn ensure_battle_pass_tasks(
     user_id: i64,
     bp_id: i32,
 ) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    ensure_battle_pass_tasks_in_transaction(&mut tx, user_id, bp_id).await?;
+    tx.commit().await
+}
+
+async fn ensure_battle_pass_tasks_in_transaction(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    bp_id: i32,
+) -> sqlx::Result<()> {
     sqlx::query(
         "DELETE FROM user_tasks
          WHERE user_id = ? AND type_id = ? AND activity_id != ?",
@@ -526,7 +567,7 @@ pub async fn ensure_battle_pass_tasks(
     .bind(user_id)
     .bind(TaskType::BattlePass.id())
     .bind(bp_id)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
     for task in config::configs::get()
@@ -535,7 +576,7 @@ pub async fn ensure_battle_pass_tasks(
         .filter(|task| task.bp_id == bp_id && task.is_online != 0)
     {
         ensure_task(
-            pool,
+            conn,
             NewTask {
                 user_id,
                 task_type_id: TaskType::BattlePass.id(),
@@ -873,31 +914,15 @@ pub async fn sync_login_tasks(
     user_id: i64,
     is_new_day: bool,
 ) -> sqlx::Result<Vec<UserTask>> {
-    for task_type in TaskType::all() {
-        ensure_tasks_for_type(pool, user_id, *task_type).await?;
-    }
     let now = ServerTime::now_ms();
     let daily_expiry = ServerTime::next_daily_refresh_sec(now);
     let weekly_expiry = ServerTime::next_weekly_refresh_sec(now);
     set_type_expiry(pool, user_id, TaskType::Daily, daily_expiry).await?;
     set_type_expiry(pool, user_id, TaskType::Weekly, weekly_expiry).await?;
     set_type_expiry(pool, user_id, TaskType::WeekWalk, weekly_expiry).await?;
-    sync_activity(
-        pool,
-        user_id,
-        TaskType::all()
-            .iter()
-            .map(|task_type| TaskActivitySeed {
-                type_id: task_type.id(),
-                expiry_time: match task_type {
-                    TaskType::Daily => daily_expiry,
-                    TaskType::Weekly | TaskType::WeekWalk => weekly_expiry,
-                    _ => 0,
-                },
-            })
-            .collect(),
-    )
-    .await?;
+    set_activity_expiry(pool, user_id, TaskType::Daily, daily_expiry).await?;
+    set_activity_expiry(pool, user_id, TaskType::Weekly, weekly_expiry).await?;
+    set_activity_expiry(pool, user_id, TaskType::WeekWalk, weekly_expiry).await?;
 
     let bp_id = current_battle_pass_id();
     let include_bp = match bp_id {
@@ -951,6 +976,21 @@ async fn set_type_expiry(
     expiry_time: i32,
 ) -> sqlx::Result<()> {
     sqlx::query("UPDATE user_tasks SET expiry_time = ? WHERE user_id = ? AND type_id = ?")
+        .bind(expiry_time)
+        .bind(user_id)
+        .bind(task_type.id())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn set_activity_expiry(
+    pool: &SqlitePool,
+    user_id: i64,
+    task_type: TaskType,
+    expiry_time: i32,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE user_task_activity SET expiry_time = ? WHERE user_id = ? AND type_id = ?")
         .bind(expiry_time)
         .bind(user_id)
         .bind(task_type.id())
@@ -1034,7 +1074,7 @@ impl LoginTaskTarget {
     }
 }
 
-async fn ensure_task(pool: &SqlitePool, task: NewTask) -> sqlx::Result<()> {
+async fn ensure_task(conn: &mut SqliteConnection, task: NewTask) -> sqlx::Result<()> {
     let now = ServerTime::now_ms();
     sqlx::query(
         "INSERT OR IGNORE INTO user_tasks
@@ -1049,7 +1089,7 @@ async fn ensure_task(pool: &SqlitePool, task: NewTask) -> sqlx::Result<()> {
     .bind(task.activity_id)
     .bind(now)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -1342,7 +1382,7 @@ impl ConfigTask {
 }
 
 async fn ensure_config_tasks(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     user_id: i64,
     type_id: i32,
     tasks: impl IntoIterator<Item = ConfigTask>,
@@ -1350,7 +1390,7 @@ async fn ensure_config_tasks(
     let tasks = tasks.into_iter().collect::<Vec<_>>();
     for task in tasks.into_iter().filter(|task| task.is_online) {
         ensure_task(
-            pool,
+            conn,
             NewTask {
                 user_id,
                 task_type_id: type_id,

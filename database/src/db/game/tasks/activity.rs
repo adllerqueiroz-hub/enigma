@@ -2,58 +2,6 @@ use crate::models::game::tasks::UserTaskActivity;
 use common::time::ServerTime;
 use sqlx::SqlitePool;
 
-#[derive(Clone, Copy, Debug)]
-pub struct TaskActivitySeed {
-    pub type_id: i32,
-    pub expiry_time: i32,
-}
-
-pub async fn sync_activity(
-    pool: &SqlitePool,
-    user_id: i64,
-    seeds: Vec<TaskActivitySeed>,
-) -> sqlx::Result<Vec<UserTaskActivity>> {
-    if seeds.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let now = ServerTime::now_ms();
-    let mut type_ids = Vec::new();
-    for seed in seeds {
-        if type_ids.contains(&seed.type_id) {
-            continue;
-        }
-
-        sqlx::query(
-            "INSERT INTO user_task_activity
-             (user_id, type_id, expiry_time, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(user_id, type_id) DO UPDATE SET
-                expiry_time = CASE
-                    WHEN excluded.expiry_time != 0 THEN excluded.expiry_time
-                    ELSE user_task_activity.expiry_time
-                END,
-                updated_at = CASE
-                    WHEN excluded.expiry_time != 0
-                        AND user_task_activity.expiry_time != excluded.expiry_time
-                    THEN excluded.updated_at
-                    ELSE user_task_activity.updated_at
-                END",
-        )
-        .bind(user_id)
-        .bind(seed.type_id)
-        .bind(seed.expiry_time)
-        .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await?;
-
-        type_ids.push(seed.type_id);
-    }
-
-    list_activity(pool, user_id, type_ids).await
-}
-
 pub async fn list_activity(
     pool: &SqlitePool,
     user_id: i64,

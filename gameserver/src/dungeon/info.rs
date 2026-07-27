@@ -46,6 +46,7 @@ pub async fn dungeon_info(
     ),
     AppError,
 > {
+    dungeons::reconcile_map_progression(db, player_id).await?;
     let (
         dungeons,
         last_groups,
@@ -137,6 +138,7 @@ pub async fn instruction_dungeon_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<InstructionDungeonInfoReply, AppError> {
+    instruction_dungeon::reconcile_unlocks(db, player_id).await?;
     Ok(instruction_dungeon::get_info(db, player_id).await?)
 }
 

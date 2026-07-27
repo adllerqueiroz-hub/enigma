@@ -14,53 +14,6 @@ impl ActivityManager {
         }
     }
 
-    pub async fn sync_login_catalog(
-        &mut self,
-        db: &SqlitePool,
-        tables: &config::GameDB,
-    ) -> Result<(), AppError> {
-        for activity_id in tables
-            .activity199
-            .iter()
-            .map(|row| row.activity_id)
-            .collect::<BTreeSet<_>>()
-        {
-            activity199::sync(db, self.player_id, activity_id).await?;
-        }
-        for activity_id in tables
-            .activity217_control
-            .iter()
-            .map(|row| row.activity_id)
-            .collect::<BTreeSet<_>>()
-        {
-            activity217::sync(db, self.player_id, activity_id, tables).await?;
-        }
-        for activity_id in tables
-            .activity218_control
-            .iter()
-            .map(|row| row.activity_id)
-            .collect::<BTreeSet<_>>()
-        {
-            activity218::sync(db, self.player_id, activity_id).await?;
-        }
-        for activity_id in tables
-            .activity225_const
-            .iter()
-            .map(|row| row.activity_id)
-            .collect::<BTreeSet<_>>()
-        {
-            let question_id = tables
-                .activity225_question
-                .iter()
-                .filter(|row| row.activity_id == activity_id)
-                .map(|row| row.id)
-                .min()
-                .unwrap_or_default();
-            activity225::sync(db, self.player_id, activity_id, question_id).await?;
-        }
-        self.sync_dice_hero(db, tables).await
-    }
-
     pub async fn get101_infos(
         &mut self,
         db: &SqlitePool,
