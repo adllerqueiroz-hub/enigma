@@ -21,6 +21,19 @@ pub async fn can_start_episode(
     Ok(dungeons::can_start_episode(db, player_id, chapter_id, episode_id).await?)
 }
 
+pub async fn episode_battle_id(
+    db: &SqlitePool,
+    player_id: i64,
+    episode: &config::episode::Episode,
+) -> Result<i32, AppError> {
+    let star = dungeons::episode_star(db, player_id, episode.id).await?;
+    Ok(if star <= 0 && episode.first_battle_id > 0 {
+        episode.first_battle_id
+    } else {
+        episode.battle_id
+    })
+}
+
 pub fn episode_player_exp(
     episode: &config::episode::Episode,
     first_pass: bool,

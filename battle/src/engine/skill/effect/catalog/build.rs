@@ -64,9 +64,7 @@ impl SkillEffectCatalog {
                     .filter_map(|skill| skill.skill_id),
             );
         }
-        if let Some(episode) = fight.episode_id.and_then(|id| db.episode.get(id))
-            && let Some(battle) = db.battle.get(episode.battle_id)
-        {
+        if let Some(battle) = crate::engine::fight::configured_battle(fight) {
             for rule_id in
                 numeric_ids(&battle.addition_rule).chain(numeric_ids(&battle.hidden_rule))
             {

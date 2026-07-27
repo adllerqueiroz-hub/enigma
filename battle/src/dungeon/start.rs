@@ -23,10 +23,15 @@ pub async fn build_fight(
     let mut attacker =
         Attacker::get(pool, player_id, episode_id, battle_id, fight_group, params).await?;
     let defender_uid_offset = attacker.reserved_uid_offset;
-    let mut defender = Defender::get(episode_id, defender_uid_offset).await?;
+    let mut defender = Defender::get(battle_id, defender_uid_offset).await?;
     attacker.team.sp_entitys = defender.attacker_sp_entitys;
     attacker.team.sp_fight_entities = defender.attacker_sp_fight_entities;
-    apply_battle_rules(episode_id, &mut attacker.team, &mut defender.team)?;
+    apply_battle_rules(
+        episode_id,
+        battle_id,
+        &mut attacker.team,
+        &mut defender.team,
+    )?;
 
     Ok(BuiltFight {
         fight: Fight {
@@ -55,11 +60,13 @@ pub async fn build_fight(
 
 fn apply_battle_rules(
     episode_id: i32,
+    battle_id: i32,
     attacker: &mut sonettobuf::FightTeam,
     defender: &mut sonettobuf::FightTeam,
 ) -> Result<()> {
     let fight = sonettobuf::Fight {
         episode_id: Some(episode_id),
+        battle_id: Some(battle_id),
         ..Default::default()
     };
     let mut attacker_rules = Vec::new();
@@ -125,7 +132,7 @@ mod tests {
             ..Default::default()
         };
 
-        apply_battle_rules(90002501, &mut attacker, &mut defender).unwrap();
+        apply_battle_rules(90002501, 9000303, &mut attacker, &mut defender).unwrap();
 
         assert_eq!(
             attacker.entitys[0].passive_skill,

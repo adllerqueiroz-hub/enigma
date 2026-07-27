@@ -1,5 +1,44 @@
 use super::*;
 
+#[tokio::test]
+async fn first_clear_uses_the_configured_first_battle() {
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data/excel2json");
+    let _ = config::init(data_dir.to_str().unwrap());
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    let episode = configs::get().episode.get(10103).unwrap();
+
+    assert_eq!(episode_battle_id(&pool, 1, episode).await.unwrap(), 11021);
+
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at) VALUES (1, 'first', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_dungeons
+             (user_id, chapter_id, episode_id, star, challenge_count, has_record,
+              left_return_all_num, today_pass_num, today_total_num, created_at, updated_at)
+             VALUES (1, 101, 10103, 1, 0, 0, 1, 0, 0, 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(episode_battle_id(&pool, 1, episode).await.unwrap(), 1102);
+    let episode_without_first_battle = configs::get().episode.get(10001).unwrap();
+    assert_eq!(
+        episode_battle_id(&pool, 1, episode_without_first_battle)
+            .await
+            .unwrap(),
+        1001
+    );
+}
+
 #[test]
 fn saved_start_matches_with_or_without_the_restart_marker() {
     let start = sonettobuf::StartDungeonRequest {

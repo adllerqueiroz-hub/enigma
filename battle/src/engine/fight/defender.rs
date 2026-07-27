@@ -14,16 +14,12 @@ pub struct DefenderSetup {
 }
 
 impl Defender {
-    pub async fn get(episode_id: i32, uid_offset: usize) -> Result<DefenderSetup> {
+    pub async fn get(battle_id: i32, uid_offset: usize) -> Result<DefenderSetup> {
         let game_data = config::configs::get();
-        let episode = game_data
-            .episode
-            .get(episode_id)
-            .ok_or_else(|| anyhow::anyhow!("Episode {} not found", episode_id))?;
         let battle = game_data
             .battle
-            .get(episode.battle_id)
-            .ok_or_else(|| anyhow::anyhow!("Battle {} not found", episode.battle_id))?;
+            .get(battle_id)
+            .ok_or_else(|| anyhow::anyhow!("Battle {} not found", battle_id))?;
 
         let monster_max = battle.monster_max as usize;
         let group_id = battle
@@ -31,7 +27,7 @@ impl Defender {
             .split('#')
             .next()
             .and_then(|id| id.parse::<i32>().ok())
-            .ok_or_else(|| anyhow::anyhow!("No monster group in battle {}", episode.battle_id))?;
+            .ok_or_else(|| anyhow::anyhow!("No monster group in battle {}", battle_id))?;
         let group = game_data
             .monster_group
             .get(group_id)
@@ -270,7 +266,7 @@ mod tests {
     async fn monster_starts_with_configured_moxie() {
         crate::test_support::init_config();
 
-        let setup = Defender::get(10001, 2).await.unwrap();
+        let setup = Defender::get(1001, 2).await.unwrap();
         let monster = setup
             .team
             .entitys
@@ -285,7 +281,7 @@ mod tests {
     async fn tower_supporter_uses_reserved_normal_uid_space() {
         crate::test_support::init_config();
 
-        let setup = Defender::get(90002501, 1).await.unwrap();
+        let setup = Defender::get(9000303, 1).await.unwrap();
 
         assert_eq!(
             setup

@@ -4,3 +4,19 @@ pub mod rules;
 pub mod team;
 pub mod trigger;
 pub(crate) mod versions;
+
+#[cfg(test)]
+mod test;
+
+pub(crate) fn configured_battle(
+    fight: &sonettobuf::Fight,
+) -> Option<&'static config::battle::Battle> {
+    let db = config::try_get()?;
+    match fight.battle_id {
+        Some(battle_id) => db.battle.get(battle_id),
+        None => fight
+            .episode_id
+            .and_then(|episode_id| db.episode.get(episode_id))
+            .and_then(|episode| db.battle.get(episode.battle_id)),
+    }
+}

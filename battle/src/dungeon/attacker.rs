@@ -6,7 +6,7 @@ use crate::engine::{
     fight::{defender::Defender, team::Team},
     manager::eureka::PowerType,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use database::models::game::{
     equipment::{Equipment, UserEquipmentModel},
     heros::{HeroData, HeroModel, UserHeroModel, get_hero_by_uid},
@@ -81,7 +81,8 @@ impl Attacker {
             battle.role_num,
             battle.player_max,
             aid_ids.len(),
-        )?;
+        )
+        .with_context(|| format!("invalid composition for battle {battle_id}"))?;
         let use_configured_aids = !aid_ids.is_empty()
             && fight_group
                 .hero_list
@@ -362,8 +363,24 @@ fn validate_composition(
 ) -> Result<()> {
     let role_num = role_num.max(0) as usize;
     let player_max = player_max.max(0) as usize;
-    ensure!(fight_group.hero_list.len() <= player_max);
-    ensure!(fight_group.sub_hero_list.len() <= role_num.saturating_sub(player_max));
+    ensure!(fight_group.hero_list.len() <= role_num);
+    ensure!(fight_group.sub_hero_list.len() <= role_num);
+    ensure!(
+        fight_group
+            .hero_list
+            .iter()
+            .filter(|uid| **uid != 0)
+            .count()
+            <= player_max
+    );
+    ensure!(
+        fight_group
+            .sub_hero_list
+            .iter()
+            .filter(|uid| **uid != 0)
+            .count()
+            <= role_num.saturating_sub(player_max)
+    );
 
     let selected = fight_group
         .hero_list
@@ -380,7 +397,8 @@ fn validate_composition(
     ensure!(
         selected
             .iter()
-            .all(|uid| { *uid > 0 || (*uid < 0 && uid.unsigned_abs() <= aid_count as u64) })
+            .all(|uid| { *uid > 0 || (*uid < 0 && uid.unsigned_abs() <= aid_count as u64) }),
+        "selected heroes {selected:?} reference configured aids outside 1..={aid_count}"
     );
     ensure!(selected.iter().copied().collect::<HashSet<_>>().len() == selected.len());
     Ok(())
@@ -483,17 +501,37 @@ mod tests {
         };
         assert!(validate_composition(&valid, 4, 3, 0).is_ok());
 
+        let placeholder_slots = sonettobuf::FightGroup {
+            hero_list: vec![-1, -2],
+            sub_hero_list: vec![0, 0],
+            ..Default::default()
+        };
+        assert!(validate_composition(&placeholder_slots, 3, 2, 2).is_ok());
+
+        let excessive_placeholders = sonettobuf::FightGroup {
+            sub_hero_list: vec![0, 0, 0, 0],
+            ..Default::default()
+        };
+        assert!(validate_composition(&excessive_placeholders, 3, 2, 0).is_err());
+
         let duplicate = sonettobuf::FightGroup {
             sub_hero_list: vec![12],
             ..valid.clone()
         };
         assert!(validate_composition(&duplicate, 4, 3, 0).is_err());
 
-        let oversized = sonettobuf::FightGroup {
+        let oversized_main = sonettobuf::FightGroup {
             hero_list: vec![10, 11, 12, 13],
             ..Default::default()
         };
-        assert!(validate_composition(&oversized, 4, 3, 0).is_err());
+        assert!(validate_composition(&oversized_main, 4, 3, 0).is_err());
+
+        let oversized_reserve = sonettobuf::FightGroup {
+            hero_list: vec![10, 11],
+            sub_hero_list: vec![12, 13],
+            ..Default::default()
+        };
+        assert!(validate_composition(&oversized_reserve, 3, 2, 0).is_err());
 
         let configured_aids = sonettobuf::FightGroup {
             hero_list: vec![-1, -2],
@@ -512,6 +550,38 @@ mod tests {
             1
         );
         assert!(reserved_uid_offset(&sonettobuf::FightGroup::default(), 2, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn captured_tutorial_placeholders_build_the_configured_aid_team() {
+        crate::test_support::init_config();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let fight_group = sonettobuf::FightGroup {
+            hero_list: vec![-1, -2],
+            sub_hero_list: vec![0, 0],
+            ..Default::default()
+        };
+
+        let built = super::super::build_fight(&pool, 1, 10103, 11021, false, &fight_group, None)
+            .await
+            .unwrap();
+        let attacker = built.fight.attacker.unwrap();
+
+        assert_eq!(
+            attacker
+                .entitys
+                .iter()
+                .map(|entity| (entity.uid.unwrap(), entity.model_id.unwrap()))
+                .collect::<Vec<_>>(),
+            vec![(-1, 110205), (-2, 110204)]
+        );
+        assert!(attacker.sub_entitys.is_empty());
+        assert!(
+            attacker
+                .entitys
+                .iter()
+                .all(|entity| entity.passive_skill.contains(&72_010))
+        );
     }
 
     #[tokio::test]

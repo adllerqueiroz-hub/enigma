@@ -17,6 +17,30 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+fn remove_stale_modules(output: &Path, active: &HashSet<&str>) -> Result<()> {
+    for entry in fs::read_dir(output).with_context(|| format!("read_dir {}", output.display()))? {
+        let path = entry?.path();
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|value| value.to_str()) != Some("rs")
+            || stem == "mod"
+            || active.contains(stem)
+        {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let mut lines = content.lines();
+        if lines.next() == Some("// Auto-generated from JSON data")
+            && lines.next() == Some("// Do not edit manually")
+        {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 pub fn generate_rust_modules(json_dir: &str, output_dir: &str) -> Result<()> {
     let output = Path::new(output_dir);
     fs::create_dir_all(output).with_context(|| format!("create_dir_all {}", output.display()))?;
@@ -64,8 +88,45 @@ pub fn generate_rust_modules(json_dir: &str, output_dir: &str) -> Result<()> {
     }
 
     tables.sort();
+    remove_stale_modules(output, &tables.iter().map(String::as_str).collect())?;
     let mod_file = output.join("mod.rs");
     let mod_content = emit_root_module(&tables);
     write_if_changed(&mod_file, &mod_content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn removes_only_stale_generated_modules() {
+        let root = std::env::temp_dir().join(format!(
+            "enigma_config_codegen_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        fs::write(input.join("character.json"), "[\"character\",[]]").unwrap();
+        fs::write(
+            output.join("stale.rs"),
+            "// Auto-generated from JSON data\r\n// Do not edit manually\r\n",
+        )
+        .unwrap();
+        fs::write(output.join("manual.rs"), "// maintained by hand\n").unwrap();
+
+        generate_rust_modules(input.to_str().unwrap(), output.to_str().unwrap()).unwrap();
+
+        assert!(!output.join("stale.rs").exists());
+        assert!(output.join("manual.rs").exists());
+        assert!(output.join("character.rs").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

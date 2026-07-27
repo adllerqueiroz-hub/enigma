@@ -389,16 +389,7 @@ fn configured_boss_model_ids(fight: &Fight) -> Vec<i32> {
     let Some(db) = config::try_get() else {
         return Vec::new();
     };
-    let Some(battle) = fight
-        .episode_id
-        .and_then(|episode_id| db.episode.get(episode_id))
-        .and_then(|episode| db.battle.get(episode.battle_id))
-        .or_else(|| {
-            fight
-                .battle_id
-                .and_then(|battle_id| db.battle.get(battle_id))
-        })
-    else {
+    let Some(battle) = crate::engine::fight::configured_battle(fight) else {
         return Vec::new();
     };
     let wave = fight.cur_wave.unwrap_or(1).max(1) as usize - 1;

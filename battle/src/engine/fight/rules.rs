@@ -75,11 +75,7 @@ pub fn configured(fight: &Fight) -> Vec<ConfiguredBattleRule> {
     let Some(db) = config::try_get() else {
         return Vec::new();
     };
-    let Some(battle) = fight
-        .episode_id
-        .and_then(|episode_id| db.episode.get(episode_id))
-        .and_then(|episode| db.battle.get(episode.battle_id))
-    else {
+    let Some(battle) = super::configured_battle(fight) else {
         return Vec::new();
     };
 

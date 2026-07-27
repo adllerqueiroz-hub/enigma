@@ -236,7 +236,8 @@ pub async fn on_start_dungeon(
         return Err(AppError::InvalidRequest);
     }
 
-    if episode_cfg.battle_id == 0 {
+    let battle_id = dungeon::episode_battle_id(ctx.state.db, player_id, episode_cfg).await?;
+    if battle_id == 0 {
         let settlement = dungeon::settle_battleless(
             ctx.state.db,
             player_id,
@@ -275,14 +276,8 @@ pub async fn on_start_dungeon(
             .await;
     }
 
-    let mut active = ActiveBattle::prepare(
-        ctx.state.db,
-        player_id,
-        episode_id,
-        episode_cfg.battle_id,
-        request,
-    )
-    .await?;
+    let mut active =
+        ActiveBattle::prepare(ctx.state.db, player_id, episode_id, battle_id, request).await?;
     let cost = active
         .activate(
             ctx.state.db,

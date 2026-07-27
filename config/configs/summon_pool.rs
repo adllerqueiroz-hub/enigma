@@ -102,7 +102,7 @@ use std::collections::HashMap;
 pub struct SummonPoolTable {
     records: Vec<SummonPool>,
     by_id: HashMap<i32, usize>,
-    by_group: HashMap<String, Vec<usize>>,
+    by_group: HashMap<i32, Vec<usize>>,
 }
 
 impl SummonPoolTable {
@@ -110,11 +110,11 @@ impl SummonPoolTable {
         let records: Vec<SummonPool> = crate::load_rows(path)?;
 
         let mut by_id = HashMap::with_capacity(records.len());
-        let mut by_group: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_group: HashMap<i32, Vec<usize>> = HashMap::new();
 
         for (idx, record) in records.iter().enumerate() {
             by_id.insert(record.id, idx);
-            by_group.entry(record.progress_choose_group_id.clone()).or_default().push(idx);
+            by_group.entry(record.jump_group_id).or_default().push(idx);
         }
 
         Ok(Self {
@@ -129,7 +129,7 @@ impl SummonPoolTable {
         self.by_id.get(&id).map(|&i| &self.records[i])
     }
 
-    pub fn by_group(&self, group_id: String) -> impl Iterator<Item = &'_ SummonPool> + '_ {
+    pub fn by_group(&self, group_id: i32) -> impl Iterator<Item = &'_ SummonPool> + '_ {
         self.by_group
             .get(&group_id)
             .into_iter()
