@@ -99,7 +99,6 @@ pub const FILTER_TABLES: &[&str] = &[
     "odyssey_map",
     "odyssey_talent",
     "skill_buff",
-    "skill_buff_self_refresh",
     "activity174_role",
     "activity191_role",
     "activity",
