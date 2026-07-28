@@ -8,7 +8,7 @@ use crate::{
     util::{push, task_events},
 };
 use config::configs;
-use logic::task::TaskEvent;
+use logic::{task::TaskEvent, types::material_get_approach::MaterialGetApproach};
 use prost::Message;
 use sonettobuf::{
     AutoRoundRequest, BeginRoundRequest, CmdId, CoverDungeonRecordReply, CoverDungeonRecordRequest,
@@ -16,10 +16,11 @@ use sonettobuf::{
     EntityInfoReply, EntityInfoRequest, GetFightCardDeckDetailInfoReply,
     GetFightCardDeckDetailInfoRequest, GetFightCardDeckInfoReply, GetFightCardDeckInfoRequest,
     GetFightOperReply, GetFightOperRequest, GetFightRecordGroupReply, GetFightRecordGroupRequest,
-    GetPuzzleProgressRequest, InstructionDungeonFinalRewardRequest, InstructionDungeonInfoRequest,
-    InstructionDungeonOpenRequest, InstructionDungeonRewardRequest, PuzzleFinishRequest,
-    ReconnectFightRequest, RefreshAssistRequest, ResetRoundRequest, SavePuzzleProgressRequest,
-    StartDungeonReply, StartDungeonRequest, UpdateOpenPush, UseClothSkillRequest,
+    GetPointRewardRequest, GetPuzzleProgressRequest, InstructionDungeonFinalRewardRequest,
+    InstructionDungeonInfoRequest, InstructionDungeonOpenRequest, InstructionDungeonRewardRequest,
+    PuzzleFinishRequest, ReconnectFightRequest, RefreshAssistRequest, ResetRoundRequest,
+    SavePuzzleProgressRequest, StartDungeonReply, StartDungeonRequest, UpdateOpenPush,
+    UseClothSkillRequest,
 };
 
 pub async fn on_refresh_assist(
@@ -187,6 +188,28 @@ pub async fn on_get_dungeon(
         .await?;
     }
     Ok(())
+}
+
+pub async fn on_get_point_reward(
+    ctx: &mut ConnectionContext,
+    req: ClientPacket,
+) -> Result<(), AppError> {
+    let player_id = ctx.player()?.id;
+    let request = GetPointRewardRequest::decode(&req.data[..])?;
+    let claim = logic::dungeon::DungeonManager::new(player_id)
+        .claim_point_rewards(ctx.state.db, request.id)
+        .await?;
+
+    push::send_applied_reward_pushes(
+        ctx,
+        player_id,
+        claim.rewards,
+        claim.material_changes,
+        Some(MaterialGetApproach::DungeonRewardPoint),
+    )
+    .await?;
+    ctx.send_reply(CmdId::GetPointRewardCmd, claim.reply, 0, req.up_tag)
+        .await
 }
 
 pub async fn on_start_dungeon(

@@ -1155,3 +1155,67 @@ async fn refund_commits_with_active_fight_finalization() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn point_reward_claim_uses_shared_progress_and_is_idempotent() {
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data/excel2json");
+    let _ = config::init(data_dir.to_str().unwrap());
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (26, 'point-reward', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    database::db::starter_data::load_all_starter_data(&pool, 26)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE user_dungeon_reward_points
+         SET reward_point = 10
+         WHERE user_id = 26 AND chapter_id = 0",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let currency_before: i32 = sqlx::query_scalar(
+        "SELECT quantity FROM currencies WHERE user_id = 26 AND currency_id = 2",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let claim = logic::dungeon::DungeonManager::new(26)
+        .claim_point_rewards(&pool, vec![1])
+        .await
+        .unwrap();
+
+    assert_eq!(claim.reply.id, vec![1]);
+    let currency_after: i32 = sqlx::query_scalar(
+        "SELECT quantity FROM currencies WHERE user_id = 26 AND currency_id = 2",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(currency_after, currency_before + 50);
+    let points = dungeons::get_reward_points(&pool, 26).await.unwrap();
+    assert_eq!(points[0].has_get_point_reward_ids, vec![1]);
+    assert!(
+        logic::dungeon::DungeonManager::new(26)
+            .claim_point_rewards(&pool, vec![1])
+            .await
+            .is_err()
+    );
+    let currency_after_retry: i32 = sqlx::query_scalar(
+        "SELECT quantity FROM currencies WHERE user_id = 26 AND currency_id = 2",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(currency_after_retry, currency_after);
+}

@@ -253,6 +253,43 @@ pub async fn get_reward_points(pool: &SqlitePool, user_id: i64) -> Result<Vec<Re
     Ok(result)
 }
 
+pub async fn reward_point_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    chapter_id: i32,
+) -> Result<i32> {
+    Ok(sqlx::query_scalar(
+        "SELECT reward_point FROM user_dungeon_reward_points
+         WHERE user_id = ? AND chapter_id = ?",
+    )
+    .bind(user_id)
+    .bind(chapter_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or_default())
+}
+
+pub async fn claim_point_reward_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    chapter_id: i32,
+    reward_id: i32,
+) -> Result<bool> {
+    Ok(sqlx::query(
+        "INSERT INTO user_dungeon_claimed_rewards
+            (user_id, chapter_id, point_reward_id)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id, chapter_id, point_reward_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(chapter_id)
+    .bind(reward_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        != 0)
+}
+
 pub async fn get_equip_sp_chapters(pool: &SqlitePool, user_id: i64) -> Result<Vec<i32>> {
     let chapters = sqlx::query_scalar(
         "SELECT chapter_id FROM user_dungeon_equip_sp_chapters WHERE user_id = ?",

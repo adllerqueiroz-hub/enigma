@@ -6,9 +6,11 @@ use database::{
     db::game::{dungeons, open_infos, stories},
     models::game::dungeons::UserDungeon,
 };
-use sonettobuf::OpenInfo;
+use sonettobuf::{GetPointRewardReply, OpenInfo};
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+
+const SHARED_REWARD_POINT_CHAPTER_ID: i32 = 0;
 
 #[derive(Default)]
 pub struct DungeonUnlock {
@@ -67,6 +69,62 @@ impl DungeonManager {
             return Err(AppError::InvalidRequest);
         }
         self.unlock(db, targets).await
+    }
+
+    pub async fn claim_point_rewards(
+        self,
+        db: &SqlitePool,
+        reward_ids: Vec<i32>,
+    ) -> Result<PointRewardClaim, AppError> {
+        if reward_ids.is_empty() {
+            return Ok(PointRewardClaim::default());
+        }
+        let mut unique = HashSet::with_capacity(reward_ids.len());
+        if reward_ids
+            .iter()
+            .any(|reward_id| *reward_id <= 0 || !unique.insert(*reward_id))
+        {
+            return Err(AppError::InvalidRequest);
+        }
+
+        let tables = config::configs::get();
+        let mut tx = db.begin().await?;
+        let points = dungeons::reward_point_in_transaction(
+            &mut tx,
+            self.player_id,
+            SHARED_REWARD_POINT_CHAPTER_ID,
+        )
+        .await?;
+        let mut reward_set = RewardSet::default();
+        for reward_id in &reward_ids {
+            let row = tables
+                .chapter_point_reward
+                .get(*reward_id)
+                .filter(|row| row.reward_point_num > 0 && row.reward_point_num <= points)
+                .ok_or(AppError::InvalidRequest)?;
+            if !dungeons::claim_point_reward_in_transaction(
+                &mut tx,
+                self.player_id,
+                SHARED_REWARD_POINT_CHAPTER_ID,
+                *reward_id,
+            )
+            .await?
+            {
+                return Err(AppError::InvalidRequest);
+            }
+            reward_set.extend(reward::parse(&row.reward));
+        }
+
+        let material_changes = reward_set.material_changes();
+        let rewards = RewardManager::new(self.player_id)
+            .apply_in_transaction(&mut tx, db, reward_set)
+            .await?;
+        tx.commit().await?;
+        Ok(PointRewardClaim {
+            reply: GetPointRewardReply { id: reward_ids },
+            rewards,
+            material_changes,
+        })
     }
 
     async fn unlock(
@@ -142,6 +200,13 @@ impl DungeonManager {
     }
 }
 
+#[derive(Default)]
+pub struct PointRewardClaim {
+    pub reply: GetPointRewardReply,
+    pub rewards: AppliedRewards,
+    pub material_changes: Vec<(u32, u32, i32)>,
+}
+
 async fn complete_episode_trails_in_transaction(
     tx: &mut Transaction<'_, Sqlite>,
     player_id: i64,
@@ -182,13 +247,12 @@ async fn complete_episode_trails_in_transaction(
         rewards.extend(element_rewards);
         if element.reward_point > 0 {
             // DungeonMapModel stores every Trail point total in its chapter-0 bucket.
-            let reward_point_chapter_id = 0;
             reward_points.insert(
-                reward_point_chapter_id,
+                SHARED_REWARD_POINT_CHAPTER_ID,
                 dungeons::add_reward_points_in_transaction(
                     tx,
                     player_id,
-                    reward_point_chapter_id,
+                    SHARED_REWARD_POINT_CHAPTER_ID,
                     element.reward_point,
                 )
                 .await?,

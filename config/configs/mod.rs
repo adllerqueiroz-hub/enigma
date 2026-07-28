@@ -183,6 +183,7 @@ pub mod challenge_task;
 pub mod chapter;
 pub mod chapter_map;
 pub mod chapter_map_element;
+pub mod chapter_point_reward;
 pub mod character;
 pub mod character_cosume;
 pub mod character_data;
@@ -574,6 +575,7 @@ pub struct GameDB {
     pub chapter: chapter::ChapterTable,
     pub chapter_map: chapter_map::ChapterMapTable,
     pub chapter_map_element: chapter_map_element::ChapterMapElementTable,
+    pub chapter_point_reward: chapter_point_reward::ChapterPointRewardTable,
     pub character: character::CharacterTable,
     pub character_cosume: character_cosume::CharacterCosumeTable,
     pub character_data: character_data::CharacterDataTable,
@@ -1331,6 +1333,9 @@ impl GameDB {
         let chapter_map_element = chapter_map_element::ChapterMapElementTable::load(
             &format!("{}/chapter_map_element.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load chapter_map_element.json: {}", e))?;
+        let chapter_point_reward = chapter_point_reward::ChapterPointRewardTable::load(
+            &format!("{}/chapter_point_reward.json", data_dir)
+        ).map_err(|e| anyhow::anyhow!("Failed to load chapter_point_reward.json: {}", e))?;
         let character = character::CharacterTable::load(
             &format!("{}/character.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load character.json: {}", e))?;
@@ -2128,6 +2133,7 @@ impl GameDB {
             chapter,
             chapter_map,
             chapter_map_element,
+            chapter_point_reward,
             character,
             character_cosume,
             character_data,

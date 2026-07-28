@@ -35,6 +35,7 @@ pub const FILTER_TABLES: &[&str] = &[
     "chapter",
     "chapter_map",
     "chapter_map_element",
+    "chapter_point_reward",
     "open",
     "battle",
     "condition",
