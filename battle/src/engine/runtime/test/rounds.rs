@@ -114,6 +114,84 @@ fn opening_round_uses_action_point_buffs_applied_during_setup() {
 }
 
 #[test]
+fn opening_round_collects_static_ap_rules_without_runtime_dispatch() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(1108),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+
+    let round = runtime.start_round().unwrap();
+
+    assert_eq!(round.act_point, Some(2));
+}
+
+#[test]
+fn round_modifier_with_output_keeps_its_setup_command() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = BattleRuntime::new(fight);
+    runtime.extend_battle_rule_skills([crate::engine::fight::rules::OwnedBattleSkill {
+        owner_uid: crate::engine::fight::rules::ATTACKER_SIDE_UID,
+        skill_id: 1_182_004,
+    }]);
+
+    runtime
+        .build_start_steps(CardSetup {
+            hand: (1..=5)
+                .map(|uid| CardInfo {
+                    uid: Some(uid),
+                    temp_card: Some(false),
+                    ..Default::default()
+                })
+                .collect(),
+            draw_pile: Vec::new(),
+            deck_num: 0,
+        })
+        .unwrap();
+
+    assert_eq!(runtime.managers.card.hand().len(), 5);
+    assert_eq!(runtime.managers.card.hand_limit_bonus(), 0);
+}
+
+#[test]
 fn begin_round_refills_any_normal_hand_deficit() {
     crate::test_support::init_config();
     let fight = Fight {

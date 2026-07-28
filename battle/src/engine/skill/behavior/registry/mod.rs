@@ -82,6 +82,7 @@ pub struct BehaviorDefinition {
     pub collect_attack_modifier:
         Option<for<'a> fn(AttackModifierContext<'a>, &ParsedBehavior) -> bool>,
     pub collect_round_modifier: Option<fn(&ParsedBehavior) -> Option<RoundModifiers>>,
+    pub round_modifier_only: bool,
     pub collect_queue_preparation: Option<QueuePreparationCollector>,
     pub destination: bool,
     pub fire_count_mode: FireCountMode,
@@ -152,6 +153,7 @@ pub const fn definition<H: BehaviorHandler>(
         emit_ops: H::emit_ops,
         collect_attack_modifier: None,
         collect_round_modifier: None,
+        round_modifier_only: false,
         collect_queue_preparation: None,
         destination: false,
         fire_count_mode: FireCountMode::Repeat,
@@ -346,7 +348,21 @@ pub const fn modifier_definition<H: BehaviorHandler>(
     }
 }
 
-pub const fn round_modifier_definition<H: BehaviorHandler>(
+pub const fn round_modifier_only_definition<H: BehaviorHandler>(
+    opcode: i32,
+    type_name: &'static str,
+    kind: BehaviorKind,
+    phase: BehaviorPhase,
+) -> BehaviorDefinition {
+    BehaviorDefinition {
+        destination: true,
+        collect_round_modifier: Some(H::collect_round_modifier),
+        round_modifier_only: true,
+        ..definition::<H>(opcode, type_name, kind, phase)
+    }
+}
+
+pub const fn round_modifier_with_output_definition<H: BehaviorHandler>(
     opcode: i32,
     type_name: &'static str,
     kind: BehaviorKind,
@@ -434,8 +450,11 @@ macro_rules! behavior_definitions {
     (@definition modifier, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident) => {
         $crate::engine::skill::behavior::registry::modifier_definition::<$handler>($opcode, $type_name, $crate::engine::skill::behavior::classify::BehaviorKind::$kind, $crate::engine::skill::behavior::registry::BehaviorPhase::$phase)
     };
-    (@definition round_modifier, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident) => {
-        $crate::engine::skill::behavior::registry::round_modifier_definition::<$handler>($opcode, $type_name, $crate::engine::skill::behavior::classify::BehaviorKind::$kind, $crate::engine::skill::behavior::registry::BehaviorPhase::$phase)
+    (@definition round_modifier_only, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident) => {
+        $crate::engine::skill::behavior::registry::round_modifier_only_definition::<$handler>($opcode, $type_name, $crate::engine::skill::behavior::classify::BehaviorKind::$kind, $crate::engine::skill::behavior::registry::BehaviorPhase::$phase)
+    };
+    (@definition round_modifier_with_output, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident) => {
+        $crate::engine::skill::behavior::registry::round_modifier_with_output_definition::<$handler>($opcode, $type_name, $crate::engine::skill::behavior::classify::BehaviorKind::$kind, $crate::engine::skill::behavior::registry::BehaviorPhase::$phase)
     };
     (@definition aggregated_destination, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident) => {
         $crate::engine::skill::behavior::registry::aggregated_destination_definition::<$handler>($opcode, $type_name, $crate::engine::skill::behavior::classify::BehaviorKind::$kind, $crate::engine::skill::behavior::registry::BehaviorPhase::$phase)
@@ -559,8 +578,8 @@ behavior_definitions! {
     [60268] "ChangeScene" => super::scene::Handler, ChangeScene, Immediate, destination;
     [60058] "CareerRatioFix" => super::career::Handler, CareerRatioFix, Immediate, modifier;
     [100036] "SkillChangeAttackCareer" => super::career::Handler, ChangeAttackCareer, Immediate, modifier;
-    [40003] "AddAct" => super::action_point::Handler, AddAct, Immediate, round_modifier;
-    [40007] "AddActAndCardLimit" => super::card_limit::Handler, AddActAndCardLimit, AfterDamage, round_modifier;
+    [40003] "AddAct" => super::action_point::Handler, AddAct, Immediate, round_modifier_only;
+    [40007] "AddActAndCardLimit" => super::card_limit::Handler, AddActAndCardLimit, AfterDamage, round_modifier_with_output;
     [60221] "IgnoreSkillConfigDamageRate" => super::general::DamageRateMarkerHandler, IgnoreSkillConfigDamageRate, Immediate, destination, arguments::none;
     [100017] "IgnoreSkillConfigDamageRate" => super::general::DamageRateMarkerHandler, IgnoreSkillConfigDamageRate, Immediate, destination, arguments::none;
     [60036] "ConsumeBuffChangeTargets" => super::skill_modifier::Handler, ConsumeBuffChangeTargets, Immediate, destination;

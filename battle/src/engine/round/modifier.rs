@@ -3,7 +3,7 @@ use crate::engine::{
     manager::BattleManagers,
     runtime::determinism::RoundDeterminism,
     skill::{
-        condition::conditions_fire_count,
+        condition::{conditions_fire_count, satisfied_conditions},
         effect::SkillEffectCatalog,
         subscriber,
         target::{TargetContext, TargetPool, TargetResolver},
@@ -36,20 +36,6 @@ pub fn action_point_bonus(
             let definition = crate::engine::skill::behavior::registry::find(&slot.behavior)?;
             let collect = definition.collect_round_modifier?;
             let route = slot.compiled_route.as_ref().ok()?;
-            if !route.branches.iter().any(|branch| {
-                matches!(
-                    branch.driver,
-                    None | Some(crate::engine::skill::rule::route::ConditionDriver::Setup(
-                        crate::engine::skill::rule::route::ConditionSetup {
-                            stage: crate::engine::skill::rule::SetupStage::RoundStart
-                                | crate::engine::skill::rule::SetupStage::RoundStartCondition,
-                            ..
-                        }
-                    ))
-                )
-            }) {
-                return None;
-            }
             let condition_targets = TargetResolver::resolve_with_managers_and_context(
                 &slot.condition_target,
                 skill_id,
@@ -59,14 +45,34 @@ pub fn action_point_bonus(
                 Some(managers),
                 context,
             );
-            let repeats = conditions_fire_count(
-                &slot.conditions,
-                owner_uid,
-                &condition_targets,
-                Some(managers),
-                pool,
-                context,
-            );
+            let repeats = route
+                .branches
+                .iter()
+                .filter_map(|branch| match branch.driver {
+                    None => Some(slot.conditions.clone()),
+                    Some(crate::engine::skill::rule::route::ConditionDriver::Setup(setup))
+                        if matches!(
+                            setup.stage,
+                            crate::engine::skill::rule::SetupStage::RoundStart
+                                | crate::engine::skill::rule::SetupStage::RoundStartCondition
+                        ) =>
+                    {
+                        Some(satisfied_conditions(&slot.conditions, setup.key))
+                    }
+                    _ => None,
+                })
+                .map(|conditions| {
+                    conditions_fire_count(
+                        &conditions,
+                        owner_uid,
+                        &condition_targets,
+                        Some(managers),
+                        pool,
+                        context,
+                    )
+                })
+                .max()
+                .unwrap_or_default();
             if repeats <= 0 {
                 return None;
             }

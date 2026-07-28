@@ -58,7 +58,7 @@ impl SkillEffectSlot {
         };
         if crate::engine::skill::behavior::registry::find(&self.behavior).is_some_and(
             |definition| {
-                definition.collect_round_modifier.is_some()
+                definition.round_modifier_only
                     || definition.card_play_role
                         == crate::engine::skill::behavior::registry::CardPlayRole::QueuePreparation
             },
@@ -128,6 +128,14 @@ impl SkillEffectSlot {
         let Some(route) = self.usable_route()? else {
             return Ok(Vec::new());
         };
+        if matches!(
+            stage,
+            SetupStage::RoundStart | SetupStage::RoundStartCondition
+        ) && crate::engine::skill::behavior::registry::find(&self.behavior)
+            .is_some_and(|definition| definition.round_modifier_only)
+        {
+            return Ok(Vec::new());
+        }
         let mut keys = route
             .branches
             .iter()

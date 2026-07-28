@@ -243,6 +243,13 @@ fn static_action_point_modifier_has_no_runtime_event_lane() {
             .unwrap()
             .is_empty()
     );
+    let battle_rule = catalog.get(72013).unwrap();
+    assert!(
+        battle_rule.slots[0]
+            .compiled_setup_keys(crate::engine::skill::rule::SetupStage::RoundStart, -1)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
