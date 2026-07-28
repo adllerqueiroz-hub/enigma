@@ -9,9 +9,9 @@ use database::{
 };
 use sonettobuf::{
     AutoUseExpirePowerItemReply, BuyPowerReply, Currency, CurrencyExchangeNo, EatEquip, Equip,
-    EquipBreakReply, EquipDecomposeReply, EquipLockReply, EquipRefineReply, EquipStrengthenReply,
-    ExchangeDiamondReply, ExchangeSameCurrencyReply, GetBuyPowerInfoReply, GetCurrencyListReply,
-    GetEquipInfoReply, GetItemListReply, InsightItem, Item, M2qEntry, MarkReadSubType21Reply,
+    EquipBreakReply, EquipDecomposeReply, EquipLockReply, EquipRefineReply, ExchangeDiamondReply,
+    ExchangeSameCurrencyReply, GetBuyPowerInfoReply, GetCurrencyListReply, GetEquipInfoReply,
+    GetItemListReply, InsightItem, Item, M2qEntry, MarkReadSubType21Reply,
     PopExchangeSameCurrencyReply, PowerItem, UseInsightItemReply, UseItemReply, UsePowerItemInfo,
     UsePowerItemListReply, UsePowerItemReply,
 };
@@ -249,7 +249,7 @@ impl InventoryManager {
         db: &SqlitePool,
         target_uid: i64,
         eat_equips: Vec<EatEquip>,
-    ) -> Result<(EquipStrengthenReply, Vec<i64>), AppError> {
+    ) -> Result<equipment::StrengthenCompletion, AppError> {
         equipment::strengthen(db, self.player_id, target_uid, eat_equips).await
     }
 

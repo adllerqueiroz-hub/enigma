@@ -12,6 +12,11 @@ fn origin_damage_accepts_only_a_known_basis_attribute_and_nonnegative_rate() {
         vec![2, AttrId::Hp.id(), 200],
         Vec::new(),
     )));
+    assert!(supports_origin_damage(&ParsedBehavior::from_spec(
+        BehaviorSpec::new(30015, "OriginDamageCanCrit"),
+        vec![0, AttrId::Attack.id(), 400],
+        Vec::new(),
+    )));
 }
 
 #[test]

@@ -1146,7 +1146,7 @@ impl HeroModel<HeroData> for UserHeroModel {
             .character
             .get(hero_id)
             .filter(|character| character.id != 3029 && character.id != 9998) // npc
-            .ok_or_else(|| sqlx::Error::RowNotFound)?;
+            .ok_or_else(|| anyhow!("hero {hero_id} has no character config"))?;
 
         let hero_skin = character.skin_id;
         let rare = character.rare as usize;

@@ -132,6 +132,8 @@ pub async fn dispatch_command(ctx: &mut ConnectionContext, req: Vec<u8>) -> Resu
         CmdId::EquipRefineCmd => equipment::on_equip_refine,
         CmdId::EquipDecomposeCmd => equipment::on_equip_decompose,
         CmdId::GetDungeonCmd => dungeon::on_get_dungeon,
+        CmdId::MapElementCmd => dungeon::on_map_element,
+        CmdId::GetMapElementRecordCmd => dungeon::on_get_map_element_record,
         CmdId::GetPointRewardCmd => dungeon::on_get_point_reward,
         CmdId::GetPuzzleProgressCmd => dungeon::on_get_puzzle_progress,
         CmdId::SavePuzzleProgressCmd => dungeon::on_save_puzzle_progress,

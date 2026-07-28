@@ -6,11 +6,15 @@ use database::{
     db::game::{dungeons, open_infos, stories},
     models::game::dungeons::UserDungeon,
 };
-use sonettobuf::{GetPointRewardReply, OpenInfo};
+use sonettobuf::{
+    GetMapElementRecordReply, GetPointRewardReply, MapElementRecordInfo, MapElementReply, OpenInfo,
+};
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 const SHARED_REWARD_POINT_CHAPTER_ID: i32 = 0;
+const MAX_MAP_ELEMENT_RECORD_BYTES: usize = 64 * 1024;
+const MAX_MAP_ELEMENT_DIALOGS: usize = 1024;
 
 #[derive(Default)]
 pub struct DungeonUnlock {
@@ -59,6 +63,12 @@ impl DungeonManager {
             .chapter
             .get(chapter_id)
             .ok_or(AppError::InvalidRequest)?;
+        let missing_heroes = chapter_missing_reward_heroes(chapter_id);
+        if !missing_heroes.is_empty() {
+            return Err(AppError::Custom(format!(
+                "chapter {chapter_id} rewards unavailable heroes {missing_heroes:?}"
+            )));
+        }
         let targets = tables
             .episode
             .iter()
@@ -124,6 +134,91 @@ impl DungeonManager {
             reply: GetPointRewardReply { id: reward_ids },
             rewards,
             material_changes,
+        })
+    }
+
+    pub async fn complete_map_element(
+        self,
+        db: &SqlitePool,
+        element_id: i32,
+        dialog_ids: Vec<i32>,
+        record: String,
+    ) -> Result<MapElementCompletion, AppError> {
+        if element_id <= 0
+            || dialog_ids.len() > MAX_MAP_ELEMENT_DIALOGS
+            || record.len() > MAX_MAP_ELEMENT_RECORD_BYTES
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let tables = config::configs::get();
+        let element = tables
+            .chapter_map_element
+            .get(element_id)
+            .ok_or(AppError::InvalidRequest)?;
+        let reward_set = reward::parse(map_element_reward(tables, element)?);
+        let material_changes = reward_set.material_changes();
+        let mut tx = db.begin().await?;
+        if !dungeons::complete_map_element_in_transaction(
+            &mut tx,
+            self.player_id,
+            element_id,
+            &record,
+        )
+        .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let reward_point = if element.reward_point > 0 {
+            Some((
+                SHARED_REWARD_POINT_CHAPTER_ID,
+                dungeons::add_reward_points_in_transaction(
+                    &mut tx,
+                    self.player_id,
+                    SHARED_REWARD_POINT_CHAPTER_ID,
+                    element.reward_point,
+                )
+                .await?,
+            ))
+        } else {
+            None
+        };
+        let rewards = RewardManager::new(self.player_id)
+            .apply_in_transaction(&mut tx, db, reward_set)
+            .await?;
+        tx.commit().await?;
+
+        Ok(MapElementCompletion {
+            reply: MapElementReply {
+                element_id: Some(element_id),
+                dialog_ids,
+                record: Some(record),
+            },
+            rewards,
+            material_changes,
+            reward_point,
+        })
+    }
+
+    pub async fn map_element_records(
+        self,
+        db: &SqlitePool,
+        element_ids: Vec<i32>,
+    ) -> Result<GetMapElementRecordReply, AppError> {
+        let mut unique = HashSet::with_capacity(element_ids.len());
+        if element_ids.len() > MAX_MAP_ELEMENT_DIALOGS
+            || element_ids.iter().any(|id| *id <= 0 || !unique.insert(*id))
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        Ok(GetMapElementRecordReply {
+            record_infos: dungeons::get_map_element_records(db, self.player_id, &element_ids)
+                .await?
+                .into_iter()
+                .map(|(element_id, record)| MapElementRecordInfo {
+                    element_id: Some(element_id),
+                    record: Some(record),
+                })
+                .collect(),
         })
     }
 
@@ -200,11 +295,76 @@ impl DungeonManager {
     }
 }
 
+pub fn chapter_missing_reward_heroes(chapter_id: i32) -> Vec<i32> {
+    let tables = config::configs::get();
+    let mut missing = BTreeSet::new();
+    for episode in tables
+        .episode
+        .iter()
+        .filter(|episode| episode.chapter_id == chapter_id)
+    {
+        let rewards =
+            completion_rewards(episode, true, 0, configured_clear_star(episode), 1).rewards;
+        missing.extend(
+            rewards
+                .heroes
+                .into_iter()
+                .map(|(hero_id, _)| hero_id)
+                .filter(|hero_id| tables.character.get(*hero_id).is_none()),
+        );
+        for element_id in episode
+            .element_list
+            .split('#')
+            .filter_map(|id| id.parse::<i32>().ok())
+        {
+            let Some(element) = tables.chapter_map_element.get(element_id) else {
+                continue;
+            };
+            missing.extend(
+                reward::parse(&element.reward)
+                    .heroes
+                    .into_iter()
+                    .map(|(hero_id, _)| hero_id)
+                    .filter(|hero_id| tables.character.get(*hero_id).is_none()),
+            );
+        }
+    }
+    missing.into_iter().collect()
+}
+
 #[derive(Default)]
 pub struct PointRewardClaim {
     pub reply: GetPointRewardReply,
     pub rewards: AppliedRewards,
     pub material_changes: Vec<(u32, u32, i32)>,
+}
+
+pub struct MapElementCompletion {
+    pub reply: MapElementReply,
+    pub rewards: AppliedRewards,
+    pub material_changes: Vec<(u32, u32, i32)>,
+    pub reward_point: Option<(i32, i32)>,
+}
+
+fn map_element_reward<'a>(
+    tables: &'a config::GameDB,
+    element: &'a config::chapter_map_element::ChapterMapElement,
+) -> Result<&'a str, AppError> {
+    let chapter = tables
+        .chapter_map
+        .get(element.map_id)
+        .and_then(|map| tables.chapter.get(map.chapter_id))
+        .ok_or(AppError::InvalidRequest)?;
+    if chapter.act_id != 0
+        && tables
+            .activity
+            .get(chapter.act_id)
+            .is_some_and(|activity| activity.is_retro_acitivity == 2)
+        && !element.permanent_reward.is_empty()
+    {
+        return Ok(&element.permanent_reward);
+    }
+    Ok(&element.reward)
 }
 
 async fn complete_episode_trails_in_transaction(
@@ -470,3 +630,6 @@ fn player_exp_value(value: &str, cost: i32) -> i32 {
             .unwrap_or_default()
     })
 }
+
+#[cfg(test)]
+mod test;

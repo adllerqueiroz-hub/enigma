@@ -600,7 +600,7 @@ pub async fn get_sign_in_info(
     .fetch_all(pool)
     .await?;
 
-    let birthday_heroes = get_birthday_heroes_today(pool, user_id).await?;
+    let birthday_heroes = get_claimed_birthday_heroes_today(pool, user_id).await?;
 
     Ok((
         info,
@@ -853,21 +853,19 @@ pub async fn add_sign_in_day(
 }
 
 /// Get heroes whose birthday is today (using server time for consistency)
-pub async fn get_birthday_heroes_today(pool: &SqlitePool, user_id: i64) -> Result<Vec<i32>> {
-    // Use ServerTime for consistency
+pub async fn get_claimed_birthday_heroes_today(
+    pool: &SqlitePool,
+    user_id: i64,
+) -> Result<Vec<i32>> {
     let server_now = common::time::ServerTime::server_date();
     let current_month = server_now.month();
     let current_day = server_now.day();
+    let current_year = server_now.year();
 
     let game_data = config::get();
 
-    // Find all heroes whose birthday is today
     let mut birthday_hero_ids = Vec::new();
-
-    let characters: Vec<_> = game_data.character.iter().collect();
-
-    for character in &characters.clone() {
-        // Parse roleBirthday format "10/23" -> month=10, day=23
+    for character in game_data.character.iter() {
         if let Some((month_str, day_str)) = character.role_birthday.split_once('/')
             && let (Ok(month), Ok(day)) = (month_str.parse::<u32>(), day_str.parse::<u32>())
             && month == current_month
@@ -881,7 +879,6 @@ pub async fn get_birthday_heroes_today(pool: &SqlitePool, user_id: i64) -> Resul
         return Ok(Vec::new());
     }
 
-    // Filter to only heroes the user actually owns
     let placeholders = birthday_hero_ids
         .iter()
         .map(|_| "?")
@@ -889,11 +886,13 @@ pub async fn get_birthday_heroes_today(pool: &SqlitePool, user_id: i64) -> Resul
         .join(",");
 
     let query = format!(
-        "SELECT hero_id FROM heroes WHERE user_id = ? AND hero_id IN ({})",
+        "SELECT hero_id
+         FROM hero_birthday_info
+         WHERE user_id = ? AND last_claim_year = ? AND hero_id IN ({})",
         placeholders
     );
 
-    let mut query = sqlx::query_scalar(&query).bind(user_id);
+    let mut query = sqlx::query_scalar(&query).bind(user_id).bind(current_year);
     for hero_id in birthday_hero_ids {
         query = query.bind(hero_id);
     }
@@ -901,4 +900,45 @@ pub async fn get_birthday_heroes_today(pool: &SqlitePool, user_id: i64) -> Resul
     let owned_birthday_heroes = query.fetch_all(pool).await?;
 
     Ok(owned_birthday_heroes)
+}
+
+pub async fn get_hero_birthday_claim(
+    pool: &SqlitePool,
+    user_id: i64,
+    hero_id: i32,
+) -> Result<Option<(i32, i32)>> {
+    Ok(sqlx::query_as(
+        "SELECT birthday_count, last_claim_year
+         FROM hero_birthday_info
+         WHERE user_id = ? AND hero_id = ?",
+    )
+    .bind(user_id)
+    .bind(hero_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+pub async fn claim_hero_birthday_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    hero_id: i32,
+    expected_count: i32,
+    year: i32,
+) -> Result<bool> {
+    let updated = sqlx::query(
+        "INSERT INTO hero_birthday_info
+             (user_id, hero_id, birthday_count, last_claim_year)
+         VALUES (?, ?, 1, ?)
+         ON CONFLICT(user_id, hero_id) DO UPDATE SET
+             birthday_count = birthday_count + 1,
+             last_claim_year = excluded.last_claim_year
+         WHERE birthday_count = ? AND last_claim_year != excluded.last_claim_year",
+    )
+    .bind(user_id)
+    .bind(hero_id)
+    .bind(year)
+    .bind(expected_count)
+    .execute(&mut **tx)
+    .await?;
+    Ok(updated.rows_affected() == 1)
 }

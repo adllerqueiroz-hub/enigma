@@ -16,11 +16,12 @@ use sonettobuf::{
     EntityInfoReply, EntityInfoRequest, GetFightCardDeckDetailInfoReply,
     GetFightCardDeckDetailInfoRequest, GetFightCardDeckInfoReply, GetFightCardDeckInfoRequest,
     GetFightOperReply, GetFightOperRequest, GetFightRecordGroupReply, GetFightRecordGroupRequest,
-    GetPointRewardRequest, GetPuzzleProgressRequest, InstructionDungeonFinalRewardRequest,
-    InstructionDungeonInfoRequest, InstructionDungeonOpenRequest, InstructionDungeonRewardRequest,
+    GetMapElementRecordRequest, GetPointRewardRequest, GetPuzzleProgressRequest,
+    InstructionDungeonFinalRewardRequest, InstructionDungeonInfoRequest,
+    InstructionDungeonOpenRequest, InstructionDungeonRewardRequest, MapElementRequest,
     PuzzleFinishRequest, ReconnectFightRequest, RefreshAssistRequest, ResetRoundRequest,
-    SavePuzzleProgressRequest, StartDungeonReply, StartDungeonRequest, UpdateOpenPush,
-    UseClothSkillRequest,
+    RewardPointUpdatePush, SavePuzzleProgressRequest, StartDungeonReply, StartDungeonRequest,
+    UpdateOpenPush, UseClothSkillRequest,
 };
 
 pub async fn on_refresh_assist(
@@ -142,6 +143,57 @@ pub async fn on_puzzle_finish(
     )
     .await?;
     ctx.send_reply(CmdId::PuzzleFinishCmd, reply, 0, req.up_tag)
+        .await
+}
+
+pub async fn on_map_element(
+    ctx: &mut ConnectionContext,
+    req: ClientPacket,
+) -> Result<(), AppError> {
+    let player_id = ctx.player()?.id;
+    let request = MapElementRequest::decode(&req.data[..])?;
+    let completion = logic::dungeon::DungeonManager::new(player_id)
+        .complete_map_element(
+            ctx.state.db,
+            request.element_id.ok_or(AppError::InvalidRequest)?,
+            request.dialog_ids,
+            request.record.unwrap_or_default(),
+        )
+        .await?;
+
+    push::send_applied_reward_pushes(
+        ctx,
+        player_id,
+        completion.rewards,
+        completion.material_changes,
+        Some(MaterialGetApproach::Explore),
+    )
+    .await?;
+    if let Some((chapter_id, value)) = completion.reward_point {
+        ctx.notify(
+            CmdId::RewardPointUpdatePushCmd,
+            RewardPointUpdatePush {
+                chapter_id: Some(chapter_id),
+                value: Some(value),
+            },
+        )
+        .await?;
+    }
+    ctx.send_reply(CmdId::MapElementCmd, completion.reply, 0, req.up_tag)
+        .await?;
+    push::send_dungeon_map_progression(ctx, player_id).await
+}
+
+pub async fn on_get_map_element_record(
+    ctx: &mut ConnectionContext,
+    req: ClientPacket,
+) -> Result<(), AppError> {
+    let player_id = ctx.player()?.id;
+    let request = GetMapElementRecordRequest::decode(&req.data[..])?;
+    let reply = logic::dungeon::DungeonManager::new(player_id)
+        .map_element_records(ctx.state.db, request.element_ids)
+        .await?;
+    ctx.send_reply(CmdId::GetMapElementRecordCmd, reply, 0, req.up_tag)
         .await
 }
 

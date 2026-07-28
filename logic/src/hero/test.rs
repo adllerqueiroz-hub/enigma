@@ -356,3 +356,55 @@ async fn specialization_rejects_the_wrong_hero_and_unknown_weapon_group() {
             .is_err()
     );
 }
+
+#[test]
+fn birthday_reward_uses_the_matching_day_and_next_configured_gift() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let character = config::configs::get()
+        .character
+        .iter()
+        .find(|character| {
+            !character.role_birthday.is_empty() && character.birthday_bonus.contains(';')
+        })
+        .unwrap();
+    let (month, day) = character.role_birthday.split_once('/').unwrap();
+    let month = month.parse().unwrap();
+    let day = day.parse().unwrap();
+
+    let first = super::profile::birthday_reward(character, 0, month, day).unwrap();
+    let second = super::profile::birthday_reward(character, 1, month, day).unwrap();
+    assert!(!first.is_empty());
+    assert!(!second.is_empty());
+    assert!(super::profile::birthday_reward(character, 0, month, day % 28 + 1).is_none());
+}
+
+#[tokio::test]
+async fn birthday_claim_state_does_not_require_hero_ownership() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (23, 'birthday', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        database::db::game::sign_in::claim_hero_birthday_in_transaction(
+            &mut tx, 23, 3039, 0, 2026,
+        )
+        .await
+        .unwrap()
+    );
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        database::db::game::sign_in::get_hero_birthday_claim(&pool, 23, 3039)
+            .await
+            .unwrap(),
+        Some((1, 2026))
+    );
+}

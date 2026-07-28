@@ -59,6 +59,77 @@ pub async fn get_equipment_by_uid(
     Ok(equip)
 }
 
+pub struct StrengthenConsume {
+    pub uid: i64,
+    pub count: i32,
+    pub expected_count: i32,
+    pub stackable: bool,
+}
+
+pub struct StrengthenUpdate<'a> {
+    pub target_uid: i64,
+    pub expected_level: i32,
+    pub expected_exp: i32,
+    pub level: i32,
+    pub exp: i32,
+    pub consumes: &'a [StrengthenConsume],
+}
+
+pub async fn apply_strengthen_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    update: StrengthenUpdate<'_>,
+) -> Result<bool> {
+    let now = common::time::ServerTime::now_ms();
+    let target = sqlx::query(
+        "UPDATE equipment SET level = ?, exp = ?, updated_at = ?
+         WHERE user_id = ? AND uid = ? AND level = ? AND exp = ? AND count > 0",
+    )
+    .bind(update.level)
+    .bind(update.exp)
+    .bind(now)
+    .bind(user_id)
+    .bind(update.target_uid)
+    .bind(update.expected_level)
+    .bind(update.expected_exp)
+    .execute(&mut **tx)
+    .await?;
+    if target.rows_affected() != 1 {
+        return Ok(false);
+    }
+
+    for consume in update.consumes {
+        let remaining = consume.expected_count - consume.count;
+        let result = if remaining > 0 || consume.stackable {
+            sqlx::query(
+                "UPDATE equipment SET count = ?, updated_at = ?
+                 WHERE user_id = ? AND uid = ? AND count = ? AND is_lock = 0",
+            )
+            .bind(remaining.max(0))
+            .bind(now)
+            .bind(user_id)
+            .bind(consume.uid)
+            .bind(consume.expected_count)
+            .execute(&mut **tx)
+            .await?
+        } else {
+            sqlx::query(
+                "DELETE FROM equipment
+                 WHERE user_id = ? AND uid = ? AND count = ? AND is_lock = 0",
+            )
+            .bind(user_id)
+            .bind(consume.uid)
+            .bind(consume.expected_count)
+            .execute(&mut **tx)
+            .await?
+        };
+        if result.rows_affected() != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub async fn consume_item_and_max_equipment(
     pool: &SqlitePool,
     user_id: i64,

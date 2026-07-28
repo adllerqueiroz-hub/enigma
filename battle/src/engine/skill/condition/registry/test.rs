@@ -319,6 +319,16 @@ fn post_hit_buff_presence_conditions_are_filters_with_event_dependencies() {
 }
 
 #[test]
+fn genesis_critical_branch_uses_exact_static_buff_predicates() {
+    for (opcode, type_name) in [(192081, "HasBuffId"), (572081, "NoBuffId")] {
+        let definition = find_key(opcode, type_name).unwrap();
+        assert_eq!(definition.role, ConditionRole::Predicate);
+        assert!(definition.dependencies.is_empty());
+        assert!(definition.filters_behavior_targets);
+    }
+}
+
+#[test]
 fn lethal_injury_skill_rate_gate_has_its_own_immediate_route() {
     let definition = find_key(51201, "HasTypeIdBuffMoreThan").unwrap();
 

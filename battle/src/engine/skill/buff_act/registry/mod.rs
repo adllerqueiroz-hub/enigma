@@ -624,7 +624,8 @@ buff_act_definitions! {
         effect_time_subscription: false, supports: |_| true, state_consumer: true, wire: (super::wire::BuffActWireDefinition::add(DefinitionKey::new(603, "ExPointCantAdd"), &[EffectType::Expointcantadd as i32]));
     (722, "CantGetExskill") => CantGetExskill,
         effect_time_subscription: false, supports: |_| true, state_consumer: true, wire: (super::wire::BuffActWireDefinition::all(DefinitionKey::new(722, "CantGetExskill"), &[EffectType::Cantgetexskill as i32]));
-    (709, "BuffAddAct") => BuffAddAct, wire: (super::wire::BuffActWireDefinition::add(DefinitionKey::new(709, "BuffAddAct"), &[EffectType::Buffaddact as i32]));
+    (709, "BuffAddAct") => BuffAddAct, effect_time_subscription: false,
+        supports: super::add_action_point::supports, state_consumer: true, wire: (super::wire::BuffActWireDefinition::add(DefinitionKey::new(709, "BuffAddAct"), &[EffectType::Buffaddact as i32]));
     (719, "PowerMaxAdd") => PowerMaxAdd, effect_time_subscription: false,
         transactions: [EventKind::BuffAdded, EventKind::BuffChanged, EventKind::BuffRemoved],
         frame: CausingFrame,
@@ -844,7 +845,8 @@ buff_act_definitions! {
         event: EventKind::PlayerActionsResolved, frame: IndependentEvent,
         scoped_runtime: |context| super::emitter_energy_add_buff::rule_ops(context.managers, context.subscriber, context.event?),
         supports: super::emitter_energy_add_buff::supports, wire: (super::wire::BuffActWireDefinition::all(DefinitionKey::new(893, "EmitterEnergyAddBuff"), &[EffectType::None as i32]));
-    (920, "BuffAddActLimit") => BuffAddActLimit, wire: (super::wire::BuffActWireDefinition::all(DefinitionKey::new(920, "BuffAddActLimit"), &[EffectType::None as i32]));
+    (920, "BuffAddActLimit") => BuffAddActLimit, effect_time_subscription: false,
+        supports: super::add_action_point::supports, state_consumer: true, wire: (super::wire::BuffActWireDefinition::all(DefinitionKey::new(920, "BuffAddActLimit"), &[EffectType::None as i32]));
     (922, "AttrAndLayerAttr") => AttrAndLayerAttr, effect_time_subscription: false,
         supports: |args| args.len() >= 3
             && args.len() % 3 == 0

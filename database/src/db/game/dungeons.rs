@@ -191,6 +191,48 @@ pub async fn finish_element_in_transaction(
     Ok(result.rows_affected() != 0)
 }
 
+pub async fn complete_map_element_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    element_id: i32,
+    record: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE user_dungeon_elements
+         SET is_finished = 1, element_record = ?, puzzle_updated_at = ?
+         WHERE user_id = ? AND element_id = ? AND is_finished = 0",
+    )
+    .bind(record)
+    .bind(ServerTime::now_ms())
+    .bind(user_id)
+    .bind(element_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn get_map_element_records(
+    pool: &SqlitePool,
+    user_id: i64,
+    element_ids: &[i32],
+) -> Result<Vec<(i32, String)>> {
+    let mut records = Vec::new();
+    for element_id in element_ids {
+        if let Some(record) = sqlx::query_scalar(
+            "SELECT element_record FROM user_dungeon_elements
+             WHERE user_id = ? AND element_id = ? AND is_finished = 1",
+        )
+        .bind(user_id)
+        .bind(element_id)
+        .fetch_optional(pool)
+        .await?
+        {
+            records.push((*element_id, record));
+        }
+    }
+    Ok(records)
+}
+
 pub async fn add_reward_points_in_transaction(
     tx: &mut Transaction<'_, Sqlite>,
     user_id: i64,
@@ -457,17 +499,19 @@ pub async fn reconcile_map_progression(
         }
     }
 
+    let finished_elements = get_finished_elements(pool, user_id)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
     let mut elements = get_elements(pool, user_id)
         .await?
         .into_iter()
-        .chain(get_finished_elements(pool, user_id).await?)
+        .chain(finished_elements.iter().copied())
         .collect::<HashSet<_>>();
     let mut added_elements = Vec::new();
     for element in game_data.chapter_map_element.iter() {
         let unlocked = maps.contains(&element.map_id)
-            && (element.condition.is_empty()
-                || episode_finish(&element.condition)
-                    .is_some_and(|episode_id| completed.contains(&episode_id)));
+            && element_condition_met(&element.condition, &completed, &finished_elements);
         if unlocked && elements.insert(element.id) {
             sqlx::query(
                 "INSERT INTO user_dungeon_elements (user_id, element_id, is_finished)
@@ -557,6 +601,88 @@ fn episode_element_ids(episode: &config::episode::Episode) -> impl Iterator<Item
 
 fn episode_finish(condition: &str) -> Option<i32> {
     condition.strip_prefix("EpisodeFinish=")?.parse().ok()
+}
+
+fn element_condition_met(
+    condition: &str,
+    completed_episodes: &HashSet<i32>,
+    finished_elements: &HashSet<i32>,
+) -> bool {
+    let condition = condition.trim();
+    if condition.is_empty() {
+        return true;
+    }
+    let condition = strip_outer_parentheses(condition);
+    if let Some(parts) = split_condition(condition, " or ") {
+        return parts
+            .into_iter()
+            .any(|part| element_condition_met(part, completed_episodes, finished_elements));
+    }
+    if let Some(parts) = split_condition(condition, " and ") {
+        return parts
+            .into_iter()
+            .all(|part| element_condition_met(part, completed_episodes, finished_elements));
+    }
+    episode_finish(condition).is_some_and(|id| completed_episodes.contains(&id))
+        || condition
+            .strip_prefix("ChapterMapElement=")
+            .and_then(|id| id.parse().ok())
+            .is_some_and(|id| finished_elements.contains(&id))
+}
+
+fn strip_outer_parentheses(mut condition: &str) -> &str {
+    while condition.starts_with('(')
+        && condition.ends_with(')')
+        && matching_closing_parenthesis(condition) == Some(condition.len() - 1)
+    {
+        condition = condition[1..condition.len() - 1].trim();
+    }
+    condition
+}
+
+fn matching_closing_parenthesis(condition: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (index, byte) in condition.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_condition<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
+    let bytes = condition.as_bytes();
+    let operator = operator.as_bytes();
+    let mut depth = 0;
+    let mut start = 0;
+    let mut parts = Vec::new();
+    let mut index = 0;
+    while index + operator.len() <= bytes.len() {
+        match bytes[index] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ if depth == 0 && &bytes[index..index + operator.len()] == operator => {
+                parts.push(&condition[start..index]);
+                index += operator.len();
+                start = index;
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.push(&condition[start..]);
+    Some(parts)
 }
 
 fn episode_is_unlocked(

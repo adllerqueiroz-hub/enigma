@@ -1,11 +1,39 @@
 use super::*;
 
+enum SummonConstId {
+    SinglePullCurrencyCost = 70,
+}
+
 pub(super) async fn summon_info(
     db: &SqlitePool,
     player_id: i64,
 ) -> Result<GetSummonInfoReply, AppError> {
     let stats = summon::get_summon_stats(db, player_id).await?;
-    let pool_infos = summon::get_summon_pool_infos(db, player_id).await?;
+    let mut pool_infos = summon::get_summon_pool_infos(db, player_id).await?;
+    let tables = config::configs::get();
+    for info in &mut pool_infos {
+        let Some(pool) = tables.summon_pool.get(info.pool.pool_id) else {
+            continue;
+        };
+        if !SummonType::from(pool.r#type).uses_sp_pool_info() {
+            continue;
+        }
+        summon::ensure_sp_pool_info(db, player_id, pool.id, pool.r#type).await?;
+        if let Some(sp_pool) = &mut info.sp_pool {
+            sp_pool.sp_type = pool.r#type;
+        } else {
+            info.sp_pool = Some(database::models::game::summon::SpPoolInfo {
+                sp_type: pool.r#type,
+                up_hero_ids: Vec::new(),
+                limited_ticket_id: 0,
+                limited_ticket_num: 0,
+                open_time: 0,
+                used_first_ssr_guarantee: false,
+                has_get_reward_progresses: Vec::new(),
+                infallible_item_status: 0,
+            });
+        }
+    }
 
     Ok(GetSummonInfoReply {
         free_equip_summon: Some(stats.free_equip_summon),
@@ -346,28 +374,51 @@ pub(super) fn validate_summon_count(count: i32) -> Result<(), AppError> {
         .ok_or(AppError::InvalidRequest)
 }
 
-async fn select_summon_cost(
+pub(super) async fn select_summon_cost(
     db: &SqlitePool,
     player_id: i64,
     cost: String,
 ) -> Result<reward::RewardSet, AppError> {
-    let mut rewards = reward::RewardSet::default();
-    let mut has_cost = false;
-    let mut found_cost = false;
     let cost_options = cost.split('|').map(reward::parse).collect::<Vec<_>>();
-    for option in cost_options {
-        has_cost |= !option.items.is_empty() || !option.currencies.is_empty();
-        if can_pay(db, player_id, &option).await? {
-            rewards = option;
-            found_cost = true;
-            break;
+    for option in &cost_options {
+        if can_pay(db, player_id, option).await? {
+            return Ok(option.clone());
         }
     }
-    if has_cost && !found_cost {
+
+    let Some(mut fallback) = cost_options.last().cloned() else {
+        return Ok(reward::RewardSet::default());
+    };
+    if fallback.items.len() != 1 || !fallback.currencies.is_empty() {
         return Err(AppError::InsufficientCurrency);
     }
+    let (item_id, required) = fallback.items[0];
+    let owned = UserItemModel::new(player_id, db.clone())
+        .get_item(item_id)
+        .await?
+        .map(|item| item.quantity)
+        .unwrap_or_default()
+        .clamp(0, required);
+    let missing = required.saturating_sub(owned);
+    let currency_cost = config::configs::get()
+        .r#const
+        .get(SummonConstId::SinglePullCurrencyCost as i32)
+        .map(|row| reward::parse(&row.value))
+        .and_then(|cost| cost.currencies.into_iter().next())
+        .filter(|(_, amount)| *amount > 0)
+        .ok_or(AppError::InvalidRequest)?;
+    fallback.items = (owned > 0)
+        .then_some((item_id, owned))
+        .into_iter()
+        .collect();
+    fallback
+        .currencies
+        .push((currency_cost.0, currency_cost.1.saturating_mul(missing)));
+    if can_pay(db, player_id, &fallback).await? {
+        return Ok(fallback);
+    }
 
-    Ok(rewards)
+    Err(AppError::InsufficientCurrency)
 }
 
 async fn can_pay(

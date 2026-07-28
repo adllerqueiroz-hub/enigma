@@ -59,6 +59,35 @@ async fn finish_guide_persists_step() {
     assert_eq!(start_marker, 0);
 }
 
+#[tokio::test]
+async fn complete_all_marks_every_online_guide_finished() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlx::query(
+        "CREATE TABLE guide_progress (
+            user_id INTEGER NOT NULL,
+            guide_id INTEGER NOT NULL,
+            step_id INTEGER NOT NULL,
+            PRIMARY KEY(user_id, guide_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let completed = GuideManager::new(77).complete_all(&pool).await.unwrap();
+    assert!(!completed.is_empty());
+    assert!(completed.iter().all(|guide| guide.step_id == -1));
+    assert_eq!(
+        guides::get_all_guide_progress(&pool, 77)
+            .await
+            .unwrap()
+            .len(),
+        completed.len()
+    );
+}
+
 #[test]
 fn hero_reward_is_derived_from_the_following_guide_step() {
     let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));

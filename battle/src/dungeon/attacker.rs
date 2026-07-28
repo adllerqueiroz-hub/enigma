@@ -76,10 +76,25 @@ impl Attacker {
             .get(battle_id)
             .ok_or_else(|| anyhow::anyhow!("unknown battle {battle_id}"))?;
         let aid_ids = configured_aid_ids(&battle.aid)?;
+        let trial_heroes = configured_trial_heroes(&battle.trial_heros)?;
+        let selected_trials = selected_trial_heroes(
+            fight_group,
+            &trial_heroes,
+            battle.trial_limit,
+            battle.role_num,
+        )?;
+        let main_trial_count = selected_trials
+            .iter()
+            .filter(|(_, position)| *position > 0)
+            .count();
         validate_composition(
             fight_group,
-            battle.role_num,
-            battle.player_max,
+            battle
+                .role_num
+                .saturating_sub(i32::try_from(selected_trials.len())?),
+            battle
+                .player_max
+                .saturating_sub(i32::try_from(main_trial_count)?),
             aid_ids.len(),
         )
         .with_context(|| format!("invalid composition for battle {battle_id}"))?;
@@ -108,11 +123,32 @@ impl Attacker {
             }
         }
 
-        for (position, hero_uid) in fight_group.hero_list.iter().enumerate() {
+        for (index, (trial_id, position)) in selected_trials.iter().copied().enumerate() {
+            let uid = -i64::try_from(aid_ids.len() + index + 1)?;
+            let (entity, stats) = EntityBuilder::trial(trial_id, uid, position, 1)?;
+            ex_attributes.push((uid, stats.ex()));
+            sp_attributes.push((uid, stats.sp()));
+            if position > 0 {
+                entitys.push(entity);
+            } else {
+                sub_entitys.push(entity);
+            }
+        }
+
+        let trial_positions = selected_trials
+            .iter()
+            .filter_map(|(_, position)| (*position > 0).then_some(*position))
+            .collect::<HashSet<_>>();
+        let mut positions =
+            (1..=battle.role_num).filter(|position| !trial_positions.contains(position));
+        for hero_uid in &fight_group.hero_list {
+            let position = positions
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("main roster exceeds configured battle slots"))?;
             if *hero_uid == 0 {
                 continue;
             }
-            if let Some(entity) = configured_aid(&aid_ids, *hero_uid, (position + 1) as i32)? {
+            if let Some(entity) = configured_aid(&aid_ids, *hero_uid, position)? {
                 entitys.push(entity);
                 continue;
             }
@@ -128,7 +164,7 @@ impl Attacker {
             ex_attributes.push((hero_data.record.uid, stats.ex()));
             sp_attributes.push((hero_data.record.uid, stats.sp()));
 
-            let mut builder = EntityBuilder::new(hero_data, (position + 1) as i32, 1, false);
+            let mut builder = EntityBuilder::new(hero_data, position, 1, false);
             if let Some(equip) = equip {
                 builder = builder.with_equip(equip);
             }
@@ -184,9 +220,9 @@ impl Attacker {
         let reserved_uid_offset = reserved_uid_offset(
             fight_group,
             if use_configured_aids {
-                aid_ids.len()
+                aid_ids.len() + selected_trials.len()
             } else {
-                0
+                selected_trials.len()
             },
             team.assist_boss.is_some() || fight_group.assist_boss_id.unwrap_or_default() != 0,
         )?;
@@ -431,6 +467,57 @@ fn configured_aid_ids(raw: &str) -> Result<Vec<i32>> {
         .collect()
 }
 
+fn configured_trial_heroes(raw: &str) -> Result<HashMap<i32, Option<i32>>> {
+    raw.split('|')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let mut values = entry.split('#');
+            let trial_id = values
+                .next()
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("invalid configured trial hero '{entry}'"))?;
+            let position = values
+                .nth(1)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("invalid configured trial position '{entry}'"))?;
+            Ok((trial_id, position))
+        })
+        .collect()
+}
+
+fn selected_trial_heroes(
+    fight_group: &sonettobuf::FightGroup,
+    configured: &HashMap<i32, Option<i32>>,
+    trial_limit: i32,
+    role_num: i32,
+) -> Result<Vec<(i32, i32)>> {
+    ensure!(fight_group.trial_hero_list.len() <= trial_limit.max(0) as usize);
+    let mut ids = HashSet::new();
+    let mut positions = HashSet::new();
+    fight_group
+        .trial_hero_list
+        .iter()
+        .map(|selected| {
+            let trial_id = selected.trial_id.unwrap_or_default();
+            ensure!(ids.insert(trial_id), "duplicate trial hero {trial_id}");
+            let configured_position = configured
+                .get(&trial_id)
+                .ok_or_else(|| anyhow::anyhow!("trial hero {trial_id} is not allowed"))?;
+            let position = selected.pos.or(*configured_position).unwrap_or(-1);
+            ensure!(
+                position == -1 || (1..=role_num).contains(&position),
+                "invalid trial hero position {position}"
+            );
+            ensure!(
+                position == -1 || positions.insert(position),
+                "duplicate trial hero position {position}"
+            );
+            Ok((trial_id, position))
+        })
+        .collect()
+}
+
 fn reserved_uid_offset(
     fight_group: &sonettobuf::FightGroup,
     configured_aid_count: usize,
@@ -582,6 +669,56 @@ mod tests {
                 .iter()
                 .all(|entity| entity.passive_skill.contains(&72_010))
         );
+    }
+
+    #[tokio::test]
+    async fn configured_trial_hero_uses_its_loadout_and_reserved_position() {
+        crate::test_support::init_config();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let fight_group = sonettobuf::FightGroup {
+            trial_hero_list: vec![sonettobuf::TrialHero {
+                trial_id: Some(4301003),
+                pos: Some(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let built = super::super::build_fight(&pool, 1, 1102, 201101, false, &fight_group, None)
+            .await
+            .unwrap();
+        let attacker = built.fight.attacker.unwrap();
+        let trial = &attacker.entitys[0];
+
+        assert_eq!(
+            (
+                trial.uid,
+                trial.model_id,
+                trial.position,
+                trial.trial_id,
+                trial.trial_equip.as_ref().and_then(|equip| equip.equip_id),
+            ),
+            (Some(-1), Some(3126), Some(1), Some(4301003), Some(1553))
+        );
+        assert_eq!(
+            trial.attr.as_ref().map(|attr| {
+                (
+                    attr.hp,
+                    attr.attack,
+                    attr.defense,
+                    attr.mdefense,
+                    attr.technic,
+                )
+            }),
+            Some((Some(6015), Some(735), Some(291), Some(296), Some(370)))
+        );
+        assert_eq!(
+            trial.passive_skill,
+            vec![31260141, 31260191, 435311, 530000151]
+        );
+        assert_eq!(trial.ex_point_max, Some(5));
+        assert!(!trial.skill_group1.is_empty());
+        assert!(!trial.passive_skill.is_empty());
     }
 
     #[tokio::test]

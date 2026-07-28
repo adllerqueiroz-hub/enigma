@@ -1,4 +1,6 @@
 use super::*;
+use chrono::Datelike;
+use database::db::game::sign_in;
 
 pub(crate) async fn snapshot_data(db: &SqlitePool, hero: HeroData) -> Result<HeroInfo, AppError> {
     Ok(battle::engine::entity::stats::hero_info(db, hero).await?)
@@ -243,9 +245,71 @@ impl HeroManager {
         ))
     }
 
-    pub fn birthday(self, hero_id: i32) -> GetHeroBirthdayReply {
-        GetHeroBirthdayReply {
-            hero_id: Some(hero_id),
+    pub async fn birthday(
+        self,
+        db: &SqlitePool,
+        hero_id: i32,
+    ) -> Result<reward::RewardedReply<GetHeroBirthdayReply>, AppError> {
+        let character = config::configs::get()
+            .character
+            .get(hero_id)
+            .ok_or(AppError::InvalidRequest)?;
+        if character.is_online != "1" || character.is_sp {
+            return Err(AppError::InvalidRequest);
         }
+        let now = common::time::ServerTime::server_date();
+        let (birthday_count, last_claim_year) =
+            sign_in::get_hero_birthday_claim(db, self.player_id, hero_id)
+                .await?
+                .unwrap_or_default();
+        if last_claim_year == now.year() {
+            return Err(AppError::InvalidRequest);
+        }
+        let rewards = birthday_reward(character, birthday_count, now.month(), now.day())
+            .ok_or(AppError::InvalidRequest)?;
+        let material_changes = rewards.material_changes();
+        let mut tx = db.begin().await?;
+        if !sign_in::claim_hero_birthday_in_transaction(
+            &mut tx,
+            self.player_id,
+            hero_id,
+            birthday_count,
+            now.year(),
+        )
+        .await?
+        {
+            return Err(AppError::InvalidRequest);
+        }
+        let rewards = reward::apply_in_transaction(&mut tx, db, self.player_id, rewards).await?;
+        tx.commit().await?;
+
+        Ok(reward::RewardedReply {
+            reply: GetHeroBirthdayReply {
+                hero_id: Some(hero_id),
+            },
+            rewards,
+            material_changes,
+        })
     }
+}
+
+pub(super) fn birthday_reward(
+    character: &config::character::Character,
+    birthday_count: i32,
+    month: u32,
+    day: u32,
+) -> Option<reward::RewardSet> {
+    let (birthday_month, birthday_day) = character.role_birthday.split_once('/')?;
+    if birthday_month.parse::<u32>().ok()? != month
+        || birthday_day.parse::<u32>().ok()? != day
+        || birthday_count < 0
+    {
+        return None;
+    }
+    let encoded = character
+        .birthday_bonus
+        .split(';')
+        .nth(birthday_count as usize)?
+        .trim();
+    (!encoded.is_empty()).then(|| reward::parse(encoded))
 }

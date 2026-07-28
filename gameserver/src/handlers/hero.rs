@@ -169,10 +169,22 @@ pub async fn on_get_hero_birthday(
     req: ClientPacket,
 ) -> Result<(), AppError> {
     let heroes = ctx.player()?.hero;
+    let player_id = ctx.player()?.id;
     let msg = GetHeroBirthdayRequest::decode(&req.data[..])?;
-    let reply = heroes.birthday(msg.hero_id.ok_or(AppError::InvalidRequest)?);
+    let claim = heroes
+        .birthday(ctx.state.db, msg.hero_id.ok_or(AppError::InvalidRequest)?)
+        .await?;
 
-    ctx.send_reply(CmdId::GetHeroBirthdayCmd, reply, 0, req.up_tag)
+    push::send_applied_reward_pushes(
+        ctx,
+        player_id,
+        claim.rewards,
+        claim.material_changes,
+        Some(crate::types::material_get_approach::MaterialGetApproach::Birthday),
+    )
+    .await?;
+
+    ctx.send_reply(CmdId::GetHeroBirthdayCmd, claim.reply, 0, req.up_tag)
         .await
 }
 

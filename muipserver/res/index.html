@@ -59,11 +59,14 @@
       <select id="dungeonEpisode"></select>
       <button type="button" onclick="unlockDungeon()">Unlock selected</button>
     </div>
+    <div class="dungeon">
+      <button type="button" onclick="completeGuides()">Complete all guides</button>
+    </div>
     <div class="status">
       <span id="server">server: checking</span>
       <span id="players">players: checking</span>
     </div>
-    <pre id="out">commands: help, status, players, dungeon unlock &lt;stage|chapter&gt; &lt;id&gt;, material &lt;type&gt; &lt;id&gt; &lt;amount&gt;</pre>
+    <pre id="out">commands: help, status, players, guide complete all, dungeon unlock &lt;stage|chapter&gt; &lt;id&gt;, material &lt;type&gt; &lt;id&gt; &lt;amount&gt;</pre>
   </main>
   <script>
     document.getElementById('token').value = localStorage.getItem('enigmaMuipToken') || '__MUIP_TOKEN__';
@@ -179,6 +182,10 @@
         return;
       }
       document.getElementById('command').value = `dungeon unlock ${kind} ${id}`;
+      await run();
+    }
+    async function completeGuides() {
+      document.getElementById('command').value = 'guide complete all';
       await run();
     }
     function selectedMaterial() {

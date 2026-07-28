@@ -9,8 +9,8 @@ use sonettobuf::{
     BlockPackageGainPush, ChapterMapElementUpdatePush, ChapterMapUpdatePush, CmdId,
     CurrencyChangePush, DungeonUpdatePush, EquipUpdatePush, HeroSkinGainPush, HeroUpdatePush,
     ItemChangePush, MapElementReply, MaterialChangePush, MaterialData, PlayerCardInfoPush,
-    PlayerCloth, PlayerClothInfo, RewardPointUpdatePush, StoryFinishPush, UpdateOpenPush,
-    prost::Message,
+    PlayerCloth, PlayerClothInfo, RewardPointUpdatePush, StoryFinishPush, UpdateGuidePush,
+    UpdateOpenPush, prost::Message,
 };
 use std::collections::{BTreeMap, HashSet};
 use tokio::{
@@ -154,7 +154,10 @@ fn dungeon_catalog() -> GmResponse {
     let mut chapters = tables
         .chapter
         .iter()
-        .filter(|chapter| active_chapter_ids.contains(&chapter.id))
+        .filter(|chapter| {
+            active_chapter_ids.contains(&chapter.id)
+                && crate::logic::dungeon::chapter_missing_reward_heroes(chapter.id).is_empty()
+        })
         .map(|chapter| DungeonCatalogChapter {
             id: chapter.id,
             name: resolve_name(
@@ -167,8 +170,13 @@ fn dungeon_catalog() -> GmResponse {
             ),
         })
         .collect::<Vec<_>>();
+    let visible_chapter_ids = chapters
+        .iter()
+        .map(|chapter| chapter.id)
+        .collect::<HashSet<_>>();
     let mut episodes = active_episodes
         .into_iter()
+        .filter(|episode| visible_chapter_ids.contains(&episode.chapter_id))
         .map(|episode| DungeonCatalogEpisode {
             id: episode.id,
             chapter_id: episode.chapter_id,
@@ -230,19 +238,49 @@ async fn run_command(
 
     let args = match first.to_ascii_lowercase().as_str() {
         "dungeon" => return unlock_dungeon(state, player_id, &parts[1..]).await,
+        "guide" | "guides" => return complete_guides(state, player_id, &parts[1..]).await,
         "material" | "reward" | "give" | "add" => &parts[1..],
         kind if MaterialKind::parse(kind).is_some() => &parts[..],
         "status" => return Ok(status(state).await),
         "players" | "list" | "listplayers" | "list_players" => return Ok(list_players(state)),
         "help" | "?" => {
             return Ok(GmResponse::ok(
-                "commands: help, status, players, dungeon unlock <stage|chapter> <id>, material <type> <id> <amount>, give <item|currency|hero|skin|equip|power|insight> <id> <amount>",
+                "commands: help, status, players, guide complete all, dungeon unlock <stage|chapter> <id>, material <type> <id> <amount>, give <item|currency|hero|skin|equip|power|insight> <id> <amount>",
             ));
         }
         _ => anyhow::bail!("unknown command '{}'", first),
     };
 
     grant(state, player_id, args).await
+}
+
+async fn complete_guides(
+    state: &'static AppState,
+    player_id: i64,
+    args: &[&str],
+) -> Result<GmResponse> {
+    if !matches!(args, [complete, all] if complete.eq_ignore_ascii_case("complete") && all.eq_ignore_ascii_case("all"))
+    {
+        anyhow::bail!("usage: guide complete all");
+    }
+
+    let guide_infos = crate::logic::guide::GuideManager::new(player_id)
+        .complete_all(state.db)
+        .await?;
+    send_push(
+        state,
+        player_id,
+        CmdId::UpdateGuidePushCmd,
+        UpdateGuidePush {
+            guide_infos: guide_infos.clone(),
+        },
+    )
+    .await?;
+
+    Ok(GmResponse::ok_data(
+        format!("completed {} guides", guide_infos.len()),
+        guide_infos,
+    ))
 }
 
 async fn unlock_dungeon(
@@ -498,12 +536,16 @@ async fn grant(state: &'static AppState, player_id: i64, args: &[&str]) -> Resul
                 .collect();
         }
         MaterialKind::PlayerExp => {
-            sqlx::query("UPDATE users SET exp = exp + ?, updated_at = ? WHERE id = ?")
-                .bind(amount)
-                .bind(common::time::ServerTime::now_ms())
-                .bind(player_id)
-                .execute(state.db)
+            let applied = reward::RewardManager::new(player_id)
+                .apply(
+                    state.db,
+                    reward::RewardSet {
+                        player_exp: amount,
+                        ..Default::default()
+                    },
+                )
                 .await?;
+            data.merge_rewards(applied);
         }
         MaterialKind::Hero => {
             let model = UserHeroModel::new(player_id, (*state.db).clone());

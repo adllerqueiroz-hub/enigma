@@ -71,7 +71,8 @@ impl SignInManager {
 
     pub async fn sign_in(&self, db: &SqlitePool) -> Result<SignInOutcome, AppError> {
         let now = ServerTime::now_ms();
-        let birthday_heroes = sign_in::get_birthday_heroes_today(db, self.player_id).await?;
+        let birthday_heroes =
+            sign_in::get_claimed_birthday_heroes_today(db, self.player_id).await?;
         let mut tx = db.begin().await?;
         let was_new_sign_in =
             sign_in::record_sign_in_day_in_transaction(&mut tx, self.player_id, now).await?;

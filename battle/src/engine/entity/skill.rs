@@ -40,7 +40,7 @@ impl Skill {
         ex_level: i32,
         destiny: Option<&HashMap<i32, i32>>,
     ) -> (Vec<i32>, Vec<i32>) {
-        let (mut sg1, mut sg2, _) = Self::active_skills(hero_id, ex_level);
+        let (mut sg1, mut sg2, _) = Self::for_loadout(hero_id, ex_level);
 
         if let Some(map) = destiny {
             Self::apply_exchange(&mut sg1, map);
@@ -48,6 +48,10 @@ impl Skill {
         }
 
         (sg1, sg2)
+    }
+
+    pub fn for_loadout(hero_id: i32, ex_level: i32) -> (Vec<i32>, Vec<i32>, i32) {
+        Self::active_skills(hero_id, ex_level)
     }
 
     fn get_from_character(hero_id: i32, group: i32) -> Vec<i32> {

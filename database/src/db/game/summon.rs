@@ -186,13 +186,6 @@ struct VisibleSummonPool {
     discount_time: i32,
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-struct VersionMarker {
-    major: i32,
-    minor: i32,
-    name: String,
-}
-
 pub async fn sync_visible_pools(pool: &SqlitePool, user_id: i64) -> Result<()> {
     let visible = visible_pools();
     let now = ServerTime::now_ms();
@@ -224,7 +217,7 @@ pub async fn sync_visible_pools(pool: &SqlitePool, user_id: i64) -> Result<()> {
 }
 
 fn visible_pools() -> Vec<VisibleSummonPool> {
-    let mut visible = visible_version_pools(ServerTime::now_sec_i32());
+    let mut visible = visible_scheduled_pools(ServerTime::now_sec_i32());
     visible.entry(1).or_insert(VisibleSummonPool {
         pool_id: 1,
         online_time: 0,
@@ -241,8 +234,8 @@ fn visible_pools() -> Vec<VisibleSummonPool> {
     visible.into_values().collect()
 }
 
-fn visible_version_pools(now_sec: i32) -> BTreeMap<i32, VisibleSummonPool> {
-    let mut pools = version_pools();
+fn visible_scheduled_pools(now_sec: i32) -> BTreeMap<i32, VisibleSummonPool> {
+    let mut pools = scheduled_pools();
     let open = pools
         .iter()
         .filter(|pool| pool.online_time <= now_sec && now_sec <= pool.offline_time)
@@ -261,24 +254,8 @@ fn visible_version_pools(now_sec: i32) -> BTreeMap<i32, VisibleSummonPool> {
     pools.into_iter().map(|pool| (pool.pool_id, pool)).collect()
 }
 
-fn version_pools() -> Vec<VisibleSummonPool> {
+fn scheduled_pools() -> Vec<VisibleSummonPool> {
     let tables = config::configs::get();
-    let Some(version) = latest_summon_version() else {
-        return Vec::new();
-    };
-    let version_prefix = format!("{version}/");
-    let version_pool_ids = tables
-        .summon_pool
-        .iter()
-        .filter(|pool| {
-            pool.prefab_path
-                .replace('\\', "/")
-                .to_ascii_lowercase()
-                .starts_with(&version_prefix)
-        })
-        .map(|pool| pool.id)
-        .collect::<HashSet<_>>();
-
     let mut by_pool = BTreeMap::<i32, VisibleSummonPool>::new();
     for store in tables
         .store_recommend
@@ -288,9 +265,6 @@ fn version_pools() -> Vec<VisibleSummonPool> {
         let Some(pool_id) = parse_pool_relation(&store.relations) else {
             continue;
         };
-        if !version_pool_ids.contains(&pool_id) {
-            continue;
-        }
         let Some(pool) = tables.summon_pool.get(pool_id) else {
             continue;
         };
@@ -304,33 +278,6 @@ fn version_pools() -> Vec<VisibleSummonPool> {
     }
 
     by_pool.into_values().collect()
-}
-
-fn latest_summon_version() -> Option<String> {
-    config::configs::get()
-        .summon_pool
-        .iter()
-        .filter_map(|pool| parse_version(&pool.prefab_path))
-        .max()
-        .map(|version| version.name)
-}
-
-fn parse_version(prefab_path: &str) -> Option<VersionMarker> {
-    let normalized = prefab_path.replace('\\', "/").to_ascii_lowercase();
-    let start = normalized.find("version_")? + "version_".len();
-    let split = normalized[start..].find('_')? + start;
-    let end = normalized[split + 1..]
-        .find('/')
-        .map(|index| split + 1 + index)
-        .unwrap_or(normalized.len());
-    let major = normalized[start..split].parse().ok()?;
-    let minor = normalized[split + 1..end].parse().ok()?;
-
-    Some(VersionMarker {
-        major,
-        minor,
-        name: format!("version_{major}_{minor}"),
-    })
 }
 
 fn parse_pool_relation(relations: &str) -> Option<i32> {
@@ -655,17 +602,12 @@ pub async fn update_sp_pool_up_heroes(
     pool_id: i32,
     up_hero_ids: Vec<i32>,
 ) -> Result<()> {
-    // Ensure a base sp_pool_info row exists so load_all_sp_pools can find these up heroes.
-    sqlx::query(
-        "INSERT OR IGNORE INTO user_sp_pool_info
-         (user_id, pool_id, sp_type, limited_ticket_id, limited_ticket_num,
-          open_time, used_first_ssr_guarantee, infallible_item_status)
-         VALUES (?, ?, 0, 0, 0, 0, 0, 0)",
-    )
-    .bind(user_id)
-    .bind(pool_id)
-    .execute(pool)
-    .await?;
+    let sp_type = config::configs::get()
+        .summon_pool
+        .get(pool_id)
+        .map(|pool| pool.r#type)
+        .unwrap_or_default();
+    ensure_sp_pool_info(pool, user_id, pool_id, sp_type).await?;
 
     sqlx::query(
         r#"
@@ -692,6 +634,28 @@ pub async fn update_sp_pool_up_heroes(
         .await?;
     }
 
+    Ok(())
+}
+
+pub async fn ensure_sp_pool_info(
+    pool: &SqlitePool,
+    user_id: i64,
+    pool_id: i32,
+    sp_type: i32,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO user_sp_pool_info
+         (user_id, pool_id, sp_type, limited_ticket_id, limited_ticket_num,
+          open_time, used_first_ssr_guarantee, infallible_item_status)
+         VALUES (?, ?, ?, 0, 0, 0, 0, 0)
+         ON CONFLICT(user_id, pool_id) DO UPDATE SET
+             sp_type = excluded.sp_type",
+    )
+    .bind(user_id)
+    .bind(pool_id)
+    .bind(sp_type)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

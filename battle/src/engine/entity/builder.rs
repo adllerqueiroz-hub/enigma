@@ -1,7 +1,14 @@
+use anyhow::{Context, Result};
 use database::{db::game::equipment::Equipment, models::game::heros::HeroData};
 use sonettobuf::{EnhanceInfoBox, EquipRecord, FightEntityInfo, HeroAttribute, PowerInfo};
 
-use super::{attr::Attr, destiny::Destiny, passive::Passive, skill::Skill};
+use super::{
+    attr::Attr,
+    destiny::Destiny,
+    passive::Passive,
+    skill::Skill,
+    stats::{StatInputs, Stats, rank_from_level},
+};
 
 pub struct EntityBuilder {
     hero_data: HeroData,
@@ -70,7 +77,7 @@ impl EntityBuilder {
             equip_uid: Some(r.default_equip_uid),
             trial_equip: Some(EquipRecord::default()),
             ex_skill_level: Some(r.ex_skill_level),
-            power_infos: Self::hero_power_infos(&self.hero_data),
+            power_infos: Self::hero_power_infos(r.hero_id),
             ex_skill_point_change: Some(0),
             team_type: Some(self.team_type),
             enhance_info_box: Some(EnhanceInfoBox {
@@ -79,7 +86,7 @@ impl EntityBuilder {
                 upgraded_options: vec![],
             }),
             trial_id: Some(0),
-            career: Some(Self::career(&self.hero_data)),
+            career: Some(Self::career(r.hero_id)),
             status: Some(0),
             guard: Some(-1),
             sub_cd: Some(0),
@@ -90,6 +97,112 @@ impl EntityBuilder {
             custom_unit_id: Some(0),
             ..Default::default()
         }
+    }
+
+    pub fn trial(
+        trial_id: i32,
+        uid: i64,
+        position: i32,
+        team_type: i32,
+    ) -> Result<(FightEntityInfo, Stats)> {
+        let tables = config::configs::get();
+        let trial = tables
+            .hero_trial
+            .get(trial_id)
+            .with_context(|| format!("unknown trial hero {trial_id}"))?;
+        let character = tables
+            .character
+            .get(trial.hero_id)
+            .with_context(|| format!("unknown trial character {}", trial.hero_id))?;
+        let rank = rank_from_level(trial.hero_id, trial.level);
+        let talent = tables
+            .character_talent
+            .iter()
+            .filter(|row| {
+                row.hero_id == trial.hero_id
+                    && row.talent_id <= trial.talent
+                    && row.requirement <= rank
+            })
+            .map(|row| row.talent_id)
+            .max()
+            .unwrap_or(1);
+        let stats = Stats::build(&StatInputs {
+            hero_id: trial.hero_id,
+            level: trial.level,
+            rank,
+            destiny_rank: trial.facetslevel,
+            equip_id: trial.equip_id,
+            equip_level: trial.equip_lv,
+            talent,
+            ..Default::default()
+        });
+        let attr = stats.base();
+        let (skill_group1, skill_group2, ex_skill) =
+            Skill::for_loadout(trial.hero_id, trial.ex_skill_lv);
+        let passive_skill = Passive::for_ranked_loadout(
+            trial.hero_id,
+            rank,
+            trial.ex_skill_lv,
+            (trial.equip_id != 0).then_some((trial.equip_id, trial.equip_refine + 1)),
+            (trial.facets_id != 0).then_some((trial.facets_id, trial.facetslevel)),
+        )
+        .into_iter()
+        .map(|passive| passive.skill_id)
+        .collect();
+
+        Ok((
+            FightEntityInfo {
+                uid: Some(uid),
+                model_id: Some(trial.hero_id),
+                skin: Some(if trial.skin == 0 {
+                    character.skin_id
+                } else {
+                    trial.skin
+                }),
+                position: Some(position),
+                entity_type: Some(1),
+                user_id: Some(0),
+                ex_point: Some(0),
+                level: Some(trial.level),
+                current_hp: attr.hp,
+                attr: Some(attr),
+                base_attr: Some(attr),
+                skill_group1,
+                skill_group2,
+                passive_skill,
+                ex_skill: Some(ex_skill),
+                shield_value: Some(0),
+                expoint_max_add: Some(0),
+                buff_harm_statistic: Some(0),
+                equip_uid: Some(0),
+                trial_equip: Some(EquipRecord {
+                    equip_uid: None,
+                    equip_id: Some(trial.equip_id),
+                    equip_lv: Some(trial.equip_lv),
+                    refine_lv: Some(trial.equip_refine),
+                }),
+                ex_skill_level: Some(trial.ex_skill_lv),
+                power_infos: Self::hero_power_infos(trial.hero_id),
+                ex_skill_point_change: Some(0),
+                team_type: Some(team_type),
+                enhance_info_box: Some(EnhanceInfoBox {
+                    uid: Some(uid),
+                    ..Default::default()
+                }),
+                trial_id: Some(trial_id),
+                career: Some(character.career),
+                status: Some(0),
+                guard: Some(-1),
+                sub_cd: Some(0),
+                ex_point_type: Some(Self::ex_point_type(trial.hero_id)),
+                destiny_stone: Some(trial.facets_id),
+                destiny_rank: Some(trial.facetslevel),
+                custom_unit_id: Some(0),
+                ex_point_max: Some(Self::ex_point_max(trial.hero_id)),
+                ..Default::default()
+            },
+            stats,
+        ))
     }
 
     pub fn player(user_id: i64, team_type: i32) -> FightEntityInfo {
@@ -143,6 +256,14 @@ impl EntityBuilder {
     }
 
     fn ex_point_type(hero_id: i32) -> i32 {
+        Self::ex_point_spec(hero_id).0
+    }
+
+    fn ex_point_max(hero_id: i32) -> i32 {
+        Self::ex_point_spec(hero_id).1
+    }
+
+    fn ex_point_spec(hero_id: i32) -> (i32, i32) {
         let game = config::configs::get();
         let spec = game
             .character_rank_replace
@@ -154,23 +275,31 @@ impl EntityBuilder {
                     .map(|c| c.unique_skill_point.as_str())
             });
 
-        spec.and_then(|s| s.split('#').next())
-            .and_then(|s| s.trim().parse::<i32>().ok())
-            .unwrap_or(0)
+        let mut values = spec.into_iter().flat_map(|spec| spec.split('#'));
+        (
+            values
+                .next()
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or_default(),
+            values
+                .next()
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or_default(),
+        )
     }
 
-    fn career(hero_data: &HeroData) -> i32 {
+    fn career(hero_id: i32) -> i32 {
         config::configs::get()
             .character
-            .get(hero_data.record.hero_id)
+            .get(hero_id)
             .map(|c| c.career)
             .unwrap_or(0)
     }
 
-    fn hero_power_infos(hero_data: &HeroData) -> Vec<PowerInfo> {
+    fn hero_power_infos(hero_id: i32) -> Vec<PowerInfo> {
         config::configs::get()
             .character
-            .get(hero_data.record.hero_id)
+            .get(hero_id)
             .into_iter()
             .flat_map(|c| parse_power_specs(&c.power_max))
             .filter(|(_, max)| *max > 0)

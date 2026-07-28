@@ -740,7 +740,7 @@ pub async fn finish_task(
     let now = ServerTime::now_ms();
     let result = sqlx::query(
         "UPDATE user_tasks
-         SET finish_count = finish_count + 1, updated_at = ?
+         SET finish_count = finish_count + 1, has_finished = 0, updated_at = ?
          WHERE user_id = ? AND type_id = ? AND task_id = ?",
     )
     .bind(now)
@@ -766,7 +766,7 @@ pub async fn finish_task_in_transaction(
     }
     let now = ServerTime::now_ms();
     let result = sqlx::query(
-        "UPDATE user_tasks SET finish_count = finish_count + 1, updated_at = ?
+        "UPDATE user_tasks SET finish_count = finish_count + 1, has_finished = 0, updated_at = ?
          WHERE user_id = ? AND type_id = ? AND task_id = ? AND finish_count = ?",
     )
     .bind(now)
@@ -781,6 +781,7 @@ pub async fn finish_task_in_transaction(
     }
     let mut updated = task.clone();
     updated.finish_count += 1;
+    updated.has_finished = false;
     updated.updated_at = now;
     Ok(Some(updated))
 }
@@ -814,7 +815,7 @@ pub async fn finish_all(
     for task in &claimable {
         sqlx::query(
             "UPDATE user_tasks
-             SET finish_count = finish_count + 1, updated_at = ?
+             SET finish_count = finish_count + 1, has_finished = 0, updated_at = ?
              WHERE user_id = ? AND type_id = ? AND task_id = ?",
         )
         .bind(now)
@@ -829,6 +830,7 @@ pub async fn finish_all(
         .into_iter()
         .map(|mut task| {
             task.finish_count += 1;
+            task.has_finished = false;
             task.updated_at = now;
             task
         })
@@ -845,13 +847,15 @@ pub async fn read_task(
     };
 
     let now = ServerTime::now_ms();
+    let has_finished = task.finish_count < max_finish_count(task.type_id, task.task_id);
     sqlx::query(
         "UPDATE user_tasks
          SET progress = CASE WHEN progress < 1 THEN 1 ELSE progress END,
-             has_finished = 1,
+             has_finished = ?,
              updated_at = ?
          WHERE user_id = ? AND type_id = ? AND task_id = ?",
     )
+    .bind(has_finished)
     .bind(now)
     .bind(user_id)
     .bind(task.type_id)
@@ -868,7 +872,7 @@ pub async fn set_progress(
     type_id: i32,
     task_id: i32,
     progress: i32,
-    max_progress: i32,
+    has_finished: bool,
 ) -> sqlx::Result<()> {
     let now = ServerTime::now_ms();
     sqlx::query(
@@ -877,7 +881,7 @@ pub async fn set_progress(
          WHERE user_id = ? AND type_id = ? AND task_id = ?",
     )
     .bind(progress)
-    .bind(progress >= max_progress.max(1))
+    .bind(has_finished)
     .bind(now)
     .bind(user_id)
     .bind(type_id)
@@ -900,12 +904,13 @@ pub async fn sync_progress(
     };
     let max_progress = max_progress.max(1);
     let progress = progress.clamp(0, max_progress);
-    let has_finished = progress >= max_progress;
+    let has_finished =
+        progress >= max_progress && task.finish_count < max_finish_count(type_id, task_id);
     if progress == task.progress && has_finished == task.has_finished {
         return Ok(None);
     }
 
-    set_progress(pool, user_id, type_id, task_id, progress, max_progress).await?;
+    set_progress(pool, user_id, type_id, task_id, progress, has_finished).await?;
     get_by_type_and_id(pool, user_id, type_id, task_id).await
 }
 
@@ -943,7 +948,8 @@ pub async fn sync_login_tasks(
             task.progress.max(1)
         }
         .min(max_progress);
-        let has_finished = progress >= max_progress;
+        let has_finished = progress >= max_progress
+            && task.finish_count < max_finish_count(target.type_id, target.task_id);
 
         if progress == task.progress && has_finished == task.has_finished {
             continue;
@@ -955,7 +961,7 @@ pub async fn sync_login_tasks(
             target.type_id,
             target.task_id,
             progress,
-            max_progress,
+            has_finished,
         )
         .await?;
 
@@ -1108,12 +1114,13 @@ pub(super) async fn add_progress(
 
     let max_progress = max_progress.max(1);
     let progress = (task.progress + delta.max(1)).min(max_progress);
-    let has_finished = progress >= max_progress;
+    let has_finished =
+        progress >= max_progress && task.finish_count < max_finish_count(type_id, task_id);
     if progress == task.progress && has_finished == task.has_finished {
         return Ok(None);
     }
 
-    set_progress(pool, user_id, type_id, task_id, progress, max_progress).await?;
+    set_progress(pool, user_id, type_id, task_id, progress, has_finished).await?;
     get_by_type_and_id(pool, user_id, type_id, task_id).await
 }
 

@@ -354,12 +354,14 @@ condition_definitions! {
     [192032] "HasBuffId" => buff::buff_present, filters_behavior_targets(predicate(&[EventKind::BuffChanged]));
     [19208] "HasBuffId" => buff::buff_present_and_consume, filters_behavior_targets(event_trigger(EventKind::SkillAction, Some(SkillPhase::AfterDamage)));
     [19210] "HasBuffId" => buff::buff_present, filters_behavior_targets(predicate(&[EventKind::SkillAction]));
+    [192081] "HasBuffId" => buff::buff_present, filters_behavior_targets(predicate(&[]));
     [19103] "HasBuffId" => buff::buff_present, filters_behavior_targets(setup_route(SetupStage::BuffGate, 0, &[]));
     [19212] "HasBuffId" => buff::buff_present, filters_behavior_targets(predicate(&[EventKind::BuffChanged]));
     [19302] "HasBuffId" => buff::buff_present, filters_behavior_targets(event_trigger(EventKind::RoundEnd, None));
     [514100] "SelfTeamHasBuffTypeLayerLessThan" => buff::team_buff_type_layer_at_most, setup_route(SetupStage::RoundStartCondition, 100, &[EventKind::BuffChanged]);
     [57208] "NoBuffId" => buff::buff_absent, filters_behavior_targets(event_trigger(EventKind::SkillAction, Some(SkillPhase::AfterDamage)));
     [57210] "NoBuffId" => buff::buff_absent, filters_behavior_targets(predicate(&[EventKind::SkillAction]));
+    [572081] "NoBuffId" => buff::buff_absent, filters_behavior_targets(predicate(&[]));
     [57002] "NoBuffId" => buff::buff_absent, filters_behavior_targets(setup_route(SetupStage::EnterFight, 0, &[]));
     [57104] "NoBuffId" => buff::buff_absent, filters_behavior_targets(predicate(&[EventKind::RoundStart]));
     [57304] "NoBuffId" => buff::buff_absent, filters_behavior_targets(event_trigger(EventKind::RoundEndAfterSettlement, None));

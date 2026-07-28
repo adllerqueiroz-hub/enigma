@@ -163,6 +163,23 @@ impl GuideManager {
         })
     }
 
+    pub async fn complete_all(&self, db: &SqlitePool) -> Result<Vec<GuideInfo>, AppError> {
+        let guide_ids = config::configs::get()
+            .guide
+            .iter()
+            .filter(|guide| guide.is_online != 0)
+            .map(|guide| guide.id)
+            .collect::<Vec<_>>();
+        guides::complete_all_guides(db, self.player_id, guide_ids.iter().copied()).await?;
+        Ok(guide_ids
+            .into_iter()
+            .map(|guide_id| GuideInfo {
+                guide_id,
+                step_id: -1,
+            })
+            .collect())
+    }
+
     pub async fn skip_initial_tutorial(&self, db: &SqlitePool) -> Result<TutorialSkip, AppError> {
         let tables = config::configs::get();
         let guide = tables

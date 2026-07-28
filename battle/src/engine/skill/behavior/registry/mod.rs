@@ -609,7 +609,7 @@ behavior_definitions! {
     [10006] "Damage" => crate::engine::damage::handler::Handler, Damage, Immediate, plain;
     [10008] "Damage2" => crate::engine::damage::handler::Handler, Damage2, Immediate, plain;
     [30014] "OriginDamage" => crate::engine::damage::handler::Handler, OriginDamage, AfterDamage, destination, crate::engine::damage::handler::supports_origin_damage;
-    [30015] "OriginDamageCanCrit" => crate::engine::damage::handler::Handler, OriginDamageCanCrit, AfterDamage, plain;
+    [30015] "OriginDamageCanCrit" => crate::engine::damage::handler::Handler, OriginDamageCanCrit, AfterDamage, destination, crate::engine::damage::handler::supports_origin_damage;
     [60146] "OriginDamageByTeamAttr" => crate::engine::damage::handler::Handler, OriginDamageByTeamAttr, AfterDamage, plain, crate::engine::damage::handler::supports_team_attr_damage;
     [60127] "OriginDamageByAttrAndBuffGroupSize" => crate::engine::damage::handler::Handler, OriginDamageByAttrAndBuffGroupSize, AfterDamage, plain;
     [60282] "ButterflyDamage" => crate::engine::damage::handler::Handler, ButterflyDamage, AfterDamage, destination, crate::engine::damage::handler::supports_butterfly_damage;

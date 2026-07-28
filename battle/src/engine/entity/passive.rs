@@ -76,9 +76,75 @@ impl Passive {
             .map(|row| row.skill_level)
             .max()
             .unwrap_or_default();
+        Self::for_loadout(hero_id, ex_level, psychube, destiny)
+    }
+
+    pub fn for_loadout(
+        hero_id: i32,
+        ex_level: i32,
+        psychube: Option<(i32, i32)>,
+        destiny: Option<(i32, i32)>,
+    ) -> Vec<PassiveSkill> {
         let (destiny_stone, destiny_rank) = destiny.unwrap_or_default();
         let destiny = Destiny::get(destiny_stone, destiny_rank);
         let mut passives = Self::base(hero_id);
+        Self::apply_upgrades(
+            &mut passives,
+            hero_id,
+            ex_level,
+            destiny.as_ref(),
+            destiny_rank,
+            destiny_stone,
+        );
+        if let Some((psychube_id, psychube_level)) = psychube {
+            passives.extend(Self::psychube(psychube_id, Some(psychube_level)));
+        }
+        passives
+    }
+
+    pub fn for_ranked_loadout(
+        hero_id: i32,
+        rank: i32,
+        ex_level: i32,
+        psychube: Option<(i32, i32)>,
+        destiny: Option<(i32, i32)>,
+    ) -> Vec<PassiveSkill> {
+        let game = configs::get();
+        let insight_level = game
+            .character_rank
+            .iter()
+            .find(|row| row.hero_id == hero_id && row.rank == rank)
+            .and_then(|row| {
+                row.effect
+                    .split('|')
+                    .filter_map(|effect| effect.split_once('#'))
+                    .find_map(|(kind, value)| (kind == "2").then(|| value.parse().ok()).flatten())
+            })
+            .unwrap_or_default();
+        let mut passives = Self::base(hero_id)
+            .into_iter()
+            .filter(|passive| {
+                passive.source.kind != PassiveSourceKind::Insight
+                    || passive.source.rank <= insight_level
+            })
+            .collect::<Vec<_>>();
+        passives.extend(
+            game.character_rank
+                .iter()
+                .filter(|row| row.hero_id == hero_id && row.rank < rank)
+                .flat_map(|row| row.effect.split('|'))
+                .filter_map(|effect| effect.split_once('#'))
+                .filter_map(|(kind, skill_id)| {
+                    (kind == "5").then(|| skill_id.parse().ok()).flatten()
+                })
+                .map(|skill_id| PassiveSkill {
+                    skill_id,
+                    source: PassiveSource::new(PassiveSourceKind::Rank),
+                }),
+        );
+
+        let (destiny_stone, destiny_rank) = destiny.unwrap_or_default();
+        let destiny = Destiny::get(destiny_stone, destiny_rank);
         Self::apply_upgrades(
             &mut passives,
             hero_id,

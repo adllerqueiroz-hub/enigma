@@ -40,11 +40,21 @@ pub async fn on_equip_strengthen(
     let inventory = player.inventory;
     let msg = EquipStrengthenRequest::decode(&req.data[..])?;
     let target_uid = msg.target_uid.ok_or(AppError::InvalidRequest)?;
-    let (reply, changed_uids) = inventory
+    let strengthened = inventory
         .strengthen_equip(ctx.state.db, target_uid, msg.eat_equips)
         .await?;
 
-    push::send_equip_update_push(ctx, player_id, changed_uids).await?;
+    push::send_currency_change_push(ctx, player_id, strengthened.currency_changes).await?;
+    push::send_equip_update_push(ctx, player_id, strengthened.changed_uids).await?;
+    if !strengthened.deleted_uids.is_empty() {
+        ctx.notify(
+            CmdId::EquipDeletePushCmd,
+            EquipDeletePush {
+                uids: strengthened.deleted_uids,
+            },
+        )
+        .await?;
+    }
     task_events::notify(
         ctx,
         player_id,
@@ -54,7 +64,7 @@ pub async fn on_equip_strengthen(
         },
     )
     .await?;
-    ctx.send_reply(CmdId::EquipStrengthenCmd, reply, 0, req.up_tag)
+    ctx.send_reply(CmdId::EquipStrengthenCmd, strengthened.reply, 0, req.up_tag)
         .await
 }
 

@@ -2,6 +2,10 @@ use crate::engine::manager::buff::ActiveBuffFeature;
 
 use super::{feature_kind, registry::BuffActKind};
 
+pub fn supports(args: &[i32]) -> bool {
+    matches!(args, [amount] if *amount != 0)
+}
+
 pub fn bonus(feature: &ActiveBuffFeature) -> i32 {
     let [_, amount] = feature.values.as_slice() else {
         return 0;

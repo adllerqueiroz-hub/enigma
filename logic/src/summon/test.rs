@@ -1,6 +1,6 @@
 use super::{
     GachaRules, SummonManager,
-    commands::{is_newbie_pool, is_newbie_six_star, validate_summon_count},
+    commands::{is_newbie_pool, is_newbie_six_star, select_summon_cost, validate_summon_count},
 };
 use crate::reward::{self, RewardSet};
 use database::{
@@ -121,6 +121,86 @@ async fn ordinary_summon_still_uses_the_pool_without_advancing_a_guide() {
 
     assert!(completion.guide_info.is_none());
     assert!(UserHeroModel::new(27, pool).get_hero(hero_id).await.is_ok());
+}
+
+#[tokio::test]
+async fn missing_summon_tickets_are_paid_from_the_configured_currency() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (28, 'summon-fallback', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO items (user_id, item_id, quantity) VALUES (28, 140001, 4)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO currencies (user_id, currency_id, quantity)
+         VALUES (28, 2, 1080)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let selected = select_summon_cost(&pool, 28, "1#140002#1|1#140001#10".into())
+        .await
+        .unwrap();
+    assert_eq!(selected.items, [(140001, 4)]);
+    assert_eq!(selected.currencies, [(2, 1080)]);
+}
+
+#[tokio::test]
+async fn special_pool_reply_persists_its_configured_type() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (29, 'special-pool', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_summon_pools (user_id, pool_id, created_at, updated_at)
+         VALUES (29, 385111, 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_sp_pool_info (user_id, pool_id, sp_type)
+         VALUES (29, 385111, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let reply = super::commands::summon_info(&pool, 29).await.unwrap();
+    let info = reply
+        .pool_infos
+        .iter()
+        .find(|info| info.pool_id == Some(385111))
+        .unwrap();
+
+    assert_eq!(
+        info.sp_pool_info.as_ref().and_then(|info| info.r#type),
+        Some(21)
+    );
+    assert_eq!(
+        summon::get_sp_pool_info(&pool, 29, 385111)
+            .await
+            .unwrap()
+            .map(|info| info.sp_type),
+        Some(21)
+    );
 }
 
 #[tokio::test]

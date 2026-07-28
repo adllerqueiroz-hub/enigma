@@ -11,6 +11,9 @@ use std::collections::HashMap;
 
 mod rewards;
 
+#[cfg(test)]
+mod test;
+
 use rewards::{
     add_claim_activity_in_transaction, parse_task_reward, task_activity_bonus, task_rewards,
 };

@@ -43,6 +43,12 @@ impl From<i32> for SummonType {
     }
 }
 
+impl SummonType {
+    pub(super) fn uses_sp_pool_info(self) -> bool {
+        matches!(self, Self::StrongCustomOnePick | Self::CoBranding)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct GachaPool {
     six_up: Vec<i32>,
