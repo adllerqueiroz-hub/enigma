@@ -8,10 +8,11 @@ use serde::Serialize;
 use sonettobuf::{
     BlockPackageGainPush, ChapterMapElementUpdatePush, ChapterMapUpdatePush, CmdId,
     CurrencyChangePush, DungeonUpdatePush, EquipUpdatePush, HeroSkinGainPush, HeroUpdatePush,
-    ItemChangePush, MaterialChangePush, MaterialData, PlayerCardInfoPush, StoryFinishPush,
-    UpdateOpenPush, prost::Message,
+    ItemChangePush, MapElementReply, MaterialChangePush, MaterialData, PlayerCardInfoPush,
+    PlayerCloth, PlayerClothInfo, RewardPointUpdatePush, StoryFinishPush, UpdateOpenPush,
+    prost::Message,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -142,15 +143,18 @@ fn list_players(state: &AppState) -> GmResponse {
 
 fn dungeon_catalog() -> GmResponse {
     let tables = config::configs::get();
+    let active_episodes = tables
+        .story_episodes()
+        .chain(tables.resource_episodes())
+        .collect::<Vec<_>>();
+    let active_chapter_ids = active_episodes
+        .iter()
+        .map(|episode| episode.chapter_id)
+        .collect::<HashSet<_>>();
     let mut chapters = tables
         .chapter
         .iter()
-        .filter(|chapter| {
-            tables
-                .episode
-                .iter()
-                .any(|episode| episode.chapter_id == chapter.id)
-        })
+        .filter(|chapter| active_chapter_ids.contains(&chapter.id))
         .map(|chapter| DungeonCatalogChapter {
             id: chapter.id,
             name: resolve_name(
@@ -163,10 +167,8 @@ fn dungeon_catalog() -> GmResponse {
             ),
         })
         .collect::<Vec<_>>();
-    let mut episodes = tables
-        .episode
-        .iter()
-        .filter(|episode| tables.chapter.get(episode.chapter_id).is_some())
+    let mut episodes = active_episodes
+        .into_iter()
         .map(|episode| DungeonCatalogEpisode {
             id: episode.id,
             chapter_id: episode.chapter_id,
@@ -248,25 +250,118 @@ async fn unlock_dungeon(
     player_id: i64,
     args: &[&str],
 ) -> Result<GmResponse> {
-    if args.len() != 3 || !args[0].eq_ignore_ascii_case("unlock") {
+    if !args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("unlock"))
+    {
         anyhow::bail!("usage: dungeon unlock <stage|chapter> <id>");
     }
 
-    let id = parse_positive(args[2], "dungeon id")?;
-    let (dungeon_infos, finished_story_ids, open_infos) =
-        match args[1].to_ascii_lowercase().as_str() {
-            "stage" | "episode" => dungeons::unlock_stage(state.db, player_id, id).await?,
-            "chapter" => dungeons::unlock_chapter(state.db, player_id, id).await?,
-            kind => anyhow::bail!("unknown dungeon unlock type '{kind}'"),
-        };
+    let kind = args.get(1).map(|arg| arg.to_ascii_lowercase());
+    let id = args
+        .get(2)
+        .map(|id| parse_positive(id, "dungeon id"))
+        .transpose()?;
+    let target = id.map_or_else(
+        || kind.clone().unwrap_or_default(),
+        |id| format!("{} {id}", kind.as_deref().unwrap_or_default()),
+    );
+    let unlock = match (kind.as_deref(), id, args.len()) {
+        (Some("stage" | "episode"), Some(id), 3) => {
+            crate::logic::dungeon::DungeonManager::new(player_id)
+                .unlock_stage(state.db, id)
+                .await?
+        }
+        (Some("chapter"), Some(id), 3) => {
+            crate::logic::dungeon::DungeonManager::new(player_id)
+                .unlock_chapter(state.db, id)
+                .await?
+        }
+        _ => anyhow::bail!("usage: dungeon unlock <stage|chapter> <id>"),
+    };
+    let crate::logic::dungeon::DungeonUnlock {
+        changed,
+        episodes,
+        mut trails,
+    } = unlock;
+    if !changed {
+        return Ok(GmResponse::ok(format!(
+            "dungeon {target} is already unlocked"
+        )));
+    }
 
-    for story_id in &finished_story_ids {
+    let mut episodes = episodes;
+    let mut material_totals = BTreeMap::<i32, BTreeMap<(u32, u32), i32>>::new();
+    let mut reward_data = GrantData {
+        user_id: player_id,
+        rewards: Vec::new(),
+        changed_item_ids: Vec::new(),
+        changed_power_item_ids: Vec::new(),
+        changed_insight_item_ids: Vec::new(),
+        changed_currency_ids: Vec::new(),
+        changed_hero_ids: Vec::new(),
+        changed_skin_ids: Vec::new(),
+        changed_equip_ids: Vec::new(),
+        cloth_updates: Vec::new(),
+        player_info_changed: false,
+    };
+    for episode in &mut episodes {
+        for (kind, id, amount) in std::mem::take(&mut episode.material_changes) {
+            let total = material_totals
+                .entry(episode.chapter_id)
+                .or_default()
+                .entry((kind, id))
+                .or_default();
+            *total = total.saturating_add(amount);
+        }
+        reward_data.merge_rewards(std::mem::take(&mut episode.rewards));
+    }
+    for (chapter_id, changes) in std::mem::take(&mut trails.material_changes) {
+        for (kind, id, amount) in changes {
+            let total = material_totals
+                .entry(chapter_id)
+                .or_default()
+                .entry((kind, id))
+                .or_default();
+            *total = total.saturating_add(amount);
+        }
+    }
+    reward_data.merge_rewards(std::mem::take(&mut trails.rewards));
+    for rewards in material_totals.into_values() {
+        let rewards = rewards
+            .into_iter()
+            .map(|((kind, id), amount)| RewardData {
+                r#type: kind as i32,
+                id: id as i32,
+                amount,
+            })
+            .collect::<Vec<_>>();
+        send_material_push(state, player_id, rewards.iter().cloned()).await?;
+        reward_data.rewards.extend(rewards);
+    }
+    reward_data.deduplicate();
+    send_snapshot_pushes(state, &reward_data).await?;
+    for element_id in &trails.finished_element_ids {
         send_push(
             state,
             player_id,
-            CmdId::StoryFinishPushCmd,
-            StoryFinishPush {
-                story_id: Some(*story_id),
+            CmdId::MapElementCmd,
+            MapElementReply {
+                element_id: Some(*element_id),
+                dialog_ids: Vec::new(),
+                record: None,
+            },
+        )
+        .await?;
+    }
+    for (chapter_id, value) in &trails.reward_points {
+        send_push(
+            state,
+            player_id,
+            CmdId::RewardPointUpdatePushCmd,
+            RewardPointUpdatePush {
+                chapter_id: Some(*chapter_id),
+                value: Some(*value),
             },
         )
         .await?;
@@ -277,32 +372,55 @@ async fn unlock_dungeon(
         .into_iter()
         .map(Into::into)
         .collect::<Vec<sonettobuf::UserChapterTypeNum>>();
-    let episode_ids = dungeon_infos
+    let episode_ids = episodes
         .iter()
-        .map(|dungeon| dungeon.episode_id)
+        .filter_map(|episode| episode.dungeon.as_ref().map(|dungeon| dungeon.episode_id))
         .collect::<Vec<_>>();
-    for dungeon_info in dungeon_infos {
-        send_push(
-            state,
-            player_id,
-            CmdId::DungeonUpdatePushCmd,
-            DungeonUpdatePush {
-                dungeon_info: Some(dungeon_info.into()),
-                chapter_type_nums: chapter_type_nums.clone(),
-            },
-        )
-        .await?;
-    }
-    if !open_infos.is_empty() {
-        send_push(
-            state,
-            player_id,
-            CmdId::UpdateOpenPushCmd,
-            UpdateOpenPush {
-                open_infos: open_infos.clone(),
-            },
-        )
-        .await?;
+    let mut finished_story_ids = Vec::new();
+    let mut unlocked_open_ids = Vec::new();
+    for episode in episodes {
+        for story_id in episode.finished_story_ids {
+            send_push(
+                state,
+                player_id,
+                CmdId::StoryFinishPushCmd,
+                StoryFinishPush {
+                    story_id: Some(story_id),
+                },
+            )
+            .await?;
+            finished_story_ids.push(story_id);
+        }
+        if !episode.open_infos.is_empty() {
+            unlocked_open_ids.extend(
+                episode
+                    .open_infos
+                    .iter()
+                    .filter(|info| info.is_open)
+                    .map(|info| info.id),
+            );
+            send_push(
+                state,
+                player_id,
+                CmdId::UpdateOpenPushCmd,
+                UpdateOpenPush {
+                    open_infos: episode.open_infos,
+                },
+            )
+            .await?;
+        }
+        if let Some(dungeon_info) = episode.dungeon {
+            send_push(
+                state,
+                player_id,
+                CmdId::DungeonUpdatePushCmd,
+                DungeonUpdatePush {
+                    dungeon_info: Some(dungeon_info.into()),
+                    chapter_type_nums: chapter_type_nums.clone(),
+                },
+            )
+            .await?;
+        }
     }
     let (map_ids, elements) = dungeons::reconcile_map_progression(state.db, player_id).await?;
     if !map_ids.is_empty() {
@@ -325,11 +443,12 @@ async fn unlock_dungeon(
     }
 
     Ok(GmResponse::ok_data(
-        format!("unlocked dungeon {0} {id}", args[1].to_ascii_lowercase()),
+        format!("unlocked dungeon {target}"),
         serde_json::json!({
             "passedPrerequisiteEpisodes": episode_ids,
+            "finishedTrails": trails.finished_element_ids,
             "finishedStories": finished_story_ids,
-            "unlockedOpenIds": open_infos.into_iter().filter(|info| info.is_open).map(|info| info.id).collect::<Vec<_>>(),
+            "unlockedOpenIds": unlocked_open_ids,
         }),
     ))
 }
@@ -360,6 +479,8 @@ async fn grant(state: &'static AppState, player_id: i64, args: &[&str]) -> Resul
         changed_hero_ids: Vec::new(),
         changed_skin_ids: Vec::new(),
         changed_equip_ids: Vec::new(),
+        cloth_updates: Vec::new(),
+        player_info_changed: false,
     };
 
     match kind {
@@ -423,7 +544,8 @@ async fn grant(state: &'static AppState, player_id: i64, args: &[&str]) -> Resul
         }
     }
 
-    send_grant_pushes(state, &data).await?;
+    send_material_push(state, data.user_id, data.rewards.iter().cloned()).await?;
+    send_snapshot_pushes(state, &data).await?;
 
     Ok(GmResponse::ok_data(
         format!("granted {amount} of {}#{id} to {player_id}", kind.id()),
@@ -431,27 +553,38 @@ async fn grant(state: &'static AppState, player_id: i64, args: &[&str]) -> Resul
     ))
 }
 
-async fn send_grant_pushes(state: &'static AppState, data: &GrantData) -> Result<()> {
-    let reward = &data.rewards[0];
-    let Some(kind) = MaterialKind::from_raw(reward.r#type) else {
-        return Ok(());
-    };
-
-    send_push(
-        state,
-        data.user_id,
-        CmdId::MaterialChangePushCmd,
-        MaterialChangePush {
-            data_list: vec![MaterialData {
-                materil_type: Some(kind.id() as u32),
+async fn send_material_push(
+    state: &'static AppState,
+    player_id: i64,
+    rewards: impl IntoIterator<Item = RewardData>,
+) -> Result<()> {
+    let data_list = rewards
+        .into_iter()
+        .filter_map(|reward| {
+            let kind = reward::RewardMaterialType::from_i32(reward.r#type)?;
+            Some(MaterialData {
+                materil_type: Some(kind.id()),
                 materil_id: Some(reward.id as u32),
                 quantity: Some(reward.amount),
-            }],
-            get_approach: None,
-        },
-    )
-    .await?;
+            })
+        })
+        .collect::<Vec<_>>();
+    if !data_list.is_empty() {
+        send_push(
+            state,
+            player_id,
+            CmdId::MaterialChangePushCmd,
+            MaterialChangePush {
+                data_list,
+                get_approach: None,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
 
+async fn send_snapshot_pushes(state: &'static AppState, data: &GrantData) -> Result<()> {
     let mut changed_items = Vec::new();
     for item_id in &data.changed_item_ids {
         if let Some(item) = items::get_item(state.db, data.user_id, *item_id as u32).await? {
@@ -483,7 +616,13 @@ async fn send_grant_pushes(state: &'static AppState, data: &GrantData) -> Result
     )
     .await?;
 
-    if kind == MaterialKind::BlockPackage {
+    let mut block_package_ids = HashSet::new();
+    for reward in data
+        .rewards
+        .iter()
+        .filter(|reward| MaterialKind::from_raw(reward.r#type) == Some(MaterialKind::BlockPackage))
+        .filter(|reward| block_package_ids.insert(reward.id))
+    {
         let packages = block_packages::get_block_packages(state.db, data.user_id)
             .await?
             .into_iter()
@@ -579,6 +718,31 @@ async fn send_grant_pushes(state: &'static AppState, data: &GrantData) -> Result
         .await?;
     }
 
+    if data.player_info_changed {
+        send_push(
+            state,
+            data.user_id,
+            CmdId::PlayerInfoPushCmd,
+            crate::logic::profile::ProfileManager::new(data.user_id)
+                .snapshot(state.db)
+                .await?,
+        )
+        .await?;
+    }
+    if !data.cloth_updates.is_empty() {
+        send_push(
+            state,
+            data.user_id,
+            CmdId::ClothUpdatePushCmd,
+            sonettobuf::ClothUpdatePush {
+                update_infos: Some(PlayerClothInfo {
+                    clothes: data.cloth_updates.clone(),
+                }),
+            },
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -641,10 +805,13 @@ struct GrantData {
     changed_hero_ids: Vec<i32>,
     changed_skin_ids: Vec<i32>,
     changed_equip_ids: Vec<i64>,
+    cloth_updates: Vec<PlayerCloth>,
+    player_info_changed: bool,
 }
 
 impl GrantData {
     fn merge_rewards(&mut self, rewards: reward::AppliedRewards) {
+        self.player_info_changed |= rewards.player_info_changed;
         self.changed_item_ids
             .extend(rewards.item_ids.into_iter().map(|id| id as i32));
         self.changed_power_item_ids.extend(rewards.power_item_ids);
@@ -656,10 +823,33 @@ impl GrantData {
         self.changed_skin_ids
             .extend(rewards.skin_gains.into_iter().map(|skin| skin.skin_id));
         self.changed_equip_ids.extend(rewards.equip_uids);
+        self.cloth_updates.extend(rewards.cloth_updates);
+    }
+
+    fn deduplicate(&mut self) {
+        self.changed_item_ids.sort_unstable();
+        self.changed_item_ids.dedup();
+        self.changed_power_item_ids.sort_unstable();
+        self.changed_power_item_ids.dedup();
+        self.changed_insight_item_ids.sort_unstable();
+        self.changed_insight_item_ids.dedup();
+        self.changed_currency_ids.sort_unstable();
+        self.changed_currency_ids.dedup();
+        self.changed_hero_ids.sort_unstable();
+        self.changed_hero_ids.dedup();
+        self.changed_skin_ids.sort_unstable();
+        self.changed_skin_ids.dedup();
+        self.changed_equip_ids.sort_unstable();
+        self.changed_equip_ids.dedup();
+        let mut cloth_ids = HashSet::new();
+        self.cloth_updates.reverse();
+        self.cloth_updates
+            .retain(|cloth| cloth_ids.insert(cloth.cloth_id));
+        self.cloth_updates.reverse();
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct RewardData {
     r#type: i32,
     id: i32,
@@ -967,8 +1157,22 @@ fn parse_positive(value: &str, label: &str) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MaterialKind, entries_for_kind, is_premium_hero_skin};
+    use super::{MaterialKind, dungeon_catalog, entries_for_kind, is_premium_hero_skin};
     use std::collections::HashSet;
+
+    #[test]
+    fn dungeon_catalog_lists_story_and_resource_episodes() {
+        let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+        let _ = config::init(&data_dir);
+        let data = dungeon_catalog().data.unwrap();
+        let chapters = data["chapters"].as_array().unwrap();
+        let episodes = data["episodes"].as_array().unwrap();
+
+        assert!(!chapters.is_empty());
+        assert!(!chapters.iter().any(|chapter| chapter["id"] == 201));
+        assert!(episodes.iter().any(|episode| episode["id"] == 10102));
+        assert!(episodes.iter().any(|episode| episode["id"] == 40101));
+    }
 
     #[test]
     fn hero_skin_catalog_excludes_basic_and_insight_skins() {

@@ -11,7 +11,7 @@
     button { cursor: pointer; background: #394150; }
     .grid { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     .grant { margin-top: 14px; display: grid; gap: 10px; grid-template-columns: 150px minmax(130px, .8fr) minmax(180px, 1.2fr) 90px auto; }
-    .dungeon { margin-top: 10px; display: grid; gap: 10px; grid-template-columns: 110px minmax(180px, 1fr) minmax(220px, 1.4fr) auto; }
+    .dungeon { margin-top: 10px; display: grid; gap: 10px; grid-template-columns: minmax(150px, 1fr) 110px minmax(180px, 1.4fr) auto; }
     .grant > *, .dungeon > *, .grid > *, .cmd > * { min-width: 0; }
     select { min-width: 0; max-width: 100%; font: inherit; border: 1px solid #393d46; background: #1c2028; color: #ece7de; padding: 10px 12px; box-sizing: border-box; text-overflow: ellipsis; }
     .cmd { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
@@ -51,13 +51,13 @@
       <button id="grant" type="button" onclick="grantSelected()">Grant</button>
     </div>
     <div class="dungeon">
-      <select id="dungeonKind">
-        <option value="stage">Stage</option>
-        <option value="chapter">Whole chapter</option>
-      </select>
       <select id="dungeonChapter"></select>
+      <select id="dungeonKind">
+        <option value="chapter">Whole chapter</option>
+        <option value="stage">Stage</option>
+      </select>
       <select id="dungeonEpisode"></select>
-      <button type="button" onclick="unlockDungeon()">Unlock</button>
+      <button type="button" onclick="unlockDungeon()">Unlock selected</button>
     </div>
     <div class="status">
       <span id="server">server: checking</span>
@@ -143,7 +143,7 @@
     }
     async function loadDungeons() {
       try {
-        const res = await fetch('/api/dungeons');
+        const res = await fetch('/api/dungeons', { cache: 'no-store' });
         if (!res.ok) throw new Error(`dungeon catalog failed: ${res.status}`);
         const data = await res.json();
         dungeonCatalog.chapters = data.chapters || [];
@@ -166,8 +166,8 @@
       updateDungeonMode();
     }
     function updateDungeonMode() {
-      document.getElementById('dungeonEpisode').disabled =
-        document.getElementById('dungeonKind').value === 'chapter';
+      const kind = document.getElementById('dungeonKind').value;
+      document.getElementById('dungeonEpisode').disabled = kind !== 'stage';
     }
     async function unlockDungeon() {
       const kind = document.getElementById('dungeonKind').value;

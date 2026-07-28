@@ -35,21 +35,22 @@ pub async fn finish_story_in_transaction(
     tx: &mut Transaction<'_, Sqlite>,
     user_id: i64,
     story_id: i32,
-) -> Result<()> {
+) -> Result<bool> {
     // Move from processing to finished
-    sqlx::query("DELETE FROM user_processing_stories WHERE user_id = ? AND story_id = ?")
+    let deleted =
+        sqlx::query("DELETE FROM user_processing_stories WHERE user_id = ? AND story_id = ?")
+            .bind(user_id)
+            .bind(story_id)
+            .execute(&mut **tx)
+            .await?;
+
+    let inserted = sqlx::query("INSERT INTO user_finished_stories (user_id, story_id) VALUES (?, ?) ON CONFLICT DO NOTHING")
         .bind(user_id)
         .bind(story_id)
         .execute(&mut **tx)
         .await?;
 
-    sqlx::query("INSERT INTO user_finished_stories (user_id, story_id) VALUES (?, ?) ON CONFLICT DO NOTHING")
-        .bind(user_id)
-        .bind(story_id)
-        .execute(&mut **tx)
-        .await?;
-
-    Ok(())
+    Ok(deleted.rows_affected() != 0 || inserted.rows_affected() != 0)
 }
 
 pub async fn update_processing_story(

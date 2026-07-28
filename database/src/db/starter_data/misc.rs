@@ -1,5 +1,24 @@
 use super::*;
 
+pub async fn load_dungeon_reward_points(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+) -> sqlx::Result<()> {
+    let now = common::time::ServerTime::now_ms();
+    sqlx::query(
+        "INSERT INTO user_dungeon_reward_points
+            (user_id, chapter_id, reward_point, created_at, updated_at)
+         VALUES (?, 0, 0, ?, ?)
+         ON CONFLICT(user_id, chapter_id) DO NOTHING",
+    )
+    .bind(user_id)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 pub async fn load_starter_settings(
     tx: &mut Transaction<'_, Sqlite>,
     user_id: i64,

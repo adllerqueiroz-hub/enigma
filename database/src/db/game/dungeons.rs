@@ -93,6 +93,25 @@ pub async fn episode_star_in_transaction(
     .await?)
 }
 
+pub async fn claim_reward_repair_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    episode_id: i32,
+) -> Result<Option<i32>> {
+    let repaired_at = ServerTime::now_ms();
+    Ok(sqlx::query_scalar(
+        "UPDATE user_dungeon_reward_repairs
+         SET repaired_at = ?
+         WHERE user_id = ? AND episode_id = ? AND repaired_at IS NULL
+         RETURNING star",
+    )
+    .bind(repaired_at)
+    .bind(user_id)
+    .bind(episode_id)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
 pub async fn get_dungeon_last_hero_groups(
     pool: &SqlitePool,
     user_id: i64,
@@ -147,6 +166,62 @@ pub async fn get_finished_elements(pool: &SqlitePool, user_id: i64) -> Result<Ve
     .fetch_all(pool)
     .await?;
     Ok(elements)
+}
+
+pub async fn finish_element_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    element_id: i32,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "INSERT INTO user_dungeon_elements
+            (user_id, element_id, is_finished, puzzle_progress, puzzle_updated_at)
+         VALUES (?, ?, 1, '', ?)
+         ON CONFLICT(user_id, element_id) DO UPDATE SET
+            is_finished = 1,
+            puzzle_progress = '',
+            puzzle_updated_at = excluded.puzzle_updated_at
+         WHERE is_finished = 0",
+    )
+    .bind(user_id)
+    .bind(element_id)
+    .bind(ServerTime::now_ms())
+    .execute(&mut **tx)
+    .await?;
+    Ok(result.rows_affected() != 0)
+}
+
+pub async fn add_reward_points_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    user_id: i64,
+    chapter_id: i32,
+    amount: i32,
+) -> Result<i32> {
+    let now = ServerTime::now_ms();
+    sqlx::query(
+        "INSERT INTO user_dungeon_reward_points
+            (user_id, chapter_id, reward_point, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, chapter_id) DO UPDATE SET
+            reward_point = reward_point + excluded.reward_point,
+            updated_at = excluded.updated_at",
+    )
+    .bind(user_id)
+    .bind(chapter_id)
+    .bind(amount)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(sqlx::query_scalar(
+        "SELECT reward_point FROM user_dungeon_reward_points
+         WHERE user_id = ? AND chapter_id = ?",
+    )
+    .bind(user_id)
+    .bind(chapter_id)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 pub async fn get_reward_points(pool: &SqlitePool, user_id: i64) -> Result<Vec<RewardPointInfo>> {
@@ -415,6 +490,13 @@ pub async fn can_start_episode(
     {
         return Ok(false);
     }
+    let active_elements = get_elements(pool, user_id)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    if episode_element_ids(episode).any(|element_id| active_elements.contains(&element_id)) {
+        return Ok(false);
+    }
 
     if let Some(gate) = game_data
         .open
@@ -427,6 +509,13 @@ pub async fn can_start_episode(
     }
 
     Ok(true)
+}
+
+fn episode_element_ids(episode: &config::episode::Episode) -> impl Iterator<Item = i32> + '_ {
+    episode
+        .element_list
+        .split('#')
+        .filter_map(|id| id.parse().ok())
 }
 
 fn episode_finish(condition: &str) -> Option<i32> {
@@ -589,46 +678,7 @@ fn chapter_type_daily_limit(value: &str, chapter_type: i32) -> i32 {
         .unwrap_or_default()
 }
 
-pub async fn unlock_stage(
-    pool: &SqlitePool,
-    user_id: i64,
-    episode_id: i32,
-) -> Result<(Vec<UserDungeon>, Vec<i32>, Vec<OpenInfo>)> {
-    configs::get()
-        .episode
-        .get(episode_id)
-        .with_context(|| format!("missing episode config {episode_id}"))?;
-    unlock_prerequisites(pool, user_id, [episode_id]).await
-}
-
-pub async fn unlock_chapter(
-    pool: &SqlitePool,
-    user_id: i64,
-    chapter_id: i32,
-) -> Result<(Vec<UserDungeon>, Vec<i32>, Vec<OpenInfo>)> {
-    let game_data = configs::get();
-    game_data
-        .chapter
-        .get(chapter_id)
-        .with_context(|| format!("missing chapter config {chapter_id}"))?;
-    let episode_ids = game_data
-        .episode
-        .iter()
-        .filter(|episode| episode.chapter_id == chapter_id)
-        .map(|episode| episode.id)
-        .collect::<Vec<_>>();
-    ensure!(
-        !episode_ids.is_empty(),
-        "chapter {chapter_id} has no episodes"
-    );
-    unlock_prerequisites(pool, user_id, episode_ids).await
-}
-
-async fn unlock_prerequisites(
-    pool: &SqlitePool,
-    user_id: i64,
-    targets: impl IntoIterator<Item = i32>,
-) -> Result<(Vec<UserDungeon>, Vec<i32>, Vec<OpenInfo>)> {
+pub fn prerequisite_episode_ids(targets: impl IntoIterator<Item = i32>) -> Result<Vec<i32>> {
     let game_data = configs::get();
     let chain_episodes = game_data
         .episode
@@ -647,72 +697,7 @@ async fn unlock_prerequisites(
             &mut episode_ids,
         )?;
     }
-
-    let now = common::time::ServerTime::now_ms();
-    let mut tx = pool.begin().await?;
-    let mut dungeons = Vec::with_capacity(episode_ids.len());
-    let mut finished_stories = Vec::new();
-    let mut seen_stories = HashSet::new();
-
-    for episode_id in episode_ids {
-        let episode = game_data.episode.get(episode_id).unwrap();
-        let star = if episode.battle_id == 0 { 1 } else { 2 };
-        sqlx::query(
-            r#"
-            INSERT INTO user_dungeons
-            (user_id, chapter_id, episode_id, star, challenge_count, has_record,
-             left_return_all_num, today_pass_num, today_total_num, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 0, 0, 1, 0, ?, ?, ?)
-            ON CONFLICT(user_id, chapter_id, episode_id) DO UPDATE SET
-                star = MAX(star, excluded.star),
-                today_total_num = excluded.today_total_num,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(user_id)
-        .bind(episode.chapter_id)
-        .bind(episode.id)
-        .bind(star)
-        .bind(episode.day_num)
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
-
-        let after_story = effective_after_story(game_data, episode);
-        if after_story > 0 && seen_stories.insert(after_story) {
-            sqlx::query("DELETE FROM user_processing_stories WHERE user_id = ? AND story_id = ?")
-                .bind(user_id)
-                .bind(after_story)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(
-                "INSERT INTO user_finished_stories (user_id, story_id) VALUES (?, ?)
-                 ON CONFLICT DO NOTHING",
-            )
-            .bind(user_id)
-            .bind(after_story)
-            .execute(&mut *tx)
-            .await?;
-            finished_stories.push(after_story);
-        }
-
-        dungeons.push(
-            sqlx::query_as::<_, UserDungeon>(
-                "SELECT * FROM user_dungeons
-                 WHERE user_id = ? AND chapter_id = ? AND episode_id = ?",
-            )
-            .bind(user_id)
-            .bind(episode.chapter_id)
-            .bind(episode.id)
-            .fetch_one(&mut *tx)
-            .await?,
-        );
-    }
-
-    tx.commit().await?;
-    let open_infos = open_infos::reconcile_progression(pool, user_id).await?;
-    Ok((dungeons, finished_stories, open_infos))
+    Ok(episode_ids)
 }
 
 fn collect_prerequisites(
@@ -726,13 +711,16 @@ fn collect_prerequisites(
         .episode
         .get(episode_id)
         .with_context(|| format!("missing episode config {episode_id}"))?;
-    let prerequisite = effective_prerequisite(chain_episodes, episode);
-    if prerequisite == 0 || !seen.insert(prerequisite) {
-        return Ok(());
+    for prerequisite in [
+        effective_prerequisite(chain_episodes, episode),
+        episode.unlock_episode,
+    ] {
+        if prerequisite == 0 || !seen.insert(prerequisite) {
+            continue;
+        }
+        collect_prerequisites(game_data, chain_episodes, prerequisite, seen, ordered)?;
+        ordered.push(prerequisite);
     }
-
-    collect_prerequisites(game_data, chain_episodes, prerequisite, seen, ordered)?;
-    ordered.push(prerequisite);
     Ok(())
 }
 

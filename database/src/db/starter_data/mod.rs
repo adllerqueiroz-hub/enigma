@@ -17,8 +17,8 @@ use guide::load_starter_guides;
 use hero_group::{load_hero_touch_count, load_starter_hero_groups};
 use inventory::{load_starter_currencies, load_starter_user_stats};
 use misc::{
-    load_activity_state, load_instruction_dungeon_info, load_starter_bgm, load_starter_settings,
-    load_starter_system_state,
+    load_activity_state, load_dungeon_reward_points, load_instruction_dungeon_info,
+    load_starter_bgm, load_starter_settings, load_starter_system_state,
 };
 use room::load_starter_room;
 use summon::load_starter_summon;
@@ -58,6 +58,7 @@ pub async fn load_all_starter_data_tx(
     load_starter_room(&mut *tx, uid).await?;
     load_starter_summon(&mut *tx, uid).await?;
     load_tower_info(&mut *tx, uid).await?;
+    load_dungeon_reward_points(&mut *tx, uid).await?;
     load_instruction_dungeon_info(&mut *tx, uid).await?;
     load_activity_state(&mut *tx, uid).await?;
     load_starter_bgm(&mut *tx, uid).await?;

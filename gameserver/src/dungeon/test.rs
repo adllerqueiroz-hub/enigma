@@ -373,19 +373,243 @@ async fn unlimited_dungeon_clear_keeps_unrelated_daily_counters() {
     );
     let (reply, rows) = dungeon_info(&pool, 19).await.unwrap();
     assert_eq!(reply.dungeon_info_size, Some(rows.len() as i32));
+}
 
+#[tokio::test]
+async fn dungeon_unlocks_apply_prerequisites_rewards_and_tutorials_once() {
+    let data_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data/excel2json");
+    let _ = config::init(data_dir.to_str().unwrap());
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
     sqlx::query(
         "INSERT INTO users (id, username, created_at, updated_at) VALUES (20, 'unlock', 0, 0)",
     )
     .execute(&pool)
     .await
     .unwrap();
-    let (unlocked, _, _) = dungeons::unlock_stage(&pool, 20, 90400101).await.unwrap();
-    assert!(unlocked.iter().all(|dungeon| {
-        dungeon.challenge_count == 0
-            && dungeon.left_return_all_num == 1
-            && dungeon.today_pass_num == 0
-    }));
+    database::db::starter_data::load_all_starter_data(&pool, 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        dungeons::get_reward_points(&pool, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|points| points.chapter_id == 0)
+            .unwrap()
+            .reward_point,
+        0
+    );
+    sqlx::query(
+        "INSERT INTO user_dungeons
+            (user_id, chapter_id, episode_id, star, challenge_count, has_record,
+             left_return_all_num, today_pass_num, today_total_num, created_at, updated_at)
+         VALUES (20, 102, 10215, 1, 0, 0, 1, 0, 0, 123, 123)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_dungeon_reward_repairs (user_id, episode_id, star)
+         VALUES (20, 10215, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let guide_steps_before = (
+        database::db::game::guides::get_guide_progress(&pool, 20, 101)
+            .await
+            .unwrap()
+            .map(|progress| progress.step_id),
+        database::db::game::guides::get_guide_progress(&pool, 20, 103)
+            .await
+            .unwrap()
+            .map(|progress| progress.step_id),
+    );
+    let unlocked = crate::logic::dungeon::DungeonManager::new(20)
+        .unlock_chapter(&pool, 103)
+        .await
+        .unwrap();
+    assert!(
+        unlocked
+            .episodes
+            .iter()
+            .filter_map(|episode| episode.dungeon.as_ref())
+            .all(|dungeon| {
+                dungeon.challenge_count == 0
+                    && dungeon.left_return_all_num == 1
+                    && dungeon.today_pass_num == 0
+            })
+    );
+    assert!(
+        unlocked
+            .episodes
+            .iter()
+            .any(|episode| episode.rewards.player_info_changed)
+    );
+    assert!(
+        unlocked
+            .episodes
+            .iter()
+            .any(|episode| !episode.material_changes.is_empty())
+    );
+    assert!(
+        unlocked
+            .episodes
+            .iter()
+            .any(|episode| !episode.rewards.cloth_updates.is_empty())
+    );
+    assert!(!unlocked.trails.finished_element_ids.is_empty());
+    let finished_elements = dungeons::get_finished_elements(&pool, 20).await.unwrap();
+    assert!(
+        unlocked
+            .trails
+            .finished_element_ids
+            .iter()
+            .all(|element_id| finished_elements.contains(element_id))
+    );
+    let expected_reward_points = unlocked
+        .trails
+        .finished_element_ids
+        .iter()
+        .map(|element_id| {
+            config::configs::get()
+                .chapter_map_element
+                .get(*element_id)
+                .unwrap()
+                .reward_point
+        })
+        .sum::<i32>();
+    assert_eq!(
+        dungeons::get_reward_points(&pool, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|points| points.chapter_id == 0)
+            .unwrap()
+            .reward_point,
+        expected_reward_points
+    );
+    for episode_id in [10001, 10002, 10003, 10101, 10215, 10315] {
+        assert!(dungeons::episode_star(&pool, 20, episode_id).await.unwrap() > 0);
+    }
+    assert_eq!(dungeons::episode_star(&pool, 20, 10316).await.unwrap(), 0);
+    assert!(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT repaired_at FROM user_dungeon_reward_repairs
+             WHERE user_id = 20 AND episode_id = 10215",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .is_some()
+    );
+    assert!(
+        sqlx::query_scalar::<_, i32>("SELECT exp FROM users WHERE id = 20")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            > 80
+    );
+    let repeated = crate::logic::dungeon::DungeonManager::new(20)
+        .unlock_chapter(&pool, 103)
+        .await
+        .unwrap();
+    assert!(!repeated.changed);
+    assert!(repeated.episodes.is_empty());
+    assert!(repeated.trails.finished_element_ids.is_empty());
+    assert_eq!(
+        dungeons::get_reward_points(&pool, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|points| points.chapter_id == 0)
+            .unwrap()
+            .reward_point,
+        expected_reward_points
+    );
+
+    let story_only_episode = config::configs::get()
+        .story_episodes()
+        .find(|episode| episode.chapter_id <= 103 && episode.battle_id == 0)
+        .unwrap();
+    assert_eq!(
+        dungeons::episode_star(&pool, 20, story_only_episode.id)
+            .await
+            .unwrap(),
+        1
+    );
+    let guide_steps_after = (
+        database::db::game::guides::get_guide_progress(&pool, 20, 101)
+            .await
+            .unwrap()
+            .map(|progress| progress.step_id),
+        database::db::game::guides::get_guide_progress(&pool, 20, 103)
+            .await
+            .unwrap()
+            .map(|progress| progress.step_id),
+    );
+    assert_eq!(guide_steps_after, guide_steps_before);
+
+    let trail_gated_stage = 10402;
+    crate::logic::dungeon::DungeonManager::new(20)
+        .unlock_stage(&pool, trail_gated_stage)
+        .await
+        .unwrap();
+    assert_eq!(
+        dungeons::episode_star(&pool, 20, trail_gated_stage)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        dungeons::get_finished_elements(&pool, 20)
+            .await
+            .unwrap()
+            .contains(&1040101)
+    );
+    assert!(
+        dungeons::can_start_episode(&pool, 20, 104, trail_gated_stage)
+            .await
+            .unwrap()
+    );
+
+    crate::logic::dungeon::DungeonManager::new(20)
+        .unlock_chapter(&pool, 401)
+        .await
+        .unwrap();
+    assert!(dungeons::episode_star(&pool, 20, 40105).await.unwrap() > 0);
+    assert!(dungeons::episode_star(&pool, 20, 420).await.unwrap() > 0);
+    assert_eq!(dungeons::episode_star(&pool, 20, 40106).await.unwrap(), 0);
+    assert!(
+        dungeons::can_start_episode(&pool, 20, 401, 40106)
+            .await
+            .unwrap()
+    );
+
+    let selected_stage = config::configs::get()
+        .resource_episodes()
+        .find(|episode| episode.chapter_id == 501)
+        .unwrap()
+        .id;
+    crate::logic::dungeon::DungeonManager::new(20)
+        .unlock_stage(&pool, selected_stage)
+        .await
+        .unwrap();
+    assert_eq!(
+        dungeons::episode_star(&pool, 20, selected_stage)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        dungeons::can_start_episode(&pool, 20, 501, selected_stage)
+            .await
+            .unwrap()
+    );
 }
 
 #[test]

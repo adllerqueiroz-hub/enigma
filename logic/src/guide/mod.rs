@@ -1,6 +1,6 @@
 use crate::{error::AppError, reward, types::hero_group_snapshot_type::HeroGroupSnapshotType};
 use database::{
-    db::game::{dungeons, guides, hero_group_snapshots, hero_groups, open_infos, stories},
+    db::game::{guides, hero_group_snapshots, hero_groups, stories},
     models::game::heros::UserHeroModel,
 };
 use sonettobuf::{FinishGuideReply, GetGuideInfoReply, GuideInfo, UpdateHeroGroupSnapshotPush};
@@ -32,6 +32,19 @@ pub struct GuideCompletion {
     pub rewards: reward::AppliedRewards,
     pub material_changes: Vec<(u32, u32, i32)>,
     pub group_snapshot: Option<UpdateHeroGroupSnapshotPush>,
+}
+
+#[derive(Default)]
+pub struct TutorialSkip {
+    pub rewards: reward::AppliedRewards,
+    pub material_changes: Vec<(u32, u32, i32)>,
+}
+
+impl TutorialSkip {
+    fn extend(&mut self, completion: GuideCompletion) {
+        self.rewards.extend(completion.rewards);
+        self.material_changes.extend(completion.material_changes);
+    }
 }
 
 fn story_requirement(action: &str) -> Option<i32> {
@@ -96,71 +109,11 @@ fn episode_condition(value: &str) -> Option<i32> {
     value.strip_prefix("EpisodeFinish#")?.parse().ok()
 }
 
-fn configured_clear_star(episode: &config::episode::Episode) -> i32 {
-    let advanced = config::configs::get()
-        .battle
-        .get(episode.battle_id)
-        .map(|battle| {
-            battle
-                .advanced_condition
-                .split('|')
-                .filter(|condition| !condition.is_empty())
-                .count() as i32
-        })
-        .unwrap_or_default();
-    1 + advanced
-}
-
-async fn complete_skipped_episode(
-    db: &SqlitePool,
-    player_id: i64,
-    episode_id: i32,
-) -> Result<(), AppError> {
-    let episode = config::configs::get()
-        .episode
-        .get(episode_id)
-        .ok_or(AppError::InvalidRequest)?;
-    let star = configured_clear_star(episode);
-    let mut tx = db.begin().await?;
-    let previous_star =
-        dungeons::episode_star_in_transaction(&mut tx, player_id, episode_id).await?;
-    if previous_star < star {
-        dungeons::update_dungeon_progress_in_transaction(
-            &mut tx,
-            player_id,
-            episode.chapter_id,
-            episode.id,
-            star,
-        )
-        .await?;
-        let first_pass = previous_star == 0;
-        let completion = crate::dungeon::completion_rewards(
-            episode,
-            first_pass,
-            previous_star,
-            star,
-            i32::from(first_pass),
-        );
-        reward::RewardManager::new(player_id)
-            .apply_dungeon_in_transaction(&mut tx, completion.rewards)
-            .await?;
-        open_infos::reconcile_progression_in_transaction(&mut tx, player_id).await?;
-    }
-    for story_id in [episode.before_story, episode.after_story]
-        .into_iter()
-        .filter(|id| *id > 0)
-    {
-        stories::finish_story_in_transaction(&mut tx, player_id, story_id).await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
 async fn apply_guide_world_progress(
     db: &SqlitePool,
     player_id: i64,
     guide_id: i32,
-) -> Result<i32, AppError> {
+) -> Result<(i32, TutorialSkip), AppError> {
     let tables = config::configs::get();
     let steps = tables
         .guide_step
@@ -173,19 +126,23 @@ async fn apply_guide_world_progress(
     }) {
         stories::finish_story(db, player_id, story_id).await?;
     }
+    let mut completion = TutorialSkip::default();
     for episode_id in steps
         .iter()
         .flat_map(|step| action_ids(&step.action, GuideActionKind::EnterEpisode))
     {
-        complete_skipped_episode(db, player_id, episode_id).await?;
+        let episode = crate::dungeon::complete_episode(db, player_id, episode_id).await?;
+        completion.rewards.extend(episode.rewards);
+        completion.material_changes.extend(episode.material_changes);
     }
 
-    steps
+    let step_id = steps
         .into_iter()
         .filter(|step| step.key_step != 0)
         .max_by_key(|step| step.step_id)
         .map(|step| step.step_id)
-        .ok_or(AppError::InvalidRequest)
+        .ok_or(AppError::InvalidRequest)?;
+    Ok((step_id, completion))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,7 +163,7 @@ impl GuideManager {
         })
     }
 
-    pub async fn skip_initial_tutorial(&self, db: &SqlitePool) -> Result<(), AppError> {
+    pub async fn skip_initial_tutorial(&self, db: &SqlitePool) -> Result<TutorialSkip, AppError> {
         let tables = config::configs::get();
         let guide = tables
             .guide
@@ -216,9 +173,10 @@ impl GuideManager {
         let initial_complete = guides::get_guide_progress(db, self.player_id, guide.id)
             .await?
             .is_some_and(|progress| progress.step_id == -1);
-        let completion_step = apply_guide_world_progress(db, self.player_id, guide.id).await?;
+        let (completion_step, mut skipped) =
+            apply_guide_world_progress(db, self.player_id, guide.id).await?;
         if !initial_complete {
-            self.finish(db, guide.id, completion_step).await?;
+            skipped.extend(self.finish(db, guide.id, completion_step).await?);
         }
 
         let tutorial_episodes = tables
@@ -240,16 +198,20 @@ impl GuideManager {
                 && episode_condition(&candidate.invalid).is_some()
         }) {
             let progress = guides::get_guide_progress(db, self.player_id, prerequisite.id).await?;
-            complete_skipped_episode(
+            let episode = crate::dungeon::complete_episode(
                 db,
                 self.player_id,
                 episode_condition(&prerequisite.invalid).unwrap(),
             )
             .await?;
-            let completion_step =
+            skipped.rewards.extend(episode.rewards);
+            skipped.material_changes.extend(episode.material_changes);
+            let (completion_step, world) =
                 apply_guide_world_progress(db, self.player_id, prerequisite.id).await?;
+            skipped.rewards.extend(world.rewards);
+            skipped.material_changes.extend(world.material_changes);
             if progress.is_none_or(|progress| progress.step_id != -1) {
-                self.finish(db, prerequisite.id, completion_step).await?;
+                skipped.extend(self.finish(db, prerequisite.id, completion_step).await?);
             }
         }
 
@@ -280,7 +242,7 @@ impl GuideManager {
                 .unwrap_or(teaching.previous_step_id)
                 == teaching.previous_step_id
             {
-                crate::summon::SummonManager::new(self.player_id)
+                let summon = crate::summon::SummonManager::new(self.player_id)
                     .summon(
                         db,
                         teaching.pool_id,
@@ -289,12 +251,15 @@ impl GuideManager {
                         1,
                     )
                     .await?;
+                skipped.rewards.extend(summon.changed);
             }
-            let completion_step =
+            let (completion_step, world) =
                 apply_guide_world_progress(db, self.player_id, teaching.id).await?;
-            self.finish(db, teaching.id, completion_step).await?;
+            skipped.rewards.extend(world.rewards);
+            skipped.material_changes.extend(world.material_changes);
+            skipped.extend(self.finish(db, teaching.id, completion_step).await?);
         }
-        Ok(())
+        Ok(skipped)
     }
 
     pub async fn finish(

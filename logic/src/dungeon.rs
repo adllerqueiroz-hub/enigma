@@ -1,4 +1,326 @@
-use crate::reward::{self, RewardSet};
+use crate::{
+    error::AppError,
+    reward::{self, AppliedRewards, RewardManager, RewardSet},
+};
+use database::{
+    db::game::{dungeons, open_infos, stories},
+    models::game::dungeons::UserDungeon,
+};
+use sonettobuf::OpenInfo;
+use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::collections::BTreeMap;
+
+#[derive(Default)]
+pub struct DungeonUnlock {
+    pub changed: bool,
+    pub episodes: Vec<EpisodeCompletion>,
+    pub trails: TrailCompletion,
+}
+
+#[derive(Default)]
+pub struct TrailCompletion {
+    pub finished_element_ids: Vec<i32>,
+    pub reward_points: BTreeMap<i32, i32>,
+    pub rewards: AppliedRewards,
+    pub material_changes: BTreeMap<i32, Vec<(u32, u32, i32)>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DungeonManager {
+    player_id: i64,
+}
+
+impl DungeonManager {
+    pub fn new(player_id: i64) -> Self {
+        Self { player_id }
+    }
+
+    pub async fn unlock_stage(
+        self,
+        db: &SqlitePool,
+        episode_id: i32,
+    ) -> Result<DungeonUnlock, AppError> {
+        config::configs::get()
+            .episode
+            .get(episode_id)
+            .ok_or(AppError::InvalidRequest)?;
+        self.unlock(db, [episode_id]).await
+    }
+
+    pub async fn unlock_chapter(
+        self,
+        db: &SqlitePool,
+        chapter_id: i32,
+    ) -> Result<DungeonUnlock, AppError> {
+        let tables = config::configs::get();
+        tables
+            .chapter
+            .get(chapter_id)
+            .ok_or(AppError::InvalidRequest)?;
+        let targets = tables
+            .episode
+            .iter()
+            .filter(|episode| episode.chapter_id == chapter_id)
+            .map(|episode| episode.id)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Err(AppError::InvalidRequest);
+        }
+        self.unlock(db, targets).await
+    }
+
+    async fn unlock(
+        self,
+        db: &SqlitePool,
+        targets: impl IntoIterator<Item = i32>,
+    ) -> Result<DungeonUnlock, AppError> {
+        let targets = targets.into_iter().collect::<Vec<_>>();
+        let prerequisites = dungeons::prerequisite_episode_ids(targets.iter().copied())?;
+        let episodes = config::configs::get()
+            .tutorial_episodes()
+            .map(|episode| episode.id)
+            .chain(prerequisites)
+            .collect();
+        self.complete(db, episodes, targets).await
+    }
+
+    async fn complete(
+        self,
+        db: &SqlitePool,
+        episodes: Vec<i32>,
+        targets: Vec<i32>,
+    ) -> Result<DungeonUnlock, AppError> {
+        let mut tx = db.begin().await?;
+        let mut completed = Vec::new();
+        let mut finished_element_ids = Vec::new();
+        let mut reward_points = BTreeMap::new();
+        let mut trail_reward_set = RewardSet::default();
+        let mut trail_material_changes = BTreeMap::new();
+        for episode_id in episodes {
+            complete_episode_trails_in_transaction(
+                &mut tx,
+                self.player_id,
+                episode_id,
+                &mut finished_element_ids,
+                &mut reward_points,
+                &mut trail_reward_set,
+                &mut trail_material_changes,
+            )
+            .await?;
+            let completion =
+                complete_episode_in_transaction(&mut tx, self.player_id, episode_id).await?;
+            if completion.changed {
+                completed.push(completion);
+            }
+        }
+        for episode_id in targets {
+            complete_episode_trails_in_transaction(
+                &mut tx,
+                self.player_id,
+                episode_id,
+                &mut finished_element_ids,
+                &mut reward_points,
+                &mut trail_reward_set,
+                &mut trail_material_changes,
+            )
+            .await?;
+        }
+        let rewards = RewardManager::new(self.player_id)
+            .apply_in_transaction(&mut tx, db, trail_reward_set)
+            .await?;
+        tx.commit().await?;
+        Ok(DungeonUnlock {
+            changed: !completed.is_empty() || !finished_element_ids.is_empty(),
+            episodes: completed,
+            trails: TrailCompletion {
+                finished_element_ids,
+                reward_points,
+                rewards,
+                material_changes: trail_material_changes,
+            },
+        })
+    }
+}
+
+async fn complete_episode_trails_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    player_id: i64,
+    episode_id: i32,
+    finished_element_ids: &mut Vec<i32>,
+    reward_points: &mut BTreeMap<i32, i32>,
+    rewards: &mut RewardSet,
+    material_changes: &mut BTreeMap<i32, Vec<(u32, u32, i32)>>,
+) -> Result<(), AppError> {
+    let tables = config::configs::get();
+    let episode = tables
+        .episode
+        .get(episode_id)
+        .ok_or(AppError::InvalidRequest)?;
+    for element_id in episode
+        .element_list
+        .split('#')
+        .filter_map(|id| id.parse::<i32>().ok())
+    {
+        if !dungeons::finish_element_in_transaction(tx, player_id, element_id).await? {
+            continue;
+        }
+        let element = tables
+            .chapter_map_element
+            .get(element_id)
+            .ok_or(AppError::InvalidRequest)?;
+        let chapter_id = tables
+            .chapter_map
+            .get(element.map_id)
+            .ok_or(AppError::InvalidRequest)?
+            .chapter_id;
+        finished_element_ids.push(element_id);
+        let element_rewards = reward::parse(&element.reward);
+        material_changes
+            .entry(chapter_id)
+            .or_default()
+            .extend(element_rewards.material_changes());
+        rewards.extend(element_rewards);
+        if element.reward_point > 0 {
+            // DungeonMapModel stores every Trail point total in its chapter-0 bucket.
+            let reward_point_chapter_id = 0;
+            reward_points.insert(
+                reward_point_chapter_id,
+                dungeons::add_reward_points_in_transaction(
+                    tx,
+                    player_id,
+                    reward_point_chapter_id,
+                    element.reward_point,
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(())
+}
+
+pub struct EpisodeCompletion {
+    pub chapter_id: i32,
+    pub changed: bool,
+    pub dungeon: Option<UserDungeon>,
+    pub finished_story_ids: Vec<i32>,
+    pub open_infos: Vec<OpenInfo>,
+    pub rewards: AppliedRewards,
+    pub material_changes: Vec<(u32, u32, i32)>,
+}
+
+pub(crate) async fn complete_episode(
+    db: &SqlitePool,
+    player_id: i64,
+    episode_id: i32,
+) -> Result<EpisodeCompletion, AppError> {
+    let mut tx = db.begin().await?;
+    let completion = complete_episode_in_transaction(&mut tx, player_id, episode_id).await?;
+    tx.commit().await?;
+    Ok(completion)
+}
+
+async fn complete_episode_in_transaction(
+    tx: &mut Transaction<'_, Sqlite>,
+    player_id: i64,
+    episode_id: i32,
+) -> Result<EpisodeCompletion, AppError> {
+    let episode = config::configs::get()
+        .episode
+        .get(episode_id)
+        .ok_or(AppError::InvalidRequest)?;
+    let star = configured_clear_star(episode);
+    let previous_star = dungeons::episode_star_in_transaction(tx, player_id, episode_id).await?;
+    let repair_star =
+        dungeons::claim_reward_repair_in_transaction(tx, player_id, episode_id).await?;
+    let mut rewards = AppliedRewards::default();
+    let mut material_changes = Vec::new();
+    let mut dungeon = None;
+    let mut finished_story_ids = Vec::new();
+    let mut changed_open_infos = Vec::new();
+    let mut changed = repair_star.is_some() || previous_star < star;
+    if let Some(repair_star) = repair_star {
+        let repaired_star = repair_star.max(star);
+        if previous_star < repaired_star {
+            dungeon = Some(
+                dungeons::update_dungeon_progress_in_transaction(
+                    tx,
+                    player_id,
+                    episode.chapter_id,
+                    episode.id,
+                    repaired_star,
+                )
+                .await?
+                .0,
+            );
+        }
+        let completion = completion_rewards(episode, true, 0, repaired_star, 1);
+        material_changes = completion.rewards.material_changes();
+        rewards = RewardManager::new(player_id)
+            .apply_dungeon_in_transaction(tx, completion.rewards)
+            .await?;
+    } else if previous_star < star {
+        dungeon = Some(
+            dungeons::update_dungeon_progress_in_transaction(
+                tx,
+                player_id,
+                episode.chapter_id,
+                episode.id,
+                star,
+            )
+            .await?
+            .0,
+        );
+        let first_pass = previous_star == 0;
+        let completion = completion_rewards(
+            episode,
+            first_pass,
+            previous_star,
+            star,
+            i32::from(first_pass),
+        );
+        material_changes = completion.rewards.material_changes();
+        rewards = RewardManager::new(player_id)
+            .apply_dungeon_in_transaction(tx, completion.rewards)
+            .await?;
+    }
+    if dungeon.is_some() || rewards.player_info_changed {
+        changed_open_infos =
+            open_infos::reconcile_progression_in_transaction(tx, player_id).await?;
+    }
+    for story_id in [episode.before_story, episode.after_story]
+        .into_iter()
+        .filter(|id| *id > 0)
+    {
+        if stories::finish_story_in_transaction(tx, player_id, story_id).await? {
+            changed = true;
+            finished_story_ids.push(story_id);
+        }
+    }
+    Ok(EpisodeCompletion {
+        chapter_id: episode.chapter_id,
+        changed,
+        dungeon,
+        finished_story_ids,
+        open_infos: changed_open_infos,
+        rewards,
+        material_changes,
+    })
+}
+
+fn configured_clear_star(episode: &config::episode::Episode) -> i32 {
+    let advanced = config::configs::get()
+        .battle
+        .get(episode.battle_id)
+        .map(|battle| {
+            battle
+                .advanced_condition
+                .split('|')
+                .filter(|condition| !condition.is_empty())
+                .count() as i32
+        })
+        .unwrap_or_default();
+    1 + advanced
+}
 
 pub struct CompletionRewards {
     pub rewards: RewardSet,
