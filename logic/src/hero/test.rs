@@ -217,6 +217,68 @@ async fn rank_and_insight_skin_commit_together() {
 }
 
 #[tokio::test]
+async fn skin_can_be_owned_before_its_hero_but_not_equipped() {
+    let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
+    let _ = config::init(&data_dir);
+    let game_data = config::configs::get();
+    let skin = game_data
+        .skin
+        .iter()
+        .find(|skin| {
+            skin.character_id > 0
+                && game_data.character.get(skin.character_id).is_some()
+                && game_data
+                    .default_character_skin(skin.character_id)
+                    .is_some_and(|default| default.id != skin.id)
+        })
+        .unwrap();
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    database::run_migrations(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, created_at, updated_at)
+         VALUES (20, 'skin-before-hero', 0, 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let heroes = UserHeroModel::new(20, pool.clone());
+    let applied = crate::reward::RewardManager::new(20)
+        .apply(
+            &pool,
+            crate::reward::RewardSet {
+                skins: vec![(skin.id, 1)],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.skin_gains.len(), 1);
+    assert_eq!(applied.skin_gains[0].skin_id, skin.id);
+    assert!(applied.skin_gains[0].first_gain);
+    assert!(heroes.has_skin(skin.id).await.unwrap());
+    assert!(
+        HeroManager::new(20)
+            .use_skin(&pool, skin.character_id, skin.id)
+            .await
+            .is_err()
+    );
+
+    heroes.create_hero(skin.character_id).await.unwrap();
+    let hero = heroes.get(skin.character_id).await.unwrap();
+    assert_ne!(hero.record.skin, skin.id);
+    assert!(hero.skin_list.iter().any(|owned| owned.skin == skin.id));
+    HeroManager::new(20)
+        .use_skin(&pool, skin.character_id, skin.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        heroes.get(skin.character_id).await.unwrap().record.skin,
+        skin.id
+    );
+}
+
+#[tokio::test]
 async fn profile_rejects_foreign_skins_and_equipment() {
     let data_dir = format!("{}/../data/excel2json", env!("CARGO_MANIFEST_DIR"));
     let _ = config::init(&data_dir);

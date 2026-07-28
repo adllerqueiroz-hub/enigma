@@ -562,12 +562,6 @@ impl UserHeroModel {
             .skin
             .get(skin_id)
             .ok_or_else(|| anyhow!("skin {} not found", skin_id))?;
-        let hero_uid: i64 =
-            sqlx::query_scalar("SELECT uid FROM heroes WHERE user_id = ? AND hero_id = ?")
-                .bind(self.user_id)
-                .bind(skin.character_id)
-                .fetch_one(&mut **tx)
-                .await?;
         let inserted =
             sqlx::query("INSERT OR IGNORE INTO hero_all_skins (user_id, skin_id) VALUES (?, ?)")
                 .bind(self.user_id)
@@ -578,18 +572,58 @@ impl UserHeroModel {
             return Ok(false);
         }
 
-        sqlx::query("INSERT INTO hero_skins (hero_uid, skin, expire_sec) VALUES (?, ?, 0)")
+        let hero_uid: Option<i64> =
+            sqlx::query_scalar("SELECT uid FROM heroes WHERE user_id = ? AND hero_id = ?")
+                .bind(self.user_id)
+                .bind(skin.character_id)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if let Some(hero_uid) = hero_uid {
+            sqlx::query(
+                "INSERT OR IGNORE INTO hero_skins (hero_uid, skin, expire_sec) VALUES (?, ?, 0)",
+            )
             .bind(hero_uid)
             .bind(skin_id)
             .execute(&mut **tx)
             .await?;
-        sqlx::query("UPDATE heroes SET skin = ? WHERE uid = ? AND user_id = ?")
-            .bind(skin_id)
-            .bind(hero_uid)
-            .bind(self.user_id)
-            .execute(&mut **tx)
-            .await?;
+            sqlx::query("UPDATE heroes SET skin = ? WHERE uid = ? AND user_id = ?")
+                .bind(skin_id)
+                .bind(hero_uid)
+                .bind(self.user_id)
+                .execute(&mut **tx)
+                .await?;
+        }
         Ok(true)
+    }
+
+    async fn attach_owned_skins_in_transaction(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        hero_uid: i64,
+        hero_id: i32,
+    ) -> Result<()> {
+        let owned_skins: Vec<i32> =
+            sqlx::query_scalar("SELECT skin_id FROM hero_all_skins WHERE user_id = ?")
+                .bind(self.user_id)
+                .fetch_all(&mut **tx)
+                .await?;
+
+        for skin_id in owned_skins.into_iter().filter(|skin_id| {
+            config::configs::get()
+                .skin
+                .get(*skin_id)
+                .is_some_and(|skin| skin.character_id == hero_id)
+        }) {
+            sqlx::query(
+                "INSERT OR IGNORE INTO hero_skins (hero_uid, skin, expire_sec) VALUES (?, ?, 0)",
+            )
+            .bind(hero_uid)
+            .bind(skin_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+
+        Ok(())
     }
 
     pub async fn get_birthdays(&self) -> Result<Vec<(i32, i32)>> {
@@ -1173,6 +1207,9 @@ impl HeroModel<HeroData> for UserHeroModel {
         .bind("") // Hero-specific extras are selected through their RPCs.
         .execute(&mut **tx)
         .await?;
+
+        self.attach_owned_skins_in_transaction(tx, hero_uid, hero_id)
+            .await?;
 
         for voice in game_data
             .character_voices(hero_id)
