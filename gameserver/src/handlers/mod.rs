@@ -42,4 +42,5 @@ pub mod tower;
 pub mod tower_compose;
 pub mod trade;
 pub mod turnback;
+pub mod udimo;
 pub mod user;

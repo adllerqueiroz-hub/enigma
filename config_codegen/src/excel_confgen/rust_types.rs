@@ -11,6 +11,10 @@ pub fn resolve_field_type(
     let mut ty = if let Some(set) = types.get(name) {
         if set.len() == 1 {
             set.iter().next().unwrap().clone()
+        } else if set.iter().all(|ty| ty == "i32" || ty == "f32") {
+            "f32".to_string()
+        } else if set.iter().all(|ty| ty == "Vec<i32>" || ty == "Vec<f32>") {
+            "Vec<f32>".to_string()
         } else {
             "Option<serde_json::Value>".to_string()
         }

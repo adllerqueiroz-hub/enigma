@@ -4,7 +4,7 @@ use crate::handlers::{
     equipment, exploration, fairyland, friends, guide, hero, hero_group, inventory, mail,
     manufacture, misc, odyssey, party, player_card, player_info, player_misc, property, red_dot,
     room, rouge, sign_in, stat, store, story, summon, survival, system, talent, tasks, tower,
-    tower_compose, trade, turnback, user,
+    tower_compose, trade, turnback, udimo, user,
 };
 use crate::net::context::ConnectionContext;
 use crate::net::packet::ClientPacket;
@@ -94,6 +94,7 @@ pub async fn dispatch_command(ctx: &mut ConnectionContext, req: Vec<u8>) -> Resu
         CmdId::GetClothInfoCmd => player_misc::on_get_cloth_info,
         CmdId::GetFairylandInfoCmd => fairyland::on_get_info,
         CmdId::GetCritterBookInfoCmd => critter::on_get_book_info,
+        CmdId::GetUdimoInfoCmd => udimo::on_get_info,
         CmdId::MarkCritterBookNewReadCmd => critter::on_mark_book_read,
         CmdId::SetCritterBookBackgroundCmd => critter::on_set_book_background,
         CmdId::SetCritterBookUseSpecialSkinCmd => critter::on_set_book_special_skin,

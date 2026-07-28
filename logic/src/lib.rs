@@ -37,5 +37,6 @@ pub mod task;
 pub mod time;
 pub mod turnback;
 pub mod types;
+pub mod udimo;
 
 pub use error::LogicError;

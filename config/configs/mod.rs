@@ -388,6 +388,9 @@ pub mod turnback_drop;
 pub mod turnback_sign_in;
 pub mod turnback_task;
 pub mod turnback_task_bonus;
+pub mod udimo;
+pub mod udimo_background;
+pub mod udimo_decoration;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -780,6 +783,9 @@ pub struct GameDB {
     pub turnback_sign_in: turnback_sign_in::TurnbackSignInTable,
     pub turnback_task: turnback_task::TurnbackTaskTable,
     pub turnback_task_bonus: turnback_task_bonus::TurnbackTaskBonusTable,
+    pub udimo: udimo::UdimoTable,
+    pub udimo_background: udimo_background::UdimoBackgroundTable,
+    pub udimo_decoration: udimo_decoration::UdimoDecorationTable,
 }
 
 impl GameDB {
@@ -1948,6 +1954,15 @@ impl GameDB {
         let turnback_task_bonus = turnback_task_bonus::TurnbackTaskBonusTable::load(
             &format!("{}/turnback_task_bonus.json", data_dir)
         ).map_err(|e| anyhow::anyhow!("Failed to load turnback_task_bonus.json: {}", e))?;
+        let udimo = udimo::UdimoTable::load(
+            &format!("{}/udimo.json", data_dir)
+        ).map_err(|e| anyhow::anyhow!("Failed to load udimo.json: {}", e))?;
+        let udimo_background = udimo_background::UdimoBackgroundTable::load(
+            &format!("{}/udimo_background.json", data_dir)
+        ).map_err(|e| anyhow::anyhow!("Failed to load udimo_background.json: {}", e))?;
+        let udimo_decoration = udimo_decoration::UdimoDecorationTable::load(
+            &format!("{}/udimo_decoration.json", data_dir)
+        ).map_err(|e| anyhow::anyhow!("Failed to load udimo_decoration.json: {}", e))?;
 
         Ok(Self {
             achievement,
@@ -2338,6 +2353,9 @@ impl GameDB {
             turnback_sign_in,
             turnback_task,
             turnback_task_bonus,
+            udimo,
+            udimo_background,
+            udimo_decoration,
         })
     }
 

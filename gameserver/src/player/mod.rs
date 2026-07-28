@@ -10,7 +10,7 @@ use logic::{
     preferences::PreferenceManager, profile::ProfileManager, red_dot::RedDotManager,
     room::RoomManager, rouge::RougeManager, sign_in::SignInManager, social::SocialManager,
     stat::StatManager, store::StoreManager, story::StoryManager, summon::SummonManager,
-    task::TaskManager, turnback::TurnbackManager,
+    task::TaskManager, turnback::TurnbackManager, udimo::UdimoManager,
 };
 pub use state::PlayerState;
 
@@ -45,6 +45,7 @@ pub struct Player {
     pub summon: SummonManager,
     pub tasks: TaskManager,
     pub turnback: TurnbackManager,
+    pub udimo: UdimoManager,
 }
 
 impl Player {
@@ -79,6 +80,7 @@ impl Player {
             summon: SummonManager::new(id),
             tasks: TaskManager::new(id),
             turnback: TurnbackManager::new(id),
+            udimo: UdimoManager::new(id),
         }
     }
 }

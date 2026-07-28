@@ -291,6 +291,15 @@ impl UserHeroModel {
         HeroModel::<HeroData>::get_all(self).await
     }
 
+    pub async fn get_hero_create_times(&self) -> Result<Vec<(i32, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT hero_id, create_time FROM heroes WHERE user_id = ? ORDER BY hero_id",
+        )
+        .bind(self.user_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn has_hero(&self, hero_id: i32) -> Result<bool> {
         HeroModel::<HeroData>::has_hero(self, hero_id).await
     }
