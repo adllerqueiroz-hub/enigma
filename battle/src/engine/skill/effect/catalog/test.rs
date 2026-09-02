@@ -47,7 +47,7 @@ fn fight_catalog_includes_assist_boss_active_skills() {
 }
 
 #[test]
-fn fight_catalog_keeps_enemy_condition_route_gaps_after_behavior_support() {
+fn fight_catalog_compiles_enigmas_round_start_field_condition() {
     init_config();
     let fight = Fight {
         defender: Some(sonettobuf::FightTeam {
@@ -64,11 +64,11 @@ fn fight_catalog_keeps_enemy_condition_route_gaps_after_behavior_support() {
     let effect = catalog.get(31430149).unwrap();
 
     assert!(catalog.issues(31430149).is_empty());
-    assert!(effect.slots.iter().any(|slot| slot.compiled_route.is_err()));
+    assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
 }
 
 #[test]
-fn dynamic_current_battle_roots_keep_their_condition_route_gaps() {
+fn dynamic_current_battle_roots_compile_enigmas_field_condition() {
     init_config();
     let mut catalog = SkillEffectCatalog::default();
 
@@ -81,10 +81,112 @@ fn dynamic_current_battle_roots_keep_their_condition_route_gaps() {
             .unwrap()
             .slots
             .iter()
-            .any(|slot| slot.compiled_route.is_err())
+            .all(|slot| slot.compiled_route.is_ok())
     );
     assert!(catalog.get(31430149).is_some());
     assert!(catalog.get(31270148).is_none());
+}
+
+#[test]
+fn eagle_exit_cleanup_compiles_its_exact_buff_family_dispel() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [30060141], []);
+    let effect = catalog.get(30060141).unwrap();
+
+    assert!(catalog.issues(30060141).is_empty());
+    let cleanup = effect
+        .slots
+        .iter()
+        .filter(|slot| {
+            slot.behavior.spec.key.opcode == 90002
+                && slot.behavior.spec.key.type_name == "Disperse2"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(cleanup.len(), 2);
+    assert!(cleanup.iter().all(|slot| slot.compiled_route.is_ok()));
+    assert!(cleanup.iter().all(|slot| slot.target.code == 202));
+}
+
+#[test]
+fn exact_enemy_damage_routes_compile_without_runtime_gaps() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [260341, 750331], [5112]);
+
+    for skill_id in [260341, 750331] {
+        let effect = catalog.get(skill_id).unwrap();
+        assert!(catalog.issues(skill_id).is_empty());
+        assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
+        assert!(
+            effect
+                .slots
+                .iter()
+                .all(|slot| crate::engine::skill::behavior::has_destination(&slot.behavior))
+        );
+    }
+}
+
+#[test]
+fn joe_missing_hp_rate_condition_compiles_as_an_active_modifier() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [30940171], []);
+    let effect = catalog.get(30940171).unwrap();
+
+    assert!(catalog.issues(30940171).is_empty());
+    assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
+    assert_eq!(effect.slots[0].conditions[0].opcode, 623203);
+    assert!(crate::engine::skill::behavior::has_destination(
+        &effect.slots[0].behavior
+    ));
+}
+
+#[test]
+fn missing_hp_attack_and_defense_modifiers_compile_as_separate_exact_lanes() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [342440140], []);
+    let effect = catalog.get(342440140).unwrap();
+
+    assert!(catalog.issues(342440140).is_empty());
+    assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
+    assert_eq!(effect.slots[0].conditions[0].opcode, 623204);
+    assert_eq!(effect.slots[1].conditions[0].opcode, 623203);
+    assert!(
+        effect
+            .slots
+            .iter()
+            .all(|slot| crate::engine::skill::behavior::has_destination(&slot.behavior))
+    );
+}
+
+#[test]
+fn anjo_negative_status_rate_condition_compiles_as_an_active_modifier() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [31000441], []);
+    let effect = catalog.get(31000441).unwrap();
+
+    assert!(catalog.issues(31000441).is_empty());
+    assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
+    assert_eq!(effect.slots[1].conditions[0].opcode, 539203);
+    assert!(crate::engine::skill::behavior::has_destination(
+        &effect.slots[1].behavior
+    ));
+}
+
+#[test]
+fn kaalaa_baunaa_planet_removal_compiles_through_its_exact_behavior() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [307001333], []);
+    let effect = catalog.get(307001333).unwrap();
+
+    assert!(catalog.issues(307001333).is_empty());
+    assert!(effect.slots.iter().all(|slot| slot.compiled_route.is_ok()));
+    assert_eq!(effect.slots[1].behavior.spec.key.opcode, 60252);
+    assert_eq!(
+        effect.slots[1].behavior.spec.kind,
+        crate::engine::skill::behavior::classify::BehaviorKind::DisperseForce3
+    );
+    assert!(crate::engine::skill::behavior::has_destination(
+        &effect.slots[1].behavior
+    ));
 }
 
 #[test]
@@ -113,12 +215,30 @@ fn fight_catalog_follows_heat_scale_cast_skills() {
 }
 
 #[test]
+fn fight_catalog_follows_master_halo_linked_passives() {
+    init_config();
+
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [31260143], []);
+
+    assert!(catalog.get(31260183).is_some());
+}
+
+#[test]
 fn fight_catalog_follows_paper_circle_continuation_skill() {
     init_config();
 
     let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [], [31050131]);
 
     assert!(catalog.get(31050151).is_some());
+}
+
+#[test]
+fn fight_catalog_follows_count_continue_channel_skill() {
+    init_config();
+
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [], [31000133]);
+
+    assert!(catalog.get(31000193).is_some());
 }
 
 #[test]
@@ -135,6 +255,15 @@ fn fight_catalog_follows_buff_act_linked_skill_aliases() {
 }
 
 #[test]
+fn fight_catalog_follows_shield_counter_skill() {
+    init_config();
+
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [], [30940181]);
+
+    assert!(catalog.get(30940171).is_some());
+}
+
+#[test]
 fn scoped_catalog_follows_configured_reinforced_skill_effects() {
     init_config();
 
@@ -142,6 +271,57 @@ fn scoped_catalog_follows_configured_reinforced_skill_effects() {
 
     assert_eq!(catalog.reinforced_skill(30860143), Some(30861143));
     assert!(catalog.get(30861143).is_some());
+    assert!(catalog.issues(30861143).is_empty());
+}
+
+#[test]
+fn scoped_catalog_follows_buff_replacement_passive_links() {
+    init_config();
+
+    let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [], [116385669]);
+
+    assert!(catalog.reachable_buffs.contains(&116385670));
+    assert!(catalog.get(116385685).is_some());
+}
+
+#[test]
+fn scoped_catalog_follows_buff_owned_charge_linked_skill() {
+    init_config();
+    for (buff_id, skill_id) in [
+        (115370004, 30110131),
+        (31460141, 31460181),
+        (31460142, 31460182),
+        (31460143, 31460183),
+    ] {
+        let catalog = SkillEffectCatalog::from_roots(config::configs::get(), [], [buff_id]);
+        assert!(catalog.reachable_buffs.contains(&buff_id));
+        assert!(catalog.get(skill_id).is_some());
+    }
+}
+
+#[test]
+fn scoped_catalog_follows_configured_hero_upgrade_outcomes() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(sonettobuf::FightTeam {
+            entitys: vec![sonettobuf::FightEntityInfo {
+                passive_skill: vec![30860151],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let catalog = SkillEffectCatalog::from_fight(config::configs::get(), &fight);
+
+    assert!(catalog.get(30861111).is_some());
+    assert!(catalog.get(30861121).is_some());
+    assert!(catalog.get(30861131).is_some());
+    assert!(catalog.get(30861171).is_some());
+    assert!(catalog.issues(30861171).is_empty());
+    assert!(catalog.compiled_subscription_lanes(30861171).is_ok());
+    assert!(catalog.reachable_buffs.contains(&30860173));
 }
 
 #[test]
@@ -159,16 +339,16 @@ fn parses_target_code_and_raw_args() {
 }
 
 #[test]
-fn unsupported_behavior_issue_keeps_exact_config_identity() {
+fn deck_top_rank_behavior_keeps_exact_config_identity() {
     init_config();
 
-    let issue = rule_issue(config::configs::get(), 99, 3, "60116#1#1#1");
+    let behavior = ParsedBehavior::new(60116, "CardDeckTopRankCorrect", vec![1, 1, 1]);
 
-    assert_eq!(issue.effect_id, 99);
-    assert_eq!(issue.slot, 3);
-    assert_eq!(issue.opcode, Some(60116));
-    assert_eq!(issue.type_name.as_deref(), Some("CardDeckTopRankCorrect"));
-    assert_eq!(issue.reason, RuleIssueReason::UnsupportedBehavior);
+    assert!(crate::engine::skill::behavior::is_supported(&behavior));
+    assert!(
+        crate::engine::skill::behavior::registry::find_key(60116, "CardDeckTopRankCorrect")
+            .is_some()
+    );
 }
 
 #[test]
@@ -356,6 +536,21 @@ fn from_game_db_keeps_slot_round_limits() {
 }
 
 #[test]
+fn team_entity_exit_conditions_supply_their_round_limit() {
+    init_config();
+
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+    let base = catalog.get(30865171).unwrap();
+    let upgraded = catalog.get(30865175).unwrap();
+    let euphoria = catalog.get(30865186).unwrap();
+
+    assert_eq!(base.slots[4].round_limit, 99);
+    assert_eq!(base.slots[5].round_limit, 2);
+    assert_eq!(upgraded.slots[5].round_limit, 4);
+    assert_eq!(euphoria.slots[5].round_limit, 4);
+}
+
+#[test]
 fn active_skill_filters_share_the_exact_skill_action_driver() {
     init_config();
     let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
@@ -373,6 +568,47 @@ fn active_skill_filters_share_the_exact_skill_action_driver() {
         subscription.event == crate::engine::event::kind::EventKind::SkillAction
             && subscription.definition.opcode == 16210
     }));
+}
+
+#[test]
+fn ultimate_rank_compound_keeps_its_after_hit_driver_and_buff_branches() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+    let slots = &catalog.get(30920211).unwrap().slots;
+
+    for (slot, levels, buff_id, target_code) in [
+        (&slots[2], vec![0, 1, 2, 3, 4], 31020113, 121),
+        (&slots[3], vec![0, 1, 2, 3, 4], 31020112, 123),
+        (&slots[4], vec![5], 31020119, 121),
+        (&slots[5], vec![5], 31020118, 123),
+    ] {
+        assert_eq!(slot.condition_target.code, 103);
+        assert!(slot.conditions.iter().any(|condition| {
+            condition.kind == ParsedConditionKind::TargetIdentity {
+                mode: crate::engine::skill::condition::TargetIdentityMode::ActiveSkillSourceModelId,
+                value: 3102,
+            }
+        }));
+        assert!(
+            slot.conditions.iter().any(|condition| {
+                condition.opcode == 25210 && condition.type_name == "UseExSkill"
+            })
+        );
+        assert!(slot.conditions.iter().any(|condition| {
+            condition.kind == ParsedConditionKind::ExSkillLevels(levels.clone())
+        }));
+        assert_eq!(
+            slot.compiled_subscriptions().unwrap(),
+            vec![SubscriptionKey::at_phase(
+                crate::engine::event::kind::EventKind::SkillAction,
+                crate::engine::skill::rule::DefinitionKey::new(25210, "UseExSkill"),
+                Some(crate::engine::skill::action::SkillPhase::AfterHit),
+            )]
+        );
+        assert_eq!(slot.behavior.spec.kind, BehaviorKind::AddBuff);
+        assert_eq!(slot.behavior.arg(0), Some(buff_id));
+        assert_eq!(slot.target.code, target_code);
+    }
 }
 
 #[test]
@@ -436,6 +672,125 @@ fn master_halo_immediate_gate_uses_the_skill_extra_type_driver() {
             Some(crate::engine::skill::action::SkillPhase::Immediate),
         )]
     );
+}
+
+#[test]
+fn ritual_dance_threshold_compiles_the_captured_immediate_route() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+
+    assert_eq!(
+        catalog.condition_kind(
+            31100531,
+            crate::engine::skill::rule::DefinitionKey::new(
+                537201,
+                "HasTypeIdBuffTotalCountMoreThan",
+            ),
+        ),
+        Some(&ParsedConditionKind::BuffTypeCount {
+            type_ids: vec![31100201],
+            compare: crate::engine::skill::condition::ConditionCompare::GreaterThanOrEqual,
+            threshold: 4,
+        })
+    );
+    assert!(
+        catalog
+            .compiled_subscriptions(31100531)
+            .unwrap()
+            .iter()
+            .any(|subscription| {
+                subscription.definition
+                    == crate::engine::skill::rule::DefinitionKey::new(
+                        537201,
+                        "HasTypeIdBuffTotalCountMoreThan",
+                    )
+                    && subscription.event == crate::engine::event::kind::EventKind::SkillAction
+                    && subscription.phase
+                        == Some(crate::engine::skill::action::SkillPhase::Immediate)
+            })
+    );
+}
+
+#[test]
+fn liang_yue_poison_scaling_compiles_as_an_active_modifier() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+
+    assert_eq!(
+        catalog.condition_kind(
+            31100563,
+            crate::engine::skill::rule::DefinitionKey::new(669203, "PerBuffGroupCount"),
+        ),
+        Some(&ParsedConditionKind::PerBuffGroupCount { group_id: 7 })
+    );
+    assert!(catalog.issues(31100563).iter().all(|issue| {
+        issue.opcode != Some(669203) || issue.type_name.as_deref() != Some("PerBuffGroupCount")
+    }));
+}
+
+#[test]
+fn crucible_arsenal_compiles_each_bullet_type_modifier() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+    let effect = catalog.get(310201621).unwrap();
+    let key = crate::engine::skill::rule::DefinitionKey::new(651203, "PerBullet");
+
+    for (slot, attr_id) in effect.slots[1..4].iter().zip([205, 214, 211]) {
+        assert_eq!(slot.condition_target.code, 103);
+        assert_eq!(slot.target.code, 103);
+        assert_eq!(slot.behavior.spec.kind, BehaviorKind::AttrFix);
+        assert_eq!(slot.behavior.args, vec![attr_id, 50]);
+        assert!(slot.conditions.iter().any(|condition| {
+            condition.opcode == key.opcode
+                && condition.type_name == key.type_name
+                && condition.kind
+                    == ParsedConditionKind::PerBullet {
+                        divisor: 1,
+                        max_count: 8,
+                    }
+        }));
+        assert!(slot.compiled_route.is_ok());
+    }
+    assert!(catalog.issues(310201621).iter().all(|issue| {
+        issue.opcode != Some(651203) || issue.type_name.as_deref() != Some("PerBullet")
+    }));
+}
+
+#[test]
+fn nights_command_compiles_each_bullet_type_grant_after_hit() {
+    init_config();
+    let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
+    let key = crate::engine::skill::rule::DefinitionKey::new(651210, "PerBullet");
+
+    for skill_id in 30920141..=30920149 {
+        let slot = &catalog.get(skill_id).unwrap().slots[1];
+        assert_eq!(slot.condition_target.code, 103);
+        assert_eq!(slot.target.code, 103);
+        assert_eq!(slot.behavior.spec.kind, BehaviorKind::AddBuff);
+        assert!(slot.conditions.iter().any(|condition| {
+            condition.opcode == key.opcode
+                && condition.type_name == key.type_name
+                && condition.kind
+                    == ParsedConditionKind::PerBullet {
+                        divisor: 1,
+                        max_count: 99,
+                    }
+        }));
+        assert!(
+            slot.compiled_subscriptions()
+                .unwrap()
+                .iter()
+                .any(|subscription| {
+                    subscription.definition == key
+                        && subscription.event == crate::engine::event::kind::EventKind::SkillAction
+                        && subscription.phase
+                            == Some(crate::engine::skill::action::SkillPhase::AfterHit)
+                })
+        );
+        assert!(catalog.issues(skill_id).iter().all(|issue| {
+            issue.opcode != Some(651210) || issue.type_name.as_deref() != Some("PerBullet")
+        }));
+    }
 }
 
 #[test]

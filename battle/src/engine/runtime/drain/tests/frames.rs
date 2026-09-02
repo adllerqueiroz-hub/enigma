@@ -1,4 +1,79 @@
 use super::*;
+use crate::engine::runtime::record::FrameItem;
+
+#[test]
+fn tracked_damage_records_the_indicator_immediately_after_hp() {
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    managers.indicator.track_damage(
+        crate::engine::manager::indicator::IndicatorId::BossRushScore,
+        -1,
+    );
+    let result = run_command_group(
+        &mut managers,
+        &pool,
+        &SkillEffectCatalog::default(),
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [RuleOp::Command(BattleCommand::Hp(
+            crate::engine::manager::hp::HpCommand::Damage(crate::engine::manager::hp::HpDamage {
+                origin: CommandOrigin {
+                    domain: RuleDomain::Behavior,
+                    key: DefinitionKey::new(1, "TestDamage"),
+                },
+                source_uid: 10,
+                target_uid: -1,
+                amount: 75,
+                config_effect: 1,
+                effect_kind: crate::engine::manager::hp::DamageEffectKind::Normal,
+                assassinate: false,
+                ignore_riposte: false,
+                hurt: crate::engine::manager::hp::HurtInfoData {
+                    from_uid: 10,
+                    is_crit: false,
+                    career_restraint: false,
+                    reduce_hp: 75,
+                    effect_id: 1,
+                    skill_id: 1,
+                    damage_from: crate::engine::manager::hp::HurtDamageFromType::Skill,
+                    buff_act_id: 0,
+                    buff_uid: 0,
+                    hurt_effect_type: 0,
+                    display_amount: None,
+                },
+            }),
+        ))],
+    )
+    .unwrap();
+
+    let items = &result.frames[0].items;
+    assert!(matches!(
+        (&items[0], &items[1]),
+        (FrameItem::Change(hp), FrameItem::Change(indicator))
+            if matches!(hp.as_ref(), BattleChange::Hp(_))
+                && matches!(indicator.as_ref(), BattleChange::EffectMarker(marker)
+                    if marker.target_uid == 4 && marker.effect_num == 75)
+    ));
+}
 
 #[test]
 fn parent_owned_root_output_stays_in_the_root_frame() {
@@ -7,6 +82,140 @@ fn parent_owned_root_output_stays_in_the_root_frame() {
     assert_eq!(output_frame_path(OutputOwner::Parent, &[3]), vec![3]);
     assert_eq!(output_frame_path(OutputOwner::Parent, &[3, 4]), vec![3]);
     assert_eq!(output_frame_path(OutputOwner::Skill, &[3, 4]), vec![3, 4]);
+}
+
+#[test]
+fn bloodtithe_spend_keeps_atomic_changes_in_their_semantic_frames() {
+    use crate::engine::{
+        manager::{
+            buff::BuffGrant,
+            gauge::{GaugeCommand, GaugeKey, GaugeKind, GaugeOperation, GaugeOwner},
+        },
+        mechanic::bloodtithe::spend::SpendCommand,
+        runtime::record::FrameItem,
+        skill::rule::SetupStage,
+    };
+
+    crate::test_support::init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(20),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let origin = CommandOrigin {
+        domain: RuleDomain::Behavior,
+        key: DefinitionKey::new(60210, "ConsumeBloodAddBuff"),
+    };
+    let gauge_key = GaugeKey {
+        kind: GaugeKind::Bloodtithe,
+        owner: GaugeOwner::Team(1),
+    };
+    managers
+        .gauge
+        .execute_command(GaugeCommand::new(
+            origin,
+            gauge_key,
+            GaugeOperation::Enable { max: Some(10) },
+        ))
+        .unwrap();
+    managers
+        .gauge
+        .execute_command(GaugeCommand::new(
+            origin,
+            gauge_key,
+            GaugeOperation::ChangeValue { delta: 1 },
+        ))
+        .unwrap();
+
+    let trigger = FrameTrigger::Setup {
+        stage: SetupStage::RoundStart,
+        priority: 3,
+    };
+    let mut frames = Vec::new();
+    let parent_path = push_root(&mut frames, FrameOwner::SetupMechanic, trigger.clone());
+    let skill_path = push_child(
+        &mut frames,
+        &parent_path,
+        FrameOwner::Skill {
+            source_uid: 10,
+            skill_id: 100,
+            card_index: -1,
+            target_uid: Some(20),
+        },
+        trigger.clone(),
+    );
+    let mut queue = VecDeque::from([QueuedOp {
+        op: RuleOp::Command(BattleCommand::BloodtitheSpend(SpendCommand {
+            gauge: GaugeCommand::new(origin, gauge_key, GaugeOperation::ChangeValue { delta: -1 }),
+            buff: BuffCommand::Grant(BuffGrant {
+                origin,
+                source_uid: 10,
+                target_uid: 20,
+                buff_id: 31260151,
+                amount: Some(1),
+                occurrences: 1,
+                child_uid_reservations: 0,
+            }),
+        })),
+        trigger: SkillOpTrigger::Setup {
+            stage: SetupStage::RoundStart,
+            priority: 3,
+        },
+        skill_execution: None,
+        frame_path: Some(skill_path.clone()),
+        parent_path: None,
+        frame_group: None,
+        independent_parent_group: None,
+        frame_owner: None,
+        subscriber_owner_uid: None,
+    }]);
+
+    let mut catalog = SkillEffectCatalog::default();
+    catalog.insert(ParsedSkillEffect {
+        skill_id: 31260181,
+        slots: Vec::new(),
+    });
+    let result = drain_queue_with_frames(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        &mut queue,
+        frames,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        result.events.as_slice(),
+        [BattleEvent::GaugeChanged(_), BattleEvent::BuffAdded(_)]
+    ));
+    assert_eq!(result.frames[0].trigger, trigger);
+    let FrameItem::Child(skill) = &result.frames[0].items[0] else {
+        panic!("expected the pre-existing skill frame")
+    };
+    assert_eq!(skill.trigger, trigger);
+    assert!(result.frames[0].items.iter().any(
+        |item| matches!(item, FrameItem::Change(change) if matches!(change.as_ref(), BattleChange::Gauge(_)))
+    ));
+    assert!(skill.items.iter().any(
+        |item| matches!(item, FrameItem::Change(change) if matches!(change.as_ref(), BattleChange::Buff(_)))
+    ));
 }
 
 #[test]
@@ -35,13 +244,14 @@ fn one_skill_event_groups_all_of_its_subscribed_rules() {
         &TargetPool::default(),
         dispatcher::DispatchBatch {
             skills: vec![
-                (subscriber(0, DefinitionKey::new(1, "First")), op()),
-                (subscriber(1, DefinitionKey::new(2, "Second")), op()),
+                (subscriber(0, DefinitionKey::new(208, "None")), op()),
+                (subscriber(1, DefinitionKey::new(210, "None")), op()),
             ],
             ..Default::default()
         },
         &BattleEvent::Kind(EventKind::SkillAction),
         Some(&[0]),
+        None,
         None,
         None,
         None,
@@ -54,6 +264,59 @@ fn one_skill_event_groups_all_of_its_subscribed_rules() {
     assert!(Rc::ptr_eq(
         first.frame_group.as_ref().unwrap(),
         second.frame_group.as_ref().unwrap(),
+    ));
+}
+
+#[test]
+fn queued_reaction_rejects_an_unregistered_exact_condition() {
+    use crate::engine::{
+        event::{kind::EventKind, subscription::SubscriptionKey},
+        skill::{
+            rule::route::RouteError,
+            subscriber::{SkillSubscriber, SubscriberError},
+        },
+    };
+
+    let result = queued_reactions(
+        &TargetPool::default(),
+        dispatcher::DispatchBatch {
+            skills: vec![(
+                SkillSubscriber {
+                    owner_uid: 10,
+                    skill_id: 100,
+                    slot_index: Some(0),
+                    key: SubscriptionKey::new(
+                        EventKind::SkillAction,
+                        DefinitionKey::new(999_999, "Unknown"),
+                    ),
+                },
+                RuleOp::Skill(
+                    SkillRequest {
+                        source_uid: 10,
+                        skill_id: 100,
+                    }
+                    .into(),
+                ),
+            )],
+            ..Default::default()
+        },
+        &BattleEvent::Kind(EventKind::SkillAction),
+        Some(&[0]),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(DrainError::Subscriber(SubscriberError::UncompiledRoute {
+            skill_id: 100,
+            route: RouteError::UnregisteredExactKey {
+                opcode: 999_999,
+                ..
+            },
+        }))
     ));
 }
 
@@ -404,7 +667,11 @@ fn active_skill_commits_immediate_ops_and_keeps_cast_state() {
     )));
     assert!(result.outcomes.iter().any(|outcome| matches!(
         outcome,
-        RuleOutcome::Hp(hp) if hp.hp.is_some_and(|change| change.delta == -150)
+        RuleOutcome::Hp(execution)
+            if execution
+                .changes
+                .hp
+                .is_some_and(|change| change.delta == -150)
     )));
 }
 
@@ -458,5 +725,212 @@ fn after_hit_settles_the_acting_owners_take_stage_buff() {
         outcome,
         RuleOutcome::Buff(changes)
             if changes.change.removed.iter().any(|removed| removed.buff.uid == Some(2))
+    )));
+}
+
+#[test]
+fn settled_player_death_removes_owned_cards_in_the_same_frame() {
+    let entity = |uid, team_type| FightEntityInfo {
+        uid: Some(uid),
+        team_type: Some(team_type),
+        current_hp: Some(1),
+        attr: Some(HeroAttribute {
+            hp: Some(1),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![entity(10, 1)],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![entity(-1, 2)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let card = |skill_id| CardInfo {
+        uid: Some(10),
+        skill_id: Some(skill_id),
+        ..Default::default()
+    };
+    managers
+        .execute_card(CardCommand::Setup(CardSetup {
+            hand: vec![card(100)],
+            draw_pile: vec![card(200)],
+            deck_num: 2,
+        }))
+        .unwrap();
+    managers.card.add_temp_card_for(10, 300, None, 0, 1);
+    managers
+        .execute_card(CardCommand::SetTeamCards(
+            crate::engine::manager::card::CardSetTeamCards {
+                origin: CommandOrigin {
+                    domain: RuleDomain::Lifecycle,
+                    key: DefinitionKey::new(0, "TestTeamCards"),
+                },
+                cards: vec![card(400)],
+            },
+        ))
+        .unwrap();
+    managers
+        .execute_card(CardCommand::SetAiQueue(
+            crate::engine::manager::card::CardSetAiQueue {
+                origin: CommandOrigin {
+                    domain: RuleDomain::Lifecycle,
+                    key: DefinitionKey::new(0, "TestAiQueue"),
+                },
+                cards: vec![CardInfo {
+                    uid: Some(-1),
+                    skill_id: Some(500),
+                    ..Default::default()
+                }],
+            },
+        ))
+        .unwrap();
+
+    let mut catalog = SkillEffectCatalog::default();
+    catalog.insert(ParsedSkillEffect {
+        skill_id: 100,
+        slots: vec![
+            SkillEffectSlot::new(
+                ParsedBehavior::from_spec(
+                    BehaviorSpec::new(30005, "LostLife"),
+                    vec![1, AttrId::CurrentHp as i32, 1000],
+                    Vec::new(),
+                ),
+                TargetRequest::self_only(),
+            ),
+            SkillEffectSlot::new(
+                ParsedBehavior::from_spec(
+                    BehaviorSpec::new(30014, "OriginDamage"),
+                    vec![0, AttrId::CurrentHp as i32, 0],
+                    Vec::new(),
+                ),
+                TargetRequest::self_only(),
+            ),
+        ],
+    });
+    let mut invocation: SkillInvocation = SkillRequest {
+        source_uid: -1,
+        skill_id: 100,
+    }
+    .into();
+    invocation.target = SkillTarget::Explicit(10);
+    let result = run(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [RuleOp::Skill(invocation)],
+    )
+    .unwrap();
+
+    assert!(managers.card.hand().is_empty());
+    assert!(managers.card.draw_pile().is_empty());
+    assert!(managers.card.generated().is_empty());
+    assert!(managers.card.team_cards().is_empty());
+    assert_eq!(managers.card.ai_queue()[0].uid, Some(-1));
+
+    let steps = crate::engine::packet::timeline::project(&result.frames).unwrap();
+    let effects = &steps[0].act_effect;
+    let death = effects
+        .iter()
+        .position(|effect| {
+            effect.effect_type == Some(sonettobuf::effect_type_enum::EffectType::Dead as i32)
+                && effect.target_id == Some(10)
+        })
+        .unwrap();
+    let removal = effects[death + 1].fight_step.as_ref().unwrap();
+    assert_eq!(
+        effects[death + 1].effect_type,
+        Some(sonettobuf::effect_type_enum::EffectType::Fightstep as i32)
+    );
+    assert_eq!(
+        removal
+            .act_effect
+            .iter()
+            .map(|effect| (effect.effect_type, effect.target_id, effect.team_type))
+            .collect::<Vec<_>>(),
+        vec![(
+            Some(sonettobuf::effect_type_enum::EffectType::Removeentitycards as i32),
+            Some(10),
+            Some(1),
+        )]
+    );
+}
+
+#[test]
+fn ally_action_settles_the_acting_owners_take_stage_buff() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(100),
+                    buffs: vec![BuffInfo {
+                        buff_id: Some(30940191),
+                        uid: Some(2),
+                        from_uid: Some(10),
+                        duration: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(20),
+                    current_hp: Some(100),
+                    buffs: vec![BuffInfo {
+                        buff_id: Some(30940191),
+                        uid: Some(3),
+                        from_uid: Some(20),
+                        duration: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let mut catalog = SkillEffectCatalog::default();
+    catalog.insert(ParsedSkillEffect {
+        skill_id: 100,
+        slots: Vec::new(),
+    });
+
+    let result = run(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        [RuleOp::Skill(SkillInvocation {
+            mode: crate::engine::skill::action::SkillExecutionMode::Active,
+            ..SkillRequest {
+                source_uid: 10,
+                skill_id: 100,
+            }
+            .into()
+        })],
+    )
+    .unwrap();
+
+    assert!(managers.buff.snapshot(10, 2).is_none());
+    assert!(managers.buff.snapshot(20, 3).is_some());
+    assert!(result.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        RuleOutcome::Buff(changes)
+            if changes.origin.key.opcode == 212
+                && changes.change.removed.iter().any(|removed| removed.buff.uid == Some(2))
     )));
 }

@@ -1,7 +1,7 @@
 use sonettobuf::BuffInfo;
 
 use crate::engine::{
-    event::payload::{BattleEvent, BuffChangeEvent},
+    event::payload::{BattleEvent, BuffChangeEvent, BuffRejectedEvent, BuffStateChangeEvent},
     skill::rule::DefinitionKey,
 };
 
@@ -87,6 +87,7 @@ pub struct BuffRemoveResult {
     pub config_effect: i32,
     pub delete_reason: Option<BuffDeleteReason>,
     pub depleted: bool,
+    pub fixed_max_hp_delta: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,13 +157,17 @@ impl BuffReplaceResult {
                         .first()
                         .and_then(|info| info.act_id)
                         .unwrap_or_default(),
-                    act_value: removed
-                        .buff
-                        .act_info
-                        .first()
-                        .and_then(|info| info.param.first())
-                        .copied()
-                        .unwrap_or_default(),
+                    act_value: if removed.fixed_max_hp_delta != 0 {
+                        removed.fixed_max_hp_delta
+                    } else {
+                        removed
+                            .buff
+                            .act_info
+                            .first()
+                            .and_then(|info| info.param.first())
+                            .copied()
+                            .unwrap_or_default()
+                    },
                 })
             })
             .collect::<Vec<_>>();
@@ -194,6 +199,30 @@ impl BuffReplaceResult {
                     .unwrap_or_default(),
             }))
         }));
+        events.extend(self.refreshed.iter().filter_map(|refresh| {
+            let before_ex_info = refresh.before.ex_info.unwrap_or_default();
+            let after_ex_info = refresh.after.ex_info.unwrap_or_default();
+            (before_ex_info != after_ex_info).then_some(BattleEvent::BuffStateChanged(
+                BuffStateChangeEvent {
+                    source_uid: refresh.after.from_uid.unwrap_or_default(),
+                    target_uid: refresh.target_uid,
+                    buff_uid: refresh.after.uid.unwrap_or_default(),
+                    buff_id: refresh.after.buff_id.unwrap_or_default(),
+                    before_ex_info,
+                    after_ex_info,
+                },
+            ))
+        }));
+        if let Some(rejected) = &self.rejected {
+            events.push(BattleEvent::BuffRejected(BuffRejectedEvent {
+                source_uid: rejected.buff.from_uid.unwrap_or_default(),
+                target_uid: rejected.target_uid,
+                buff_uid: rejected.buff.uid.unwrap_or_default(),
+                buff_id: rejected.buff.buff_id.unwrap_or_default(),
+                type_id: rejected.type_id,
+                blocker_buff_id: rejected.blocker_buff_id,
+            }));
+        }
         events
     }
 }
@@ -202,5 +231,6 @@ impl BuffReplaceResult {
 pub struct BuffRejectResult {
     pub target_uid: i64,
     pub blocker_buff_id: i32,
+    pub type_id: i32,
     pub buff: BuffInfo,
 }

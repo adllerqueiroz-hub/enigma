@@ -23,12 +23,22 @@ pub struct CardSetup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporaryCardKind {
+    GenericSkill,
+    ConfiguredSkill,
+    ConfiguredSkill3,
+    HeroSkill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CardAddTemporary {
     pub origin: CommandOrigin,
     pub target_uid: i64,
     pub skill_id: i32,
+    pub hero_id: Option<i32>,
     pub reserve_id: i64,
     pub team_type: i32,
+    pub kind: TemporaryCardKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,11 +161,24 @@ pub struct CardDraw {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CardOpeningDraw {
+    pub origin: CommandOrigin,
+    pub cards: Vec<CardInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CardRefillOne {
     pub origin: CommandOrigin,
     pub card: CardInfo,
     pub consume_draw_pile: bool,
     pub consume_deck: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardSetUltimateAvailability {
+    pub origin: CommandOrigin,
+    pub card: CardInfo,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +205,8 @@ pub struct CardRemoveAiOwner {
     pub owner_uid: i64,
     pub team_type: i32,
 }
+
+pub type CardRemoveOwner = CardRemoveAiOwner;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardReplaceOwnerSkills {
@@ -256,6 +281,14 @@ pub struct HandCardRankUp {
     pub hand_index: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardDeckRankUpRange {
+    pub origin: CommandOrigin,
+    pub from: usize,
+    pub to: usize,
+    pub rank_delta: i32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardQueueUse {
     pub origin: CommandOrigin,
@@ -323,7 +356,13 @@ pub enum CardCommand {
     },
     Play(CardPlay),
     Draw(CardDraw),
+    DealOpening(CardOpeningDraw),
+    RecycleDrawPile {
+        origin: CommandOrigin,
+        team_type: i32,
+    },
     RefillOne(CardRefillOne),
+    SetUltimateAvailability(CardSetUltimateAvailability),
     RefreshAiQueue(CardRefreshAiQueue),
     SetAiQueue(CardSetAiQueue),
     SetTeamCards(CardSetTeamCards),
@@ -358,9 +397,11 @@ pub enum CardCommand {
         changes: Vec<QueuedCardRankChange>,
     },
     RankUpHand(HandCardRankUp),
+    RankUpDeckRange(CardDeckRankUpRange),
     CommitActionQueue {
         team: i32,
         emitter_uid: i64,
+        device_actions: usize,
     },
     ResolvePlayedRanks {
         origin: CommandOrigin,
@@ -377,6 +418,12 @@ pub enum CardCommand {
     QueueUseCard(CardQueueUse),
 }
 
+impl CardCommand {
+    pub const fn remove_owner(command: CardRemoveOwner) -> Self {
+        Self::RemoveAiOwner(command)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardChangeKind {
     Setup,
@@ -386,7 +433,10 @@ pub enum CardChangeKind {
     GeneratedAdded,
     UniversalAdded,
     RedealtKeepRanks,
+    GenericTemporaryAdded,
     TemporaryAdded,
+    ConfiguredSkill3Added,
+    HeroTemporaryAdded,
     CrystalAdded,
     PrecastAdded,
     TemporaryChanged,
@@ -394,7 +444,10 @@ pub enum CardChangeKind {
     TemporaryExpired,
     Played,
     Drawn,
+    OpeningDrawn,
+    DrawPileRecycled,
     Refilled,
+    UltimateAvailabilityChanged,
     AiQueueRefreshed,
     AiQueueSet,
     TeamCardsSet,
@@ -410,6 +463,7 @@ pub enum CardChangeKind {
     QueuedRankChanged,
     AroundRanksChanged,
     HandRankChanged,
+    DeckTopRanksChanged,
     ActionQueueCommitted,
     PlayedRanksResolved,
     CastChannelRecorded,
@@ -642,12 +696,18 @@ pub(super) fn execute(
             if add.skill_id <= 0 || add.team_type == 0 {
                 return Err(CardCommandError::InvalidCommand);
             }
-            let card = manager.add_temp_card_for(
-                add.target_uid,
-                add.skill_id,
-                add.reserve_id,
-                add.team_type,
-            );
+            let card = match add.kind {
+                TemporaryCardKind::GenericSkill => manager.add_temp_card(add.skill_id),
+                TemporaryCardKind::ConfiguredSkill
+                | TemporaryCardKind::ConfiguredSkill3
+                | TemporaryCardKind::HeroSkill => manager.add_temp_card_for(
+                    add.target_uid,
+                    add.skill_id,
+                    add.hero_id,
+                    add.reserve_id,
+                    add.team_type,
+                ),
+            };
             operation = Some(CardChange::SpCardAdd {
                 target_uid: add.target_uid,
                 skill_id: add.skill_id,
@@ -656,7 +716,12 @@ pub(super) fn execute(
             });
             (
                 Some(add.origin),
-                CardChangeKind::TemporaryAdded,
+                match add.kind {
+                    TemporaryCardKind::GenericSkill => CardChangeKind::GenericTemporaryAdded,
+                    TemporaryCardKind::ConfiguredSkill => CardChangeKind::TemporaryAdded,
+                    TemporaryCardKind::ConfiguredSkill3 => CardChangeKind::ConfiguredSkill3Added,
+                    TemporaryCardKind::HeroSkill => CardChangeKind::HeroTemporaryAdded,
+                },
                 Some(card),
                 None,
                 Vec::new(),
@@ -843,6 +908,39 @@ pub(super) fn execute(
                 Vec::new(),
             )
         }
+        CardCommand::DealOpening(draw) => {
+            if draw.cards.is_empty() || !manager.deal_opening_cards(&draw.cards) {
+                return Err(CardCommandError::InvalidCommand);
+            }
+            (
+                Some(draw.origin),
+                CardChangeKind::OpeningDrawn,
+                None,
+                None,
+                draw.cards,
+                Vec::new(),
+            )
+        }
+        CardCommand::RecycleDrawPile { origin, team_type } => {
+            if team_type == 0 {
+                return Err(CardCommandError::InvalidCommand);
+            }
+            let deck_num = manager
+                .recycle_draw_pile()
+                .ok_or(CardCommandError::InvalidCommand)?;
+            operation = Some(CardChange::DeckCount {
+                deck_num,
+                team_type,
+            });
+            (
+                Some(origin),
+                CardChangeKind::DrawPileRecycled,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        }
         CardCommand::RefillOne(refill) => {
             if refill.card.skill_id.unwrap_or_default() <= 0 {
                 return Err(CardCommandError::InvalidCommand);
@@ -863,6 +961,22 @@ pub(super) fn execute(
                 None,
                 vec![refill.card],
                 owners,
+            )
+        }
+        CardCommand::SetUltimateAvailability(set) => {
+            if set.card.uid.unwrap_or_default() == 0
+                || set.card.skill_id.unwrap_or_default() <= 0
+                || !manager.set_ultimate_availability(set.card.clone(), set.available)
+            {
+                return Err(CardCommandError::InvalidCommand);
+            }
+            (
+                Some(set.origin),
+                CardChangeKind::UltimateAvailabilityChanged,
+                set.available.then_some(set.card),
+                None,
+                Vec::new(),
+                Vec::new(),
             )
         }
         CardCommand::RefreshAiQueue(refresh) => {
@@ -904,7 +1018,7 @@ pub(super) fn execute(
             if remove.owner_uid == 0 || remove.team_type == 0 {
                 return Err(CardCommandError::InvalidCommand);
             }
-            let owners = manager.remove_ai_owner_cards(remove.owner_uid);
+            let owners = manager.remove_owner_cards(remove.owner_uid, remove.team_type);
             if owners.is_some() {
                 owner_removal = Some(CardOwnerRemoval {
                     owner_uid: remove.owner_uid,
@@ -1121,8 +1235,28 @@ pub(super) fn execute(
                 Vec::new(),
             )
         }
-        CardCommand::CommitActionQueue { team, emitter_uid } => {
-            let cards = manager
+        CardCommand::RankUpDeckRange(change) => {
+            rank_results.extend(
+                manager
+                    .rank_up_deck_range(change.from, change.to, change.rank_delta)?
+                    .into_iter()
+                    .map(|change| CardRankResult::Changed(Box::new(change))),
+            );
+            (
+                Some(change.origin),
+                CardChangeKind::DeckTopRanksChanged,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            )
+        }
+        CardCommand::CommitActionQueue {
+            team,
+            emitter_uid,
+            device_actions,
+        } => {
+            let mut cards = manager
                 .played()
                 .iter()
                 .map(|played| {
@@ -1131,6 +1265,19 @@ pub(super) fn execute(
                     card
                 })
                 .collect::<Vec<_>>();
+            cards.extend((0..device_actions).map(|_| CardInfo {
+                uid: Some(0),
+                skill_id: Some(0),
+                temp_card: Some(false),
+                card_type: Some(sonettobuf::card_info::CardType::Device as i32),
+                hero_id: Some(0),
+                status: Some(0),
+                target_uid: Some(0),
+                energy: Some(0),
+                area_red_or_blue: Some(0),
+                heat_id: Some(0),
+                ..Default::default()
+            }));
             if team == 0 || cards.is_empty() {
                 return Err(CardCommandError::InvalidCommand);
             }

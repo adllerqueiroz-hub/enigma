@@ -3,6 +3,7 @@ pub mod battle_rule;
 pub mod buff;
 pub mod card;
 pub mod conduit;
+pub mod contract;
 pub mod emanation;
 pub mod emitter;
 pub mod entity;
@@ -11,10 +12,12 @@ pub mod ex_point;
 pub mod field;
 pub mod gauge;
 pub mod hp;
+pub mod indicator;
 pub mod injury;
 pub mod revive;
 pub mod shield;
 pub mod summon;
+pub mod toughness;
 pub mod upgrade;
 pub mod wave;
 
@@ -23,6 +26,8 @@ use sonettobuf::{
     HeroSpAttribute,
 };
 use std::collections::HashMap;
+
+use crate::catalog::MonsterResistances;
 
 use self::{
     attribute::AttributeManager,
@@ -47,6 +52,7 @@ use self::{
 /// mutation and returns semantic changes for events and packet projection.
 #[derive(Debug, Clone, Default)]
 pub struct BattleManagers {
+    catalog_data: Option<crate::catalog::BattleCatalog>,
     fight_version: i32,
     terminal_outcome: Option<crate::engine::round::outcome::BattleOutcome>,
     pub attribute: AttributeManager,
@@ -54,10 +60,12 @@ pub struct BattleManagers {
     pub(crate) buff: BuffManager,
     pub card: CardManager,
     pub conduit: ConduitManager,
+    pub contract: contract::ContractManager,
     pub emitter: EmitterManager,
     pub entity: entity::EntityManager,
     pub emanation: EmanationManager,
     pub hp: HpManager,
+    pub indicator: indicator::IndicatorManager,
     pub injury: injury::InjuryManager,
     pub ex_point: ExPointManager,
     pub eureka: EurekaManager,
@@ -66,6 +74,7 @@ pub struct BattleManagers {
     pub field: field::FieldManager,
     pub upgrade: UpgradeManager,
     pub summon: SummonManager,
+    pub toughness: toughness::ToughnessManager,
     pub wave: wave::WaveManager,
     rule_fires: HashMap<(i64, i32, usize, crate::engine::skill::rule::DefinitionKey), i32>,
     round_rule_fires: HashMap<(i64, i32, usize, crate::engine::skill::rule::DefinitionKey), i32>,
@@ -79,7 +88,72 @@ struct HpPlan {
     team_shared_buff: Option<BuffPlan>,
 }
 
+pub(crate) fn persistent_attribute_delta(
+    buffs: &BuffManager,
+    hp: &HpManager,
+    uid: i64,
+    attr_id: crate::engine::entity::attr::AttrId,
+) -> i32 {
+    use crate::engine::skill::buff_act::{self, registry::BuffActKind};
+
+    let active_features = buffs.active_features(hp);
+    buffs.attribute_delta(uid, attr_id)
+        + active_features
+            .iter()
+            .filter_map(|feature| {
+                if feature.owner_uid != uid {
+                    return None;
+                }
+                let scope = if buff_act::is_kind(feature, BuffActKind::AddAttrByOtherBuffLayer) {
+                    buff_act::add_attr_by_other_buff_layer::LayerScope::SourceOrOwner
+                } else if buff_act::is_kind(feature, BuffActKind::AddAttrBySourceBuffLayer) {
+                    buff_act::add_attr_by_other_buff_layer::LayerScope::Source
+                } else {
+                    return None;
+                };
+                Some(buff_act::add_attr_by_other_buff_layer::attribute_delta(
+                    feature, attr_id, buffs, scope,
+                ))
+            })
+            .sum::<i32>()
+        + active_features
+            .iter()
+            .filter(|feature| {
+                feature.owner_uid == uid
+                    && buff_act::is_kind(feature, BuffActKind::FixAttrBySubBuffLayer)
+            })
+            .map(|feature| {
+                buff_act::fix_attr_by_sub_buff_layer::attribute_delta(feature, attr_id, buffs)
+            })
+            .sum::<i32>()
+        + active_features
+            .iter()
+            .filter(|feature| feature.owner_uid == uid)
+            .map(|feature| buff_act::dynamic_attribute_delta(feature, attr_id, buffs, hp, true))
+            .sum::<i32>()
+        + buff_act::raspberry::attribute_delta(buffs, uid, attr_id)
+}
+
+pub(crate) struct HpExecution {
+    pub changes: hp::HpChanges,
+    pub indicator: Option<crate::engine::skill::rule::output::EffectMarker>,
+}
+
 impl BattleManagers {
+    pub(crate) fn try_catalog(&self) -> Option<crate::catalog::BattleCatalog> {
+        self.catalog_data
+    }
+
+    pub(crate) fn catalog(&self) -> crate::catalog::BattleCatalog {
+        if let Some(catalog) = self.try_catalog() {
+            return catalog;
+        }
+        #[cfg(test)]
+        return crate::catalog::BattleCatalog::new(crate::test_support::game_data());
+        #[cfg(not(test))]
+        panic!("battle managers were not constructed with a catalog")
+    }
+
     pub(crate) fn fight_version(&self) -> i32 {
         self.fight_version
     }
@@ -112,13 +186,28 @@ impl BattleManagers {
             AttrId::Hp => hp.max,
             AttrId::Attack | AttrId::RealityDef | AttrId::MentalDef | AttrId::CriticalTechnique => {
                 let base = i64::from(self.attribute.base(uid, attr_id));
+                let flat = i64::from(self.buff.fixed_attribute_delta(uid, attr_id));
                 let delta = i64::from(
-                    self.attribute.get(uid, attr_id) + self.buff.attribute_delta(uid, attr_id),
+                    self.attribute.get(uid, attr_id)
+                        + self.persistent_attribute_delta(uid, attr_id),
                 );
-                (base + base * delta / 1000).clamp(0, i64::from(i32::MAX)) as i32
+                (base + flat + base * delta / 1000).clamp(0, i64::from(i32::MAX)) as i32
             }
-            _ => self.attribute.get(uid, attr_id) + self.buff.attribute_delta(uid, attr_id),
+            AttrId::CriticalDmg => {
+                self.attribute.get(uid, attr_id)
+                    + self.persistent_attribute_delta(uid, attr_id)
+                    + self.buff.fixed_attribute_delta(uid, attr_id)
+            }
+            _ => self.attribute.get(uid, attr_id) + self.persistent_attribute_delta(uid, attr_id),
         }
+    }
+
+    pub(crate) fn persistent_attribute_delta(
+        &self,
+        uid: i64,
+        attr_id: crate::engine::entity::attr::AttrId,
+    ) -> i32 {
+        persistent_attribute_delta(&self.buff, &self.hp, uid, attr_id)
     }
 
     /// Commits one buff transaction and returns its ordered semantic changes.
@@ -198,8 +287,28 @@ impl BattleManagers {
                 + dynamic;
             base * rate.max(0) / 1000 + flat
         });
-        self.buff
-            .plan_with_source_attack(&self.hp, command, source_attack)
+        let mut plan = self
+            .buff
+            .plan_with_source_attack(&self.hp, command, source_attack)?;
+        if let Some((source_uid, features)) = plan.source_relative_attribute_features() {
+            let act_info = features
+                .into_iter()
+                .filter_map(|(act_id, raw_attr, rate, cap)| {
+                    let attr = crate::engine::entity::attr::AttrId::from_raw(raw_attr)?;
+                    let value = (i64::from(self.origin_attribute(source_uid, attr))
+                        * i64::from(rate)
+                        / 1000)
+                        .clamp(0, i64::from(cap)) as i32;
+                    Some(sonettobuf::BuffActInfo {
+                        act_id: Some(act_id),
+                        param: Vec::new(),
+                        str_param: Some(format!("{raw_attr}#{value}")),
+                    })
+                })
+                .collect();
+            plan.initialize_added_act_info_without_markers(act_info);
+        }
+        Ok(plan)
     }
 
     pub(crate) fn commit_buff(&mut self, plan: BuffPlan) -> BuffChanges {
@@ -219,7 +328,7 @@ impl BattleManagers {
                             return None;
                         }
                         let buff_id = removed.buff.buff_id?;
-                        (buff::configured_status(buff_id)? == buff::BuffStatus::Shield)
+                        (self.catalog().buff_status(buff_id)? == buff::BuffStatus::Shield)
                             .then_some(removed.buff.uid)
                             .flatten()
                     })
@@ -241,6 +350,17 @@ impl BattleManagers {
         command: hp::HpCommand,
     ) -> Result<hp::HpChanges, hp::HpCommandError> {
         self.execute_hp_with_target_count(command, 1)
+    }
+
+    pub(crate) fn execute_rule_hp(
+        &mut self,
+        command: hp::HpCommand,
+    ) -> Result<HpExecution, hp::HpCommandError> {
+        let changes = self.execute_hp(command)?;
+        let indicator = self
+            .indicator
+            .record_damage(changes.target_uid, changes.applied_damage());
+        Ok(HpExecution { changes, indicator })
     }
 
     pub(crate) fn execute_hp_batch(
@@ -277,6 +397,25 @@ impl BattleManagers {
             plans.push(plan);
         }
         Ok(plans.into_iter().map(|plan| self.commit_hp(plan)).collect())
+    }
+
+    pub(crate) fn execute_rule_hp_batch(
+        &mut self,
+        commands: Vec<hp::HpCommand>,
+    ) -> Result<Vec<HpExecution>, hp::HpCommandError> {
+        let changes = self.execute_hp_batch(commands)?;
+        Ok(changes
+            .into_iter()
+            .map(|change| {
+                let indicator = self
+                    .indicator
+                    .record_damage(change.target_uid, change.applied_damage());
+                HpExecution {
+                    changes: change,
+                    indicator,
+                }
+            })
+            .collect())
     }
 
     fn execute_hp_with_target_count(
@@ -336,10 +475,24 @@ impl BattleManagers {
     }
 
     fn commit_hp(&mut self, plan: HpPlan) -> hp::HpChanges {
+        let toughness = match plan.command {
+            hp::HpCommand::Damage(damage)
+                if damage.effect_kind != hp::DamageEffectKind::Avoided
+                    && damage.hurt.damage_from == hp::HurtDamageFromType::Skill =>
+            {
+                self.toughness.reduce(
+                    damage.target_uid,
+                    damage.amount,
+                    damage.hurt.career_restraint || self.conduit.is_running(damage.source_uid),
+                )
+            }
+            _ => None,
+        };
         let team_shared_shield_removed = plan.team_shared_buff.map(|plan| self.commit_buff(plan));
         let mut changes = self
             .hp
             .commit_validated_command_with_team_shared(plan.command, plan.team_shared);
+        changes.toughness = toughness;
         changes.team_shared_shield_removed = team_shared_shield_removed;
         if let Some(shield) = &mut changes.shield_absorbed {
             shield.buff_uid = self
@@ -441,8 +594,21 @@ impl BattleManagers {
         &mut self,
         command: ex_point::ExPointCommand,
     ) -> Result<ex_point::ExPointChanges, ex_point::ExPointCommandError> {
+        let command = match command {
+            ex_point::ExPointCommand::Change(mut change) if change.delta > 0 => {
+                if let Some(source_uid) = self.buff.buff_act_source_uid(
+                    change.target_uid,
+                    crate::engine::skill::buff_act::registry::BuffActKind::TransferAddExPoint,
+                ) {
+                    change.target_uid = source_uid;
+                }
+                ex_point::ExPointCommand::Change(change)
+            }
+            command => command,
+        };
         let target_uid = match command {
             ex_point::ExPointCommand::Change(change) => Some(change.target_uid),
+            ex_point::ExPointCommand::Spend(change) => Some(change.target_uid),
             ex_point::ExPointCommand::Set(change) => Some(change.target_uid),
             ex_point::ExPointCommand::ChangeMax(_)
             | ex_point::ExPointCommand::ConfigureSynchronization(_)
@@ -454,7 +620,14 @@ impl BattleManagers {
                 crate::engine::skill::buff_act::registry::BuffActKind::ExPointCantAdd,
             )
         });
-        self.ex_point.execute_command(command, gain_allowed)
+        let reduction_allowed = target_uid.is_none_or(|target_uid| {
+            !self.buff.has_buff_act_kind(
+                target_uid,
+                crate::engine::skill::buff_act::registry::BuffActKind::MoxieReductionImmunity,
+            )
+        });
+        self.ex_point
+            .execute_command(command, gain_allowed, reduction_allowed)
     }
 
     pub(crate) fn execute_eureka(
@@ -488,7 +661,8 @@ impl BattleManagers {
         &mut self,
         command: entity::EntityCommand,
     ) -> Result<entity::EntityChanges, entity::EntityCommandError> {
-        let mut changes = self.entity.execute_command(command, &self.hp)?;
+        let catalog = self.catalog();
+        let mut changes = self.entity.execute_command(catalog, command, &self.hp)?;
         if matches!(changes.operation, entity::EntityOperation::Transform { .. }) {
             changes.entity.ex_point = Some(self.ex_point.get(changes.target_uid));
             changes.entity.shield_value = Some(self.hp.shield(changes.target_uid));
@@ -527,14 +701,46 @@ impl BattleManagers {
         &mut self,
         command: emitter::EmitterCommand,
     ) -> emitter::EmitterChange {
-        self.emitter.execute_command(command)
+        let change = self.emitter.execute_command(command);
+        if !change.enabled_before && change.enabled_after {
+            self.hp.register(&emitter::activation_entity());
+        }
+        change
     }
 
     pub(crate) fn execute_card(
         &mut self,
         command: card::CardCommand,
     ) -> Result<card::CardChanges, card::CardCommandError> {
+        let skill_group_replacement = match &command {
+            card::CardCommand::ReplaceOwnerSkills(replace) => self
+                .entity
+                .snapshot(replace.owner_uid)
+                .filter(|entity| {
+                    (!replace.replacement_group1.is_empty()
+                        || !replace.replacement_group2.is_empty())
+                        && (replace.replacement_group1.is_empty()
+                            || entity.skill_group1 == replace.base_group1)
+                        && (replace.replacement_group2.is_empty()
+                            || entity.skill_group2 == replace.base_group2)
+                })
+                .map(|mut entity| {
+                    if !replace.replacement_group1.is_empty() {
+                        entity.skill_group1 = replace.replacement_group1.clone();
+                    }
+                    if !replace.replacement_group2.is_empty() {
+                        entity.skill_group2 = replace.replacement_group2.clone();
+                    }
+                    entity
+                }),
+            _ => None,
+        };
         let mut changes = self.card.execute_command(command)?;
+        if let Some(entity) = skill_group_replacement {
+            let owner_uid = entity.uid.unwrap_or_default();
+            self.entity.update(entity);
+            changes.entity = self.entity_snapshot(owner_uid);
+        }
         if changes.kind == card::CardChangeKind::HandRankChanged
             && let Some(owner_uid) = changes.rank_results.iter().find_map(|result| match result {
                 card::CardRankResult::Changed(change) => Some(change.owner_uid),
@@ -564,7 +770,7 @@ impl BattleManagers {
         &mut self,
         command: upgrade::UpgradeCommand,
     ) -> Result<upgrade::UpgradeChange, upgrade::UpgradeCommandError> {
-        self.upgrade.execute_command(command)
+        self.upgrade.execute_command(self.catalog(), command)
     }
 
     pub fn select_upgrade(
@@ -680,6 +886,12 @@ impl BattleManagers {
         if selection.replace_big_skill > 0 {
             entity.ex_skill = Some(selection.replace_big_skill);
         }
+        if !selection.replace_skill_group1.is_empty() {
+            entity.skill_group1 = selection.replace_skill_group1.clone();
+        }
+        if !selection.replace_skill_group2.is_empty() {
+            entity.skill_group2 = selection.replace_skill_group2.clone();
+        }
         self.entity.update(entity);
 
         self.execute_card(card::CardCommand::ReplaceOwnerSkills(
@@ -701,10 +913,12 @@ impl BattleManagers {
     }
 
     fn register_entity_state(&mut self, entity: &FightEntityInfo) {
+        let catalog = self.catalog();
         let team_type = entity.team_type.unwrap_or_default();
-        self.attribute.register(entity);
+        self.attribute.register_with_catalog(catalog, entity);
         self.hp.register(entity);
-        self.ex_point.register(entity);
+        self.toughness.register_configured(catalog, entity);
+        self.ex_point.register_configured(catalog, entity);
         self.eureka.register(entity);
         self.buff.register_entity(entity, team_type);
     }
@@ -728,7 +942,8 @@ impl BattleManagers {
         fight: &mut Fight,
     ) -> anyhow::Result<Option<wave::WaveAdvanced>> {
         self.sync_entities(fight);
-        let Some(roster) = self.wave.advance()? else {
+        let catalog = self.catalog();
+        let Some(roster) = self.wave.advance(catalog)? else {
             return Ok(None);
         };
         self.entity
@@ -841,22 +1056,34 @@ impl BattleManagers {
     }
 
     /// Seeds every manager from the initial fight snapshot exactly once.
-    pub fn seeded(fight: &Fight) -> Self {
+    pub fn seeded_with_catalog(catalog: crate::catalog::BattleCatalog, fight: &Fight) -> Self {
         let mut managers = Self {
+            catalog_data: Some(catalog),
             fight_version: fight.version.unwrap_or_default(),
             ..Self::default()
         };
-        managers.attribute.seed(fight);
-        managers.battle_rule = battle_rule::BattleRuleManager::seed(fight);
+        managers.attribute.seed_with_catalog(catalog, fight);
+        managers.battle_rule = battle_rule::BattleRuleManager::seed_with_catalog(catalog, fight);
         managers.hp.seed(fight);
-        managers.ex_point.seed(fight);
+        managers.toughness.seed_configured(catalog, fight);
+        managers.ex_point.seed_configured(catalog, fight);
         managers.eureka.seed(fight);
+        managers.buff.set_catalog(catalog);
         managers.buff.seed(fight);
+        managers.card.set_catalog(catalog);
         managers.card.seed(fight);
-        managers.conduit = ConduitManager::seed(fight);
-        managers.entity = entity::EntityManager::seed(fight);
-        managers.wave = wave::WaveManager::seed(fight);
+        managers.conduit = ConduitManager::configured(catalog, fight);
+        managers.entity = entity::EntityManager::configured(catalog, fight);
+        managers.wave = wave::WaveManager::seed_with_catalog(catalog, fight);
         managers
+    }
+
+    #[cfg(test)]
+    pub fn seeded(fight: &Fight) -> Self {
+        Self::seeded_with_catalog(
+            crate::catalog::BattleCatalog::new(crate::test_support::game_data()),
+            fight,
+        )
     }
 
     /// Projects manager-owned entity state into the response `Fight` snapshot.
@@ -878,7 +1105,7 @@ impl BattleManagers {
         self.eureka.sync_fight(fight);
     }
 
-    fn entity_snapshot(&self, uid: i64) -> Option<FightEntityInfo> {
+    pub(crate) fn entity_snapshot(&self, uid: i64) -> Option<FightEntityInfo> {
         let mut entity = self.entity.snapshot(uid)?;
         self.project_entity_state(&mut entity);
         self.eureka.sync_entity(uid, &mut entity);
@@ -895,7 +1122,8 @@ impl BattleManagers {
         }
         self.project_primary_attributes(entity);
         self.hp.sync_entity(entity);
-        self.ex_point.sync_entity(entity);
+        self.toughness.sync_entity(entity);
+        self.ex_point.sync_entity_configured(self.catalog(), entity);
         entity.ex_skill_point_change =
             Some(crate::engine::mechanic::card::CardMechanic.ultimate_cost_offset(self, uid));
         if let Some(progress) = self.ex_point.synchronization_progress(uid) {
@@ -944,9 +1172,21 @@ impl BattleManagers {
             .filter(|entity| entity.team_type == Some(2))
             .filter(|entity| entity.uid.is_some_and(|uid| self.hp.current(uid) > 0))
             .filter_map(|entity| {
+                let uid = entity.uid?;
+                let mut attribute = monster_sp_attribute(
+                    self.catalog().monster_resistances(entity.model_id?),
+                    fight_version,
+                );
+                attribute.play_drop_rate = Some(
+                    attribute.play_drop_rate.unwrap_or_default()
+                        + self.buff.attribute_delta(
+                            uid,
+                            crate::engine::entity::attr::AttrId::PlaymodeDmgImmunity,
+                        ),
+                );
                 Some(FightHeroSpAttributeInfo {
-                    uid: entity.uid,
-                    attribute: Some(monster_sp_attribute(entity.model_id?, fight_version)),
+                    uid: Some(uid),
+                    attribute: Some(attribute),
                 })
             })
             .collect()
@@ -961,17 +1201,11 @@ impl BattleManagers {
     }
 }
 
-fn monster_sp_attribute(model_id: i32, fight_version: i32) -> HeroSpAttribute {
-    let Some(db) = config::try_get() else {
-        return base_hero_sp_attribute(fight_version);
-    };
-    let Some(monster) = db.monster.get(model_id) else {
-        return base_hero_sp_attribute(fight_version);
-    };
-    let Some(template) = db.monster_skill_template.get(monster.skill_template) else {
-        return base_hero_sp_attribute(fight_version);
-    };
-    let Some(resistance) = db.resistances_attribute.get(template.resistance) else {
+fn monster_sp_attribute(
+    resistance: Option<MonsterResistances>,
+    fight_version: i32,
+) -> HeroSpAttribute {
+    let Some(resistance) = resistance else {
         return base_hero_sp_attribute(fight_version);
     };
 

@@ -49,16 +49,40 @@ pub enum ParsedConditionKind {
         compare: ConditionCompare,
         threshold: i32,
     },
+    BuffIdThreshold {
+        buff_ids: Vec<i32>,
+        threshold: i32,
+    },
+    TeamBuffPresence {
+        team: i32,
+        present: bool,
+        buff_id: i32,
+    },
     BuffTypeCount {
         type_ids: Vec<i32>,
         compare: ConditionCompare,
         threshold: i32,
     },
+    AnyTargetBuffTypeCount {
+        type_ids: Vec<i32>,
+        threshold: i32,
+    },
     BuffGroup(Vec<i32>),
+    PerBuffGroupCount {
+        group_id: i32,
+    },
+    PerBullet {
+        divisor: i32,
+        max_count: i32,
+    },
     NoBuffGroup(Vec<i32>),
     FromBuffAndToBuff {
         from_buff_id: i32,
         to_buff_id: i32,
+    },
+    SelfBuffTypeTargetBuffTypes {
+        self_type_id: i32,
+        target_type_ids: Vec<i32>,
     },
     EnemyHighestBuffTypeCount {
         type_id: i32,
@@ -75,8 +99,14 @@ pub enum ParsedConditionKind {
         compare: ConditionCompare,
         threshold: i32,
     },
+    PerTeamBuffStatusTypeCount {
+        status_ids: Vec<i32>,
+        divisor: i32,
+        max_count: i32,
+    },
     BuffAdded(Vec<i32>),
     BuffRemoved(Vec<i32>),
+    RejectedBuffIdOrType(i32),
     AccBuffAddedCount {
         buff_ids: Vec<i32>,
         threshold: i32,
@@ -87,6 +117,9 @@ pub enum ParsedConditionKind {
         threshold: i32,
     },
     PerHp {
+        interval_permille: i32,
+    },
+    PerLostHp {
         interval_permille: i32,
     },
     TeamLostHpPercent {
@@ -106,10 +139,18 @@ pub enum ParsedConditionKind {
     CurrentCardEnchant {
         enchant_id: i32,
     },
+    HandSkillPresence(Vec<i32>),
+    RoundUsedMinimumRank {
+        minimum_rank: i32,
+        threshold: i32,
+    },
     ExPoint {
         compare: ConditionCompare,
         threshold: i32,
     },
+    ExPointFull,
+    ExSkillLevel(i32),
+    ExSkillLevels(Vec<i32>),
     Synchronization {
         threshold: i32,
     },
@@ -133,6 +174,11 @@ pub enum ParsedConditionKind {
         power_id: i32,
         threshold: i32,
     },
+    PowerRatio {
+        power_id: i32,
+        compare_code: i32,
+        threshold_permille: i32,
+    },
     PowerIncrChange {
         power_id: i32,
         compare_code: i32,
@@ -148,6 +194,11 @@ pub enum ParsedConditionKind {
     },
     PerConduitCurrentCost {
         threshold: i32,
+    },
+    PerConduitCounter {
+        kind: crate::engine::manager::conduit::ConduitCounterKind,
+        divisor: i32,
+        max_count: i32,
     },
     ConduitExPoint {
         compare_code: i32,
@@ -178,13 +229,16 @@ pub enum ParsedConditionKind {
     EntityDead,
     TeammateDead,
     EnemyDead,
+    TargetGuardBroken,
     SingleKillCount {
         threshold: i32,
     },
     PerKillCount {
         divisor: i32,
     },
-    TeamEntityExited,
+    TeamEntityExited {
+        max_count: i32,
+    },
     MultiHpSegment(i32),
     TargetCareer(Vec<i32>),
     TargetSharesCasterCareer {
@@ -208,8 +262,16 @@ pub enum ParsedConditionKind {
     ActiveUseSkill {
         slot: i32,
     },
+    ActiveAllyUseSkill {
+        slot: i32,
+    },
+    UseSkillRank(Vec<i32>),
     UseHurtSkill,
     SpecificSkill {
+        group: i32,
+        rank: i32,
+    },
+    ReceivedSpecificSkill {
         group: i32,
         rank: i32,
     },
@@ -223,9 +285,12 @@ pub enum ParsedConditionKind {
     ActiveSkillType(i32),
     ActiveSkillEffectTag(Vec<i32>),
     DamageTargetCountKind(i32),
+    SourceDamageType(crate::engine::skill::target::EntityDamageType),
     AttackerDamageType(crate::engine::skill::target::EntityDamageType),
     AttackCrit,
     BeforeCrit,
+    GuardBroken,
+    EntityBroken,
     HurtRestrained,
     HurtNotRestrained,
     EntityCount {
@@ -270,6 +335,10 @@ pub enum ParsedConditionKind {
     BuffFeatureTriggered {
         act_id: i32,
     },
+    HurtNum {
+        interval: i32,
+        max_count: i32,
+    },
     MasterHalo,
     NoActionRound,
     Unsupported(String),
@@ -296,6 +365,7 @@ pub enum TargetIdentityMode {
     TargetIsSelf,
     TargetIsAllyNotSelf,
     TargetModelId,
+    ActiveSkillSourceModelId,
     TargetPosition,
 }
 
@@ -305,6 +375,7 @@ pub enum EntityCountScope {
     AliveEnemies,
     AliveEnemiesIncludeSp,
     AliveTeammates,
+    AliveOtherTeammates,
     AliveTeammatesNoSp,
     TeamSize,
     HeroCount,
@@ -433,6 +504,22 @@ pub(super) fn damage_target_count_kind(
     )?))
 }
 
+pub(super) fn hero_reality(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    raw_args
+        .is_empty()
+        .then_some(ParsedConditionKind::SourceDamageType(
+            crate::engine::skill::target::EntityDamageType::Reality,
+        ))
+}
+
+pub(super) fn hero_mental(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    raw_args
+        .is_empty()
+        .then_some(ParsedConditionKind::SourceDamageType(
+            crate::engine::skill::target::EntityDamageType::Mental,
+        ))
+}
+
 pub(super) fn reality_damage(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
     raw_args
         .is_empty()
@@ -461,12 +548,20 @@ pub(super) fn before_crit(_: i32, _: &str, raw_args: &[String]) -> Option<Parsed
         .then_some(ParsedConditionKind::BeforeCrit)
 }
 
-pub(super) fn hurt_restrained(_: i32, _: &str, _: &[String]) -> Option<ParsedConditionKind> {
-    Some(ParsedConditionKind::HurtRestrained)
+pub(super) fn hurt_restrained(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    raw_args
+        .is_empty()
+        .then_some(ParsedConditionKind::HurtRestrained)
 }
 
-pub(super) fn hurt_not_restrained(_: i32, _: &str, _: &[String]) -> Option<ParsedConditionKind> {
-    Some(ParsedConditionKind::HurtNotRestrained)
+pub(super) fn hurt_not_restrained(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    raw_args
+        .is_empty()
+        .then_some(ParsedConditionKind::HurtNotRestrained)
 }
 
 fn negate_kind(kind: ParsedConditionKind) -> ParsedConditionKind {
@@ -477,6 +572,8 @@ fn negate_kind(kind: ParsedConditionKind) -> ParsedConditionKind {
                     BuffConditionMode::Absent
                 }
                 BuffConditionMode::Absent => BuffConditionMode::Present,
+                BuffConditionMode::ExactPresent => BuffConditionMode::ExactAbsent,
+                BuffConditionMode::ExactAbsent => BuffConditionMode::ExactPresent,
             },
             buff_ids,
         },
@@ -589,13 +686,15 @@ fn negate_compare(compare: ConditionCompare) -> ConditionCompare {
 }
 
 fn unsupported_condition(type_name: impl Into<String>) -> ParsedCondition {
-    let type_name = type_name.into();
-    ParsedCondition {
-        opcode: 0,
-        type_name: type_name.clone(),
-        kind: ParsedConditionKind::Unsupported(type_name),
-        raw_args: Vec::new(),
-    }
+    ParsedCondition::always()
+}
+
+pub(super) fn hurt_num(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    let args = parse_i32_args(raw_args).unwrap_or(vec![1, 999]);
+    Some(ParsedConditionKind::HurtNum {
+        interval: args.get(0).copied().unwrap_or(1),
+        max_count: args.get(1).copied().unwrap_or(999),
+    })
 }
 
 pub(super) fn parse_fixed<const N: usize>(raw_args: &[String]) -> Option<[i32; N]> {

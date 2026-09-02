@@ -38,9 +38,14 @@ fn card_energy_allocation_commits_cards_then_spends_only_allocated_gauge() {
         }))
         .unwrap();
     let features = managers.buff.active_features(&managers.hp);
-    let enabled = enable_rule_ops(&managers.gauge, &features, 99998)
-        .pop()
-        .unwrap();
+    let enabled = enable_rule_ops(
+        crate::catalog::impromptu_definition(crate::test_support::game_data()),
+        &managers.gauge,
+        &features,
+        99998,
+    )
+    .pop()
+    .unwrap();
     let RuleOp::Command(BattleCommand::Emitter(command)) = enabled.emitter else {
         unreachable!()
     };
@@ -85,52 +90,34 @@ fn card_energy_allocation_commits_cards_then_spends_only_allocated_gauge() {
 }
 
 #[test]
-fn compiled_team_tag_setup_enables_impromptu_and_bloodtithe_reactions() {
+fn compiled_team_tag_setup_enables_impromptu_and_single_owner_bloodtithe_reactions() {
     init_config();
     let fight = Fight {
         attacker: Some(FightTeam {
-            entitys: vec![
-                FightEntityInfo {
-                    uid: Some(10),
-                    team_type: Some(1),
-                    current_hp: Some(20_000),
-                    attr: Some(HeroAttribute {
-                        hp: Some(20_000),
-                        ..Default::default()
-                    }),
-                    buffs: vec![
-                        BuffInfo {
-                            uid: Some(20),
-                            buff_id: Some(2_240_000),
-                            from_uid: Some(10),
-                            ..Default::default()
-                        },
-                        BuffInfo {
-                            uid: Some(21),
-                            buff_id: Some(6_270_501),
-                            from_uid: Some(10),
-                            ..Default::default()
-                        },
-                    ],
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                current_hp: Some(20_000),
+                attr: Some(HeroAttribute {
+                    hp: Some(20_000),
                     ..Default::default()
-                },
-                FightEntityInfo {
-                    uid: Some(11),
-                    team_type: Some(1),
-                    current_hp: Some(20_000),
-                    attr: Some(HeroAttribute {
-                        hp: Some(20_000),
+                }),
+                buffs: vec![
+                    BuffInfo {
+                        uid: Some(20),
+                        buff_id: Some(2_240_000),
+                        from_uid: Some(10),
                         ..Default::default()
-                    }),
-                    buffs: vec![BuffInfo {
-                        uid: Some(22),
+                    },
+                    BuffInfo {
+                        uid: Some(21),
                         buff_id: Some(6_270_501),
-                        from_uid: Some(11),
+                        from_uid: Some(10),
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            ],
+                    },
+                ],
+                ..Default::default()
+            }],
             ..Default::default()
         }),
         ..Default::default()
@@ -441,9 +428,14 @@ fn action_queue_commit_collects_played_card_energy_as_inspiration() {
         .iter()
         .find(|feature| buff_act::is_kind(feature, buff_act::registry::BuffActKind::EmitterTag))
         .unwrap();
-    let enabled = enable_rule_ops(&managers.gauge, &features, 99998)
-        .pop()
-        .unwrap();
+    let enabled = enable_rule_ops(
+        crate::catalog::impromptu_definition(crate::test_support::game_data()),
+        &managers.gauge,
+        &features,
+        99998,
+    )
+    .pop()
+    .unwrap();
     let RuleOp::Command(BattleCommand::Emitter(command)) = enabled.emitter else {
         unreachable!()
     };
@@ -473,6 +465,7 @@ fn action_queue_commit_collects_played_card_energy_as_inspiration() {
         TargetContext::default(),
         1,
         99998,
+        0,
     )
     .unwrap();
 
@@ -563,9 +556,14 @@ fn player_actions_resolved_activates_internal_inspiration_thresholds() {
         .iter()
         .find(|feature| buff_act::is_kind(feature, buff_act::registry::BuffActKind::EmitterTag))
         .unwrap();
-    let enabled = enable_rule_ops(&managers.gauge, &features, 99998)
-        .pop()
-        .unwrap();
+    let enabled = enable_rule_ops(
+        crate::catalog::impromptu_definition(crate::test_support::game_data()),
+        &managers.gauge,
+        &features,
+        99998,
+    )
+    .pop()
+    .unwrap();
     let RuleOp::Command(BattleCommand::Emitter(command)) = enabled.emitter else {
         unreachable!()
     };
@@ -595,7 +593,7 @@ fn player_actions_resolved_activates_internal_inspiration_thresholds() {
     )
     .unwrap();
 
-    assert_eq!(activated.outcomes.len(), 3);
+    assert_eq!(activated.outcomes.len(), 2);
     assert_eq!(
         activated
             .events
@@ -605,18 +603,12 @@ fn player_actions_resolved_activates_internal_inspiration_thresholds() {
         vec![EventKind::PlayerActionsResolved]
     );
     let steps = crate::engine::packet::timeline::project(&activated.frames).unwrap();
-    assert!(matches!(
-        steps.as_slice(),
-        [step]
-            if step.act_effect.len() == 1
-                && step.act_effect[0].effect_type
-                    == Some(sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32)
-                && step.act_effect[0].effect_num1 == Some(0)
-    ));
+    assert!(steps.is_empty());
     assert!(managers.buff.has_buff_id(99998, 31080152));
     assert!(managers.buff.has_buff_id(99998, 31080153));
     let plan = build_plan(&managers, 1, 99998).unwrap();
-    let definition = ImpromptuDefinition::from_config().unwrap();
+    let definition =
+        crate::catalog::impromptu_definition(crate::test_support::game_data()).unwrap();
     assert_eq!(plan.skill_id, definition.skill_id());
     assert_eq!(plan.inspiration, 6);
     assert_eq!(plan.attack_count, 3);
@@ -682,9 +674,14 @@ fn idle_impromptu_finalizes_card_and_emitter_energy_once() {
     let pool = TargetPool::from_fight(&fight);
     let mut managers = BattleManagers::seeded(&fight);
     let features = managers.buff.active_features(&managers.hp);
-    let enabled = enable_rule_ops(&managers.gauge, &features, 99_998)
-        .pop()
-        .unwrap();
+    let enabled = enable_rule_ops(
+        crate::catalog::impromptu_definition(crate::test_support::game_data()),
+        &managers.gauge,
+        &features,
+        99_998,
+    )
+    .pop()
+    .unwrap();
     let RuleOp::Command(BattleCommand::Emitter(command)) = enabled.emitter else {
         unreachable!()
     };
@@ -710,12 +707,8 @@ fn idle_impromptu_finalizes_card_and_emitter_energy_once() {
     let steps = crate::engine::packet::timeline::project(&result.frames).unwrap();
     assert!(matches!(
         steps.as_slice(),
-        [clear, finalization]
-            if clear.act_effect.len() == 1
-                && clear.act_effect[0].effect_type
-                    == Some(sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32)
-                && clear.act_effect[0].effect_num1 == Some(0)
-                && finalization.act_effect.len() == 2
+        [finalization]
+            if finalization.act_effect.len() == 2
                 && finalization.act_effect[0].effect_type
                     == Some(sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32)
                 && finalization.act_effect[0].effect_num1 == Some(0)
@@ -778,9 +771,14 @@ fn impromptu_executes_the_transient_plan_then_resets_inspiration() {
         .iter()
         .find(|feature| buff_act::is_kind(feature, buff_act::registry::BuffActKind::EmitterTag))
         .unwrap();
-    let enabled = enable_rule_ops(&managers.gauge, &features, 99998)
-        .pop()
-        .unwrap();
+    let enabled = enable_rule_ops(
+        crate::catalog::impromptu_definition(crate::test_support::game_data()),
+        &managers.gauge,
+        &features,
+        99998,
+    )
+    .pop()
+    .unwrap();
     let RuleOp::Command(BattleCommand::Emitter(command)) = enabled.emitter else {
         unreachable!()
     };
@@ -799,7 +797,8 @@ fn impromptu_executes_the_transient_plan_then_resets_inspiration() {
         ))
         .unwrap();
     let catalog = SkillEffectCatalog::from_game_db(config::configs::get());
-    let definition = ImpromptuDefinition::from_config().unwrap();
+    let definition =
+        crate::catalog::impromptu_definition(crate::test_support::game_data()).unwrap();
     let mut determinism = RoundDeterminism::default();
     determinism.enqueue_hidden_crits(definition.skill_id(), 99998, [true; 6]);
 

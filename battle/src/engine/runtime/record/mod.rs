@@ -14,6 +14,12 @@ pub enum FrameOwner {
         card_index: i32,
         target_uid: Option<i64>,
     },
+    ConduitSkill {
+        source_uid: i64,
+        skill_id: i32,
+        card_index: i32,
+        target_uid: Option<i64>,
+    },
     ConduitAction {
         source_uid: i64,
         group: i32,
@@ -108,11 +114,19 @@ pub enum RoundCue {
     CardsCompose {
         team_type: i32,
     },
+    RedealHandSync {
+        cards: Vec<sonettobuf::CardInfo>,
+    },
     SmallRoundEnd {
         team_type: i32,
     },
     ChangeRound {
         round: i32,
+    },
+    ClientConduitSelectionConfirmed {
+        source_uid: i64,
+        team: i32,
+        group: i32,
     },
 }
 
@@ -254,8 +268,10 @@ pub(crate) fn active_skill_scope_path(
     let (&root, children) = path.split_first()?;
     let mut frame = frames.get(root)?;
     let mut prefix = vec![root];
-    let mut action = (matches!(frame.owner, FrameOwner::Skill { .. })
-        && matches!(frame.trigger, FrameTrigger::Active))
+    let mut action = (matches!(
+        frame.owner,
+        FrameOwner::Skill { .. } | FrameOwner::ConduitSkill { .. }
+    ) && matches!(frame.trigger, FrameTrigger::Active))
     .then(|| prefix.clone());
 
     for &child in children {
@@ -264,8 +280,10 @@ pub(crate) fn active_skill_scope_path(
             FrameItem::Change(_) | FrameItem::Cue(_) => return None,
         };
         prefix.push(child);
-        if matches!(frame.owner, FrameOwner::Skill { .. })
-            && matches!(frame.trigger, FrameTrigger::Active)
+        if matches!(
+            frame.owner,
+            FrameOwner::Skill { .. } | FrameOwner::ConduitSkill { .. }
+        ) && matches!(frame.trigger, FrameTrigger::Active)
         {
             action = Some(prefix.clone());
         }
@@ -282,8 +300,11 @@ pub(crate) fn set_skill_target(
     let Some(resolved_target_uid) = resolved_target_uid else {
         return;
     };
-    if let FrameOwner::Skill { target_uid, .. } = &mut frame_mut(frames, path).owner {
-        target_uid.get_or_insert(resolved_target_uid);
+    match &mut frame_mut(frames, path).owner {
+        FrameOwner::Skill { target_uid, .. } | FrameOwner::ConduitSkill { target_uid, .. } => {
+            target_uid.get_or_insert(resolved_target_uid);
+        }
+        _ => {}
     }
     if path.len() > 1
         && let FrameOwner::ConduitAction { target_uid, .. } =

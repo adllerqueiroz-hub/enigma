@@ -276,8 +276,11 @@ mod tests {
             target_uid: 20,
             skill_id: 1,
             amount: 10,
+            shield_absorbed: 0,
+            career_restraint: false,
             damage_from: HurtDamageFromType::Skill,
             assassinate: false,
+            ignore_riposte: false,
         });
 
         assert!(matches!(

@@ -4,6 +4,21 @@ impl EffectPacket {
     pub(crate) fn hp_with_hurt_info_layout(
         change: HpChange,
         hurt_info_layout: HurtInfoWireLayout,
+        absorb_map_layout: AbsorbHurtMapLayout,
+    ) -> ActEffect {
+        Self::hp_with_hurt_info_and_toughness_layout(
+            change,
+            None,
+            hurt_info_layout,
+            absorb_map_layout,
+        )
+    }
+
+    pub(crate) fn hp_with_hurt_info_and_toughness_layout(
+        change: HpChange,
+        toughness: Option<crate::engine::manager::toughness::ToughnessChange>,
+        hurt_info_layout: HurtInfoWireLayout,
+        absorb_map_layout: AbsorbHurtMapLayout,
     ) -> ActEffect {
         let effect_type = if change.effect_type != 0 {
             change.effect_type
@@ -37,24 +52,33 @@ impl EffectPacket {
             reserve_id: Some(0),
             team_type: Some(0),
             effect_num1: Some(0),
-            hurt_info: change
-                .hurt
-                .map(|hurt| Self::hurt_info(change, hurt, effect_type, hurt_info_layout)),
+            hurt_info: change.hurt.map(|hurt| {
+                Self::hurt_info(
+                    change,
+                    hurt,
+                    toughness,
+                    effect_type,
+                    hurt_info_layout,
+                    absorb_map_layout,
+                )
+            }),
             ..Default::default()
         }
     }
 
-    pub(crate) fn fully_absorbed_damage_with_hurt_info_layout(
+    pub(crate) fn fully_absorbed_damage_with_toughness_layout(
         target_uid: i64,
         damage: DamageRecord,
+        toughness: Option<crate::engine::manager::toughness::ToughnessChange>,
         hurt_info_layout: HurtInfoWireLayout,
+        absorb_map_layout: AbsorbHurtMapLayout,
     ) -> ActEffect {
         let mut hurt = damage.hurt;
         hurt.display_amount = Some(match hurt_info_layout {
             HurtInfoWireLayout::Version6 => 0,
             HurtInfoWireLayout::Version7 => damage.amount,
         });
-        let mut effect = Self::hp_with_hurt_info_layout(
+        let mut effect = Self::hp_with_hurt_info_and_toughness_layout(
             HpChange {
                 target_uid,
                 before: 0,
@@ -67,7 +91,9 @@ impl EffectPacket {
                 effect_type: 0,
                 display_amount: Some(0),
             },
+            toughness,
             hurt_info_layout,
+            absorb_map_layout,
         );
         if hurt.damage_from == HurtDamageFromType::Buff {
             effect.buff_act_id = Some(hurt.buff_act_id);
@@ -121,8 +147,10 @@ impl EffectPacket {
     fn hurt_info(
         change: HpChange,
         hurt: HurtInfoData,
+        toughness: Option<crate::engine::manager::toughness::ToughnessChange>,
         effect_type: i32,
         layout: HurtInfoWireLayout,
+        absorb_map_layout: AbsorbHurtMapLayout,
     ) -> FightHurtInfo {
         let (effect_id, skill_id) = if hurt.damage_from == HurtDamageFromType::Skill {
             (0, 0)
@@ -132,7 +160,10 @@ impl EffectPacket {
         let common = FightHurtInfo {
             damage: Some(hurt.display_amount.unwrap_or_else(|| change.delta.abs())),
             reduce_hp: Some(hurt.reduce_hp),
-            career_restraint: Some(hurt.career_restraint),
+            career_restraint: match hurt.damage_from {
+                HurtDamageFromType::SkillEffect | HurtDamageFromType::Buff => None,
+                _ => Some(hurt.career_restraint),
+            },
             assassinate: Some(change.assassinate),
             hurt_effect: Some(effect_type),
             damage_from_type: Some(match hurt.damage_from {
@@ -164,13 +195,18 @@ impl EffectPacket {
                 ..common
             },
             HurtInfoWireLayout::Version7 => FightHurtInfo {
-                toughness_value: Some(0),
-                toughness_point: Some(0),
-                broken: Some(false),
-                absorb_hurt_param: Some(
-                    r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
-                        .into(),
-                ),
+                toughness_value: Some(toughness.map_or(0, |change| change.value_delta)),
+                toughness_point: Some(toughness.map_or(0, |change| change.point_delta)),
+                broken: Some(toughness.is_some_and(|change| change.broke)),
+                absorb_hurt_param: Some(match absorb_map_layout {
+                    AbsorbHurtMapLayout::TwoMaps => {
+                        r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
+                    }
+                    AbsorbHurtMapLayout::ThreeMaps => {
+                        r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
+                    }
+                }
+                .into()),
                 hurt_merge_flag: Some(0),
                 ..common
             },
@@ -181,10 +217,11 @@ impl EffectPacket {
         change: HpChange,
         buff_act_id: i32,
         hurt_info_layout: HurtInfoWireLayout,
+        absorb_map_layout: AbsorbHurtMapLayout,
     ) -> ActEffect {
         ActEffect {
             buff_act_id: Some(buff_act_id),
-            ..Self::hp_with_hurt_info_layout(change, hurt_info_layout)
+            ..Self::hp_with_hurt_info_layout(change, hurt_info_layout, absorb_map_layout)
         }
     }
 }

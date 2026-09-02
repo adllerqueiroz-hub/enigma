@@ -308,9 +308,11 @@ mod tests {
             skill_type: 0,
             effect_tag: 0,
             assassinate: false,
+            ignore_riposte: false,
             damage_amount: 0,
             kill_count: 0,
             crit_count: 0,
+            guard_break_count: 0,
             additional_moxie: 0,
             extra_skill_kind: 0,
             mode: crate::engine::skill::action::SkillExecutionMode::Active,
@@ -318,6 +320,7 @@ mod tests {
             teammate_injury_count_not_reset: 0,
             team_injury_count_round: 0,
             card_enchants: Vec::new(),
+            buff_additions: Vec::new(),
         });
 
         assert!(event_rule_ops(&managers, &event).is_empty());

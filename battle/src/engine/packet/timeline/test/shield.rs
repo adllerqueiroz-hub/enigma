@@ -15,6 +15,7 @@ fn fully_absorbed_damage_projects_shield_then_zero_damage() {
             config_effect: -1,
             effect_kind: DamageEffectKind::Normal,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: 1,
                 is_crit: false,
@@ -41,6 +42,7 @@ fn fully_absorbed_damage_projects_shield_then_zero_damage() {
         shield_granted: None,
         max_hp: None,
         hp: None,
+        toughness: None,
         kill: None,
         death: None,
     })))
@@ -60,47 +62,52 @@ fn version_seven_embeds_shield_absorption_in_hurt_info() {
         domain: RuleDomain::Skill,
         key: DefinitionKey::new(123, "SkillDamage"),
     };
-    let effects = project_change(
-        &BattleChange::Hp(Box::new(HpChanges {
-            origin,
-            source_uid: 1,
+    let change = BattleChange::Hp(Box::new(HpChanges {
+        origin,
+        source_uid: 1,
+        target_uid: 10,
+        damage: Some(DamageRecord {
+            amount: 40,
+            config_effect: -1,
+            effect_kind: DamageEffectKind::Normal,
+            assassinate: false,
+            ignore_riposte: false,
+            hurt: HurtInfoData {
+                from_uid: 1,
+                is_crit: false,
+                career_restraint: false,
+                reduce_hp: 0,
+                effect_id: 0,
+                skill_id: 123,
+                damage_from: HurtDamageFromType::Skill,
+                buff_act_id: 0,
+                buff_uid: 0,
+                hurt_effect_type: EffectType::Damage as i32,
+                display_amount: None,
+            },
+        }),
+        team_shared_shield_absorbed: None,
+        team_shared_shield_removed: None,
+        shield_absorbed: Some(ShieldChange {
             target_uid: 10,
-            damage: Some(DamageRecord {
-                amount: 40,
-                config_effect: -1,
-                effect_kind: DamageEffectKind::Normal,
-                assassinate: false,
-                hurt: HurtInfoData {
-                    from_uid: 1,
-                    is_crit: false,
-                    career_restraint: false,
-                    reduce_hp: 0,
-                    effect_id: 0,
-                    skill_id: 123,
-                    damage_from: HurtDamageFromType::Skill,
-                    buff_act_id: 0,
-                    buff_uid: 0,
-                    hurt_effect_type: EffectType::Damage as i32,
-                    display_amount: None,
-                },
-            }),
-            team_shared_shield_absorbed: None,
-            team_shared_shield_removed: None,
-            shield_absorbed: Some(ShieldChange {
-                target_uid: 10,
-                buff_uid: 77,
-                before: 100,
-                absorbed: 40,
-                after: 60,
-            }),
-            shield_granted: None,
-            max_hp: None,
-            hp: None,
-            kill: None,
-            death: None,
-        })),
+            buff_uid: 77,
+            before: 100,
+            absorbed: 40,
+            after: 60,
+        }),
+        shield_granted: None,
+        max_hp: None,
+        hp: None,
+        toughness: None,
+        kill: None,
+        death: None,
+    }));
+    let effects = project_change(
+        &change,
         true,
         HurtInfoWireLayout::Version7,
+        AbsorbHurtMapLayout::default(),
+        RedealWireLayout::Version7,
     )
     .unwrap();
 
@@ -118,6 +125,24 @@ fn version_seven_embeds_shield_absorption_in_hurt_info() {
         Some(
             r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":"77#40"}"#
         )
+    );
+
+    let two_map = project_change(
+        &change,
+        true,
+        HurtInfoWireLayout::Version7,
+        AbsorbHurtMapLayout::TwoMaps,
+        RedealWireLayout::Version7,
+    )
+    .unwrap();
+    assert_eq!(
+        two_map[0]
+            .hurt_info
+            .as_ref()
+            .unwrap()
+            .absorb_hurt_param
+            .as_deref(),
+        Some(r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":"77#40"}"#)
     );
 }
 
@@ -137,6 +162,7 @@ fn version_seven_embeds_team_shared_shield_consumption_in_hurt_info() {
                 config_effect: -1,
                 effect_kind: DamageEffectKind::Normal,
                 assassinate: false,
+                ignore_riposte: false,
                 hurt: HurtInfoData {
                     from_uid: 1,
                     is_crit: false,
@@ -167,11 +193,14 @@ fn version_seven_embeds_team_shared_shield_consumption_in_hurt_info() {
             shield_granted: None,
             max_hp: None,
             hp: None,
+            toughness: None,
             kill: None,
             death: None,
         })),
         true,
         HurtInfoWireLayout::Version7,
+        AbsorbHurtMapLayout::default(),
+        RedealWireLayout::Version7,
     )
     .unwrap();
 
@@ -228,6 +257,7 @@ fn reduce_hp_wire_value_is_gated_by_fight_protocol_version() {
             effect_type: 0,
             display_amount: Some(40),
         }),
+        toughness: None,
         kill: None,
         death: None,
     }));
@@ -246,12 +276,16 @@ fn reduce_hp_wire_value_is_gated_by_fight_protocol_version() {
         &change,
         crate::engine::fight::versions::writes_reduce_hp(6),
         crate::engine::fight::versions::hurt_info_wire_layout(6).unwrap(),
+        AbsorbHurtMapLayout::default(),
+        crate::engine::fight::versions::redeal_wire_layout(6).unwrap(),
     )
     .unwrap();
     let v7 = project_change(
         &change,
         crate::engine::fight::versions::writes_reduce_hp(7),
         crate::engine::fight::versions::hurt_info_wire_layout(7).unwrap(),
+        AbsorbHurtMapLayout::default(),
+        crate::engine::fight::versions::redeal_wire_layout(7).unwrap(),
     )
     .unwrap();
     assert_eq!(v6[0].hurt_info.as_ref().unwrap().absorb_hurt_param, None);
@@ -278,10 +312,27 @@ fn reduce_hp_wire_value_is_gated_by_fight_protocol_version() {
             r#"{"consumeFakeHpBuffMap":"","reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#
         )
     );
+    let v7_two_map = project_change(
+        &change,
+        crate::engine::fight::versions::writes_reduce_hp(7),
+        crate::engine::fight::versions::hurt_info_wire_layout(7).unwrap(),
+        AbsorbHurtMapLayout::TwoMaps,
+        crate::engine::fight::versions::redeal_wire_layout(7).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        v7_two_map[0]
+            .hurt_info
+            .as_ref()
+            .unwrap()
+            .absorb_hurt_param
+            .as_deref(),
+        Some(r#"{"reduceTeamShareShieldBuffMap":"","reduceShieldBuffMap":""}"#)
+    );
 }
 
 #[test]
-fn shield_transaction_projects_grant_then_only_the_stacked_value() {
+fn shield_transaction_projects_carrier_refresh_and_stacked_value() {
     crate::test_support::init_config();
     let fight = Fight {
         attacker: Some(FightTeam {
@@ -310,7 +361,7 @@ fn shield_transaction_projects_grant_then_only_the_stacked_value() {
         buff_id: 31170002,
         amount_attr: crate::engine::entity::attr::AttrId::Attack,
         amount_rate: 1_500,
-        bonus: None,
+        multiplier_bonus: None,
         max_attr: crate::engine::entity::attr::AttrId::Attack,
         max_rate: 6_500,
         scope: crate::engine::manager::shield::ShieldScope::Entity,
@@ -337,12 +388,13 @@ fn shield_transaction_projects_grant_then_only_the_stacked_value() {
 
     let changes = crate::engine::manager::shield::execute(&mut managers, command).unwrap();
     let effects = project_change_for_test(&BattleChange::Shield(Box::new(changes))).unwrap();
-    assert_eq!(effects.len(), 1);
+    assert_eq!(effects.len(), 2);
     assert_eq!(
         effects[0].effect_type,
         Some(EffectType::Changeshield as i32)
     );
     assert_eq!(effects[0].effect_num, Some(1_500));
+    assert_eq!(effects[1].effect_type, Some(EffectType::Buffupdate as i32));
 }
 
 #[test]
@@ -376,7 +428,7 @@ fn team_shared_shield_projects_buff_state_then_stack_updates() {
         buff_id: 31430144,
         amount_attr: crate::engine::entity::attr::AttrId::Attack,
         amount_rate: 2_800,
-        bonus: None,
+        multiplier_bonus: None,
         max_attr: crate::engine::entity::attr::AttrId::Attack,
         max_rate: 12_500,
         scope: crate::engine::manager::shield::ShieldScope::TeamShared,
@@ -472,6 +524,7 @@ fn depleted_team_shared_shield_projects_its_committed_removal() {
                 config_effect: -1,
                 effect_kind: DamageEffectKind::Normal,
                 assassinate: false,
+                ignore_riposte: false,
                 hurt: HurtInfoData {
                     from_uid: -1,
                     is_crit: false,

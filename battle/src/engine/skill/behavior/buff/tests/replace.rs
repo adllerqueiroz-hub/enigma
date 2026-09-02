@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn barcarola_buff_behaviors_require_their_configured_operands() {
+    assert!(supports_duration_change(&ParsedBehavior::new(
+        20005,
+        "AddBuffRound",
+        vec![31080131, 1],
+    )));
+    assert!(!supports_duration_change(&ParsedBehavior::new(
+        20005,
+        "AddBuffRound",
+        vec![31080131, 0],
+    )));
+    assert!(supports_consume_power_add_multi_buff(&ParsedBehavior::new(
+        60150,
+        "ConsumePowerAddMultiBuff1",
+        vec![2, 3, 31080131, 1, 1, 31080111, 31080111],
+    )));
+    assert!(!supports_consume_power_add_multi_buff(
+        &ParsedBehavior::new(60150, "ConsumePowerAddMultiBuff1", vec![2, 3, 31080131],)
+    ));
+}
+
+#[test]
 fn descriptor_reports_all_multi_buff_dependencies() {
     let behavior = ParsedBehavior::new(
         60150,
@@ -153,6 +175,26 @@ fn replace_buff_uses_the_configured_counter_threshold_and_manager_transaction() 
     managers.execute_buff(command.clone()).unwrap();
     assert_eq!(managers.buff.buff_id_amount(11, 30810101), 0);
     assert_eq!(managers.buff.buff_id_amount(11, 30810114), 1);
+
+    let ops = super::super::super::rule_ops(
+        BehaviorOpContext {
+            source_uid: 11,
+            source_team: 1,
+            target_uid: 11,
+            active_skill_id: 0,
+            transfer_count: 1,
+            event: None,
+            managers: &managers,
+            pool: &TargetPool::default(),
+            determinism: &mut determinism,
+            modifiers: &mut modifiers,
+            target: &mut target,
+        },
+        &behavior,
+    )
+    .unwrap();
+
+    assert!(ops.is_empty());
 }
 
 #[test]

@@ -1,4 +1,153 @@
 use super::*;
+use crate::engine::{
+    manager::conduit::{ConduitCommand, ConduitCounterChange, ConduitCounterKind},
+    skill::rule::{CommandOrigin, DefinitionKey, RuleDomain},
+};
+
+#[test]
+fn burn_overflow_repeats_once_per_rejected_layer() {
+    init_config();
+    let condition = ParsedCondition {
+        opcode: 564203,
+        type_name: "BurnOverflow".into(),
+        kind: ParsedConditionKind::BurnOverflow,
+        raw_args: Vec::new(),
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            &[condition],
+            10,
+            &[-1],
+            None,
+            &TargetPool::default(),
+            TargetContext {
+                buff_overflow_amount: 4,
+                ..Default::default()
+            },
+        ),
+        4
+    );
+}
+
+#[test]
+fn conduit_counter_repeats_are_team_scoped_capped_and_reset() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(3144),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(20),
+                model_id: Some(3144),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let origin = CommandOrigin {
+        domain: RuleDomain::Behavior,
+        key: DefinitionKey::new(60297, "AddDeviceCounter"),
+    };
+    for (source_uid, team, kind, delta) in [
+        (10, 1, ConduitCounterKind::EnergyAccumulation, 25),
+        (10, 1, ConduitCounterKind::Activation, 7),
+        (20, 2, ConduitCounterKind::EnergyAccumulation, 3),
+    ] {
+        managers
+            .conduit
+            .execute(ConduitCommand::ChangeCounter(ConduitCounterChange {
+                origin,
+                source_uid,
+                team,
+                kind,
+                delta,
+            }))
+            .unwrap();
+    }
+    let condition = |kind, divisor, max_count| {
+        let kind_arg = match kind {
+            ConduitCounterKind::EnergyAccumulation => 1,
+            ConduitCounterKind::Activation => 2,
+        };
+        ParsedCondition {
+            opcode: 786203,
+            type_name: "PerDeviceCounter".into(),
+            kind: ParsedConditionKind::PerConduitCounter {
+                kind,
+                divisor,
+                max_count,
+            },
+            raw_args: vec![
+                kind_arg.to_string(),
+                divisor.to_string(),
+                max_count.to_string(),
+            ],
+        }
+    };
+    let fire_count = |source_uid, condition: ParsedCondition, managers: &BattleManagers| {
+        conditions_fire_count(
+            &[condition],
+            source_uid,
+            &[source_uid],
+            Some(managers),
+            &pool,
+            TargetContext::default(),
+        )
+    };
+
+    assert_eq!(
+        fire_count(
+            10,
+            condition(ConduitCounterKind::EnergyAccumulation, 2, 10),
+            &managers,
+        ),
+        10
+    );
+    assert_eq!(
+        fire_count(
+            20,
+            condition(ConduitCounterKind::EnergyAccumulation, 2, 10),
+            &managers,
+        ),
+        1
+    );
+    assert_eq!(
+        fire_count(
+            10,
+            condition(ConduitCounterKind::Activation, 1, 20),
+            &managers,
+        ),
+        7
+    );
+    assert_eq!(
+        fire_count(
+            20,
+            condition(ConduitCounterKind::Activation, 1, 20),
+            &managers,
+        ),
+        0
+    );
+
+    managers.conduit.begin_round();
+    assert_eq!(
+        fire_count(
+            10,
+            condition(ConduitCounterKind::EnergyAccumulation, 1, 20),
+            &managers,
+        ),
+        0
+    );
+}
 
 #[test]
 fn current_card_enchant_preserves_exact_ids_and_supports_any_rewrite() {
@@ -56,10 +205,64 @@ fn single_kill_count_reads_the_current_action_state() {
 }
 
 #[test]
+fn target_guard_broken_reads_the_current_action_state() {
+    init_config();
+    let condition = ParsedCondition {
+        opcode: 791210,
+        type_name: "ToBrokenEnemy".into(),
+        kind: ParsedConditionKind::TargetGuardBroken,
+        raw_args: Vec::new(),
+    };
+    let matches = |action_guard_break_count| {
+        conditions_match(
+            std::slice::from_ref(&condition),
+            10,
+            &[10],
+            None,
+            &TargetPool::default(),
+            TargetContext {
+                action_guard_break_count,
+                ..Default::default()
+            },
+        )
+    };
+
+    assert!(!matches(0));
+    assert!(matches(1));
+}
+
+#[test]
+fn guard_broken_only_matches_the_entity_from_the_break_event() {
+    init_config();
+    let condition = ParsedCondition {
+        opcode: 2092,
+        type_name: "None".into(),
+        kind: ParsedConditionKind::GuardBroken,
+        raw_args: Vec::new(),
+    };
+    let matches = |condition_target, toughness_broken_uid| {
+        conditions_match(
+            std::slice::from_ref(&condition),
+            condition_target,
+            &[condition_target],
+            None,
+            &TargetPool::default(),
+            TargetContext {
+                toughness_broken_uid,
+                ..Default::default()
+            },
+        )
+    };
+
+    assert!(matches(-1, -1));
+    assert!(!matches(-1, -2));
+}
+
+#[test]
 fn per_kill_count_repeats_once_for_each_kill() {
     init_config();
     let condition = ParsedCondition {
-        opcode: 99210,
+        opcode: 992101,
         type_name: "PerKillNum".into(),
         kind: ParsedConditionKind::PerKillCount { divisor: 1 },
         raw_args: vec!["1".into()],
@@ -80,6 +283,53 @@ fn per_kill_count_repeats_once_for_each_kill() {
 
     assert_eq!(fires(0), 0);
     assert_eq!(fires(2), 2);
+}
+
+#[test]
+fn team_entity_exit_matches_a_dead_enemy_relative_to_the_source() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(0),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let managers = BattleManagers::seeded(&fight);
+    let matches = |source_uid| {
+        conditions_match(
+            &[ParsedCondition {
+                opcode: 613403,
+                type_name: "PerTeamEntityExitCount".into(),
+                kind: ParsedConditionKind::TeamEntityExited { max_count: 2 },
+                raw_args: vec!["2".into(), "2".into()],
+            }],
+            source_uid,
+            &[-1],
+            Some(&managers),
+            &pool,
+            TargetContext {
+                runtime_target_uid: -1,
+                ..Default::default()
+            },
+        )
+    };
+
+    assert!(matches(10));
+    assert!(!matches(-1));
 }
 
 #[test]
@@ -126,6 +376,62 @@ fn per_hp_repeats_for_each_complete_target_hp_interval() {
     assert_eq!(fires(&managers), 4);
     managers.hp.lose(-1, 799, -1);
     assert_eq!(fires(&managers), 1);
+}
+
+#[test]
+fn lost_life_per_repeats_for_each_complete_missing_hp_interval() {
+    init_config();
+    let fight = Fight {
+        defender: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    current_hp: Some(750),
+                    attr: Some(sonettobuf::HeroAttribute {
+                        hp: Some(1_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-2),
+                    current_hp: Some(1_000),
+                    attr: Some(sonettobuf::HeroAttribute {
+                        hp: Some(1_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let managers = BattleManagers::seeded(&fight);
+    let condition = ParsedCondition {
+        opcode: 12203,
+        type_name: "LostLifePer".into(),
+        kind: ParsedConditionKind::PerLostHp {
+            interval_permille: 100,
+        },
+        raw_args: vec!["100".into()],
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            std::slice::from_ref(&condition),
+            10,
+            &[-1, -2],
+            Some(&managers),
+            &pool,
+            TargetContext {
+                hit_target_uid: -1,
+                ..Default::default()
+            },
+        ),
+        2
+    );
 }
 
 #[test]
@@ -310,6 +616,302 @@ fn per_buff_id_count_repeats_once_per_matching_layer() {
 }
 
 #[test]
+fn per_buff_id_counts_a_matching_non_first_id() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut managers = BattleManagers::seeded(&fight);
+    for _ in 0..2 {
+        managers.buff.add(&managers.hp, 10, 10, 31260151, 1);
+    }
+    let condition = ParsedCondition {
+        opcode: 59203,
+        type_name: "PerBuffId".into(),
+        kind: ParsedConditionKind::BuffIdCount {
+            buff_ids: vec![109320110, 31260151],
+            compare: ConditionCompare::GreaterThanOrEqual,
+            threshold: 1,
+        },
+        raw_args: vec!["109320110".into(), "31260151".into()],
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            &[condition],
+            10,
+            &[10],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        ),
+        2
+    );
+}
+
+#[test]
+fn team_status_type_count_repeats_per_distinct_buff_type() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(10),
+                    buffs: vec![
+                        BuffInfo {
+                            buff_id: Some(400901),
+                            uid: Some(1),
+                            ..Default::default()
+                        },
+                        BuffInfo {
+                            buff_id: Some(400902),
+                            uid: Some(2),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(11),
+                    buffs: vec![
+                        BuffInfo {
+                            buff_id: Some(31340007),
+                            uid: Some(3),
+                            ..Default::default()
+                        },
+                        BuffInfo {
+                            buff_id: Some(712313),
+                            uid: Some(4),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let condition = ParsedCondition {
+        opcode: 539301,
+        type_name: "PerSelfTeamTypeType2BuffTypeIdNum".into(),
+        kind: ParsedConditionKind::PerTeamBuffStatusTypeCount {
+            status_ids: vec![1, 3, 5, 7, 14],
+            divisor: 3,
+            max_count: 5,
+        },
+        raw_args: vec!["3".into(), "5".into(), "1,3,5,7,14".into()],
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            &[condition],
+            10,
+            &[10, 11],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        ),
+        1
+    );
+}
+
+#[test]
+fn target_status_type_count_repeats_once_per_distinct_type() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                buffs: vec![
+                    BuffInfo {
+                        buff_id: Some(400901),
+                        uid: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(400902),
+                        uid: Some(2),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(712313),
+                        uid: Some(3),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let condition = ParsedCondition {
+        opcode: 85203,
+        type_name: "PerBuffTypeCountGroupByTypeId".into(),
+        kind: ParsedConditionKind::PerTeamBuffStatusTypeCount {
+            status_ids: vec![1, 3, 5, 14],
+            divisor: 1,
+            max_count: i32::MAX,
+        },
+        raw_args: vec!["1,3,5".into(), "14".into()],
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            &[condition],
+            10,
+            &[10],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        ),
+        2
+    );
+}
+
+#[test]
+fn bullet_count_repeats_per_distinct_effective_type() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                buffs: vec![
+                    BuffInfo {
+                        buff_id: Some(722501),
+                        uid: Some(1),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(722502),
+                        uid: Some(2),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(31020111),
+                        uid: Some(3),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(31020112),
+                        uid: Some(4),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(31020113),
+                        uid: Some(5),
+                        count: Some(0),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(400901),
+                        uid: Some(6),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let pool = TargetPool::from_fight(&fight);
+    let repeats = |divisor, max_count| {
+        conditions_fire_count(
+            &[ParsedCondition {
+                opcode: 651203,
+                type_name: "PerBullet".into(),
+                kind: ParsedConditionKind::PerBullet { divisor, max_count },
+                raw_args: vec![divisor.to_string(), max_count.to_string()],
+            }],
+            10,
+            &[10],
+            Some(&managers),
+            &pool,
+            TargetContext::default(),
+        )
+    };
+
+    assert_eq!(repeats(1, 8), 3);
+    assert_eq!(repeats(2, 8), 1);
+    assert_eq!(repeats(4, 8), 0);
+    assert_eq!(repeats(1, 2), 2);
+}
+
+#[test]
+fn buff_group_count_repeats_once_per_layer_across_targets() {
+    init_config();
+    let poison = |uid, amount| BuffInfo {
+        uid: Some(uid),
+        buff_id: Some(30560101),
+        from_uid: Some(10),
+        count: Some(amount),
+        layer: Some(amount),
+        ..Default::default()
+    };
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    buffs: vec![poison(1, 2)],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-2),
+                    buffs: vec![poison(2, 1)],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let condition = ParsedCondition {
+        opcode: 669203,
+        type_name: "PerBuffGroupCount".into(),
+        kind: ParsedConditionKind::PerBuffGroupCount { group_id: 7 },
+        raw_args: vec!["7".into()],
+    };
+
+    assert_eq!(
+        conditions_fire_count(
+            &[condition],
+            10,
+            &[-1, -2],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        ),
+        3
+    );
+}
+
+#[test]
 fn accumulated_team_buff_count_preserves_all_crossed_thresholds() {
     init_config();
     let fight = Fight {
@@ -410,6 +1012,88 @@ fn round_power_conditions_preserve_consumed_and_overflow_counts() {
             expected
         );
     }
+}
+
+#[test]
+fn power_ratio_reads_current_and_max_resource_values() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                power_infos: vec![PowerInfo {
+                    power_id: Some(9),
+                    num: Some(10),
+                    max: Some(10),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let condition = exact_condition(749301, "PowerRatio", &["9", "1", "1000"]);
+    let matches = |managers: &BattleManagers| {
+        conditions_match(
+            std::slice::from_ref(&condition),
+            10,
+            &[10],
+            Some(managers),
+            &pool,
+            TargetContext::default(),
+        )
+    };
+
+    assert!(matches(&managers));
+    managers.eureka.add(10, 10, 9, -1, 0);
+    assert!(!matches(&managers));
+}
+
+#[test]
+fn bound_pair_threshold_does_not_sum_layers_across_entities() {
+    init_config();
+    let matches = |layer| {
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: [10, 11]
+                    .into_iter()
+                    .map(|uid| FightEntityInfo {
+                        uid: Some(uid),
+                        current_hp: Some(1),
+                        buffs: vec![BuffInfo {
+                            buff_id: Some(31000303),
+                            uid: Some(uid),
+                            duration: Some(1),
+                            layer: Some(layer),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let managers = BattleManagers::seeded(&fight);
+        conditions_match(
+            &[exact_condition(
+                535212,
+                "TypeIdBuffCountMoreThan",
+                &["31000303", "8"],
+            )],
+            10,
+            &[10, 11],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        )
+    };
+
+    assert!(!matches(4));
+    assert!(matches(8));
 }
 
 #[test]

@@ -68,6 +68,94 @@ fn hand_rank_change_mutates_one_registered_card_and_records_its_one_based_index(
 }
 
 #[test]
+fn deck_rank_range_uses_absolute_top_positions_and_commits_atomically() {
+    crate::test_support::init_config();
+    let card = |uid, skill_id, temp_card| CardInfo {
+        uid: Some(uid),
+        skill_id: Some(skill_id),
+        temp_card: Some(temp_card),
+        ..Default::default()
+    };
+    let hand = vec![card(10, 30650211, false)];
+    let draw_pile = vec![
+        card(10, 30650211, false),
+        card(20, 30870121, false),
+        card(10, 30650221, false),
+        card(10, 30650211, false),
+    ];
+    let mut manager = CardManager::with_draw_pile(hand.clone(), draw_pile);
+    manager.seed(&sonettobuf::Fight {
+        attacker: Some(sonettobuf::FightTeam {
+            entitys: vec![
+                sonettobuf::FightEntityInfo {
+                    uid: Some(10),
+                    skill_group1: vec![30650211, 30650212, 30650213],
+                    skill_group2: vec![30650221, 30650222, 30650223],
+                    ..Default::default()
+                },
+                sonettobuf::FightEntityInfo {
+                    uid: Some(20),
+                    skill_group1: vec![30870121, 30870122, 30870123],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let changes = manager
+        .execute_command(CardCommand::RankUpDeckRange(CardDeckRankUpRange {
+            origin: ORIGIN,
+            from: 2,
+            to: 3,
+            rank_delta: 1,
+        }))
+        .unwrap();
+
+    assert_eq!(changes.kind, CardChangeKind::DeckTopRanksChanged);
+    assert_eq!(
+        manager
+            .draw_pile()
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>(),
+        vec![30650211, 30870122, 30650222, 30650211]
+    );
+    assert_eq!(manager.hand(), hand);
+    assert!(matches!(
+        changes.rank_results.as_slice(),
+        [CardRankResult::Changed(first), CardRankResult::Changed(second)]
+            if first.card_index == 2 && second.card_index == 3
+    ));
+
+    let mut capped = CardManager::with_draw_pile(
+        Vec::new(),
+        vec![card(10, 30650211, false), card(10, 30650213, false)],
+    );
+    capped.seed(&sonettobuf::Fight {
+        attacker: Some(sonettobuf::FightTeam {
+            entitys: vec![sonettobuf::FightEntityInfo {
+                uid: Some(10),
+                skill_group1: vec![30650211, 30650212, 30650213],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let before = capped.draw_pile().to_vec();
+    let result = capped.execute_command(CardCommand::RankUpDeckRange(CardDeckRankUpRange {
+        origin: ORIGIN,
+        from: 1,
+        to: 2,
+        rank_delta: 1,
+    }));
+    assert_eq!(result, Err(CardCommandError::InvalidCommand));
+    assert_eq!(capped.draw_pile(), before);
+}
+
+#[test]
 fn move_and_dissolve_commit_through_the_card_owner() {
     let card = |skill_id| CardInfo {
         uid: Some(10),
@@ -130,8 +218,10 @@ fn temporary_card_and_energy_changes_share_one_command_path() {
             origin: ORIGIN,
             target_uid: 10,
             skill_id: 999,
+            hero_id: None,
             reserve_id: 0,
             team_type: 1,
+            kind: TemporaryCardKind::ConfiguredSkill,
         }))
         .unwrap();
     assert_eq!(added.kind, CardChangeKind::TemporaryAdded);
@@ -190,6 +280,39 @@ fn temporary_card_and_energy_changes_share_one_command_path() {
             ref reserve_str,
             team_type: 1,
         }) if reserve_str == "configured"
+    ));
+}
+
+#[test]
+fn generic_temporary_card_is_unowned_but_retains_operation_metadata() {
+    let mut manager = CardManager::default();
+    let changes = manager
+        .execute_command(CardCommand::AddTemporary(CardAddTemporary {
+            origin: ORIGIN,
+            target_uid: 10,
+            skill_id: 999,
+            hero_id: None,
+            reserve_id: 3149,
+            team_type: 1,
+            kind: TemporaryCardKind::GenericSkill,
+        }))
+        .unwrap();
+    let card = changes.added.as_ref().unwrap();
+
+    assert_eq!(changes.kind, CardChangeKind::GenericTemporaryAdded);
+    assert_eq!(card.uid, Some(0));
+    assert_eq!(card.skill_id, Some(999));
+    assert_eq!(card.hero_id, Some(0));
+    assert_eq!(card.card_type, Some(0));
+    assert_eq!(card.temp_card, Some(true));
+    assert!(matches!(
+        changes.operation,
+        Some(CardChange::SpCardAdd {
+            target_uid: 10,
+            skill_id: 999,
+            reserve_id: 3149,
+            team_type: 1,
+        })
     ));
 }
 
@@ -463,7 +586,8 @@ fn invalidated_play_discards_normal_cards_and_restores_ultimates() {
 }
 
 #[test]
-fn cloth_cards_add_universal_and_redeal_without_touching_precast_cards() {
+fn cloth_cards_add_universal_and_redeal_without_touching_special_cards() {
+    crate::test_support::init_config();
     let mut manager = CardManager::new(vec![
         CardInfo {
             uid: Some(10),
@@ -472,9 +596,14 @@ fn cloth_cards_add_universal_and_redeal_without_touching_precast_cards() {
             ..Default::default()
         },
         CardInfo {
-            uid: Some(10),
-            skill_id: Some(999),
+            uid: Some(0),
+            skill_id: Some(118353040),
             temp_card: Some(true),
+            ..Default::default()
+        },
+        CardInfo {
+            uid: Some(10),
+            skill_id: Some(308801322),
             ..Default::default()
         },
     ]);
@@ -502,8 +631,9 @@ fn cloth_cards_add_universal_and_redeal_without_touching_precast_cards() {
         .unwrap();
     assert_eq!(redealt.kind, CardChangeKind::RedealtKeepRanks);
     assert_eq!(redealt.after[0].skill_id, Some(201));
-    assert_eq!(redealt.after[1].skill_id, Some(999));
-    assert_eq!(redealt.after[2].skill_id, Some(30_000_001));
+    assert_eq!(redealt.after[1].skill_id, Some(118353040));
+    assert_eq!(redealt.after[2].skill_id, Some(308801322));
+    assert_eq!(redealt.after[3].skill_id, Some(30_000_001));
 }
 
 #[test]
@@ -591,8 +721,10 @@ fn invalid_temporary_card_does_not_mutate_the_hand() {
         origin: ORIGIN,
         target_uid: 10,
         skill_id: 0,
+        hero_id: None,
         reserve_id: 0,
         team_type: 1,
+        kind: TemporaryCardKind::ConfiguredSkill,
     }));
 
     assert_eq!(result, Err(CardCommandError::InvalidCommand));
@@ -721,6 +853,7 @@ fn action_queue_snapshot_keeps_unplayed_team_cards() {
         .execute_command(CardCommand::CommitActionQueue {
             team: 1,
             emitter_uid: 0,
+            device_actions: 0,
         })
         .unwrap();
 
@@ -749,10 +882,59 @@ fn action_queue_snapshot_uses_the_selected_skill() {
         .execute_command(CardCommand::CommitActionQueue {
             team: 1,
             emitter_uid: 0,
+            device_actions: 0,
         })
         .unwrap();
 
     assert_eq!(committed.action_queue.unwrap().cards[0].skill_id, Some(900));
+}
+
+#[test]
+fn action_queue_snapshot_appends_neutral_device_actions() {
+    let played = CardInfo {
+        uid: Some(10),
+        skill_id: Some(100),
+        ..Default::default()
+    };
+    let mut manager = CardManager::new(vec![played.clone()]);
+    manager
+        .execute_command(CardCommand::Play(CardPlay {
+            origin: ORIGIN,
+            hand_index: 0,
+            target_uid: Some(-1),
+            chosen_skill_id: None,
+            choice: None,
+            recorded_skill: None,
+        }))
+        .unwrap();
+
+    let committed = manager
+        .execute_command(CardCommand::CommitActionQueue {
+            team: 1,
+            emitter_uid: 0,
+            device_actions: 1,
+        })
+        .unwrap();
+    let cards = committed.action_queue.unwrap().cards;
+
+    assert_eq!(cards[0], played);
+    assert_eq!(
+        cards[1],
+        CardInfo {
+            uid: Some(0),
+            skill_id: Some(0),
+            temp_card: Some(false),
+            card_type: Some(sonettobuf::card_info::CardType::Device as i32),
+            hero_id: Some(0),
+            status: Some(0),
+            target_uid: Some(0),
+            energy: Some(0),
+            area_red_or_blue: Some(0),
+            heat_id: Some(0),
+            ..Default::default()
+        }
+    );
+    assert!(manager.hand().is_empty());
 }
 
 #[test]

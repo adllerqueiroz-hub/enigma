@@ -18,6 +18,26 @@ pub struct BuffChangeEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuffStateChangeEvent {
+    pub source_uid: i64,
+    pub target_uid: i64,
+    pub buff_uid: i64,
+    pub buff_id: i32,
+    pub before_ex_info: i32,
+    pub after_ex_info: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuffRejectedEvent {
+    pub source_uid: i64,
+    pub target_uid: i64,
+    pub buff_uid: i64,
+    pub buff_id: i32,
+    pub type_id: i32,
+    pub blocker_buff_id: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuffFeatureTriggeredEvent {
     pub owner_uid: i64,
     pub source_uid: i64,
@@ -34,8 +54,11 @@ pub struct HitEvent {
     pub target_uid: i64,
     pub skill_id: i32,
     pub amount: i32,
+    pub shield_absorbed: i32,
+    pub career_restraint: bool,
     pub damage_from: crate::engine::manager::hp::HurtDamageFromType,
     pub assassinate: bool,
+    pub ignore_riposte: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +99,7 @@ pub struct ConduitActivatedEvent {
     pub team: i32,
     pub skill_id: i32,
     pub power_id: i32,
+    pub activation_cost: i32,
     pub spent: i32,
 }
 
@@ -174,7 +198,9 @@ pub enum BattleEvent {
     AllyAction(crate::engine::skill::action::ActionEvent),
     BuffAdded(BuffChangeEvent),
     BuffChanged(BuffChangeEvent),
+    BuffStateChanged(BuffStateChangeEvent),
     BuffRemoved(BuffChangeEvent),
+    BuffRejected(BuffRejectedEvent),
     BuffsSettled(Vec<BuffChangeEvent>),
     BuffFeatureTriggered(BuffFeatureTriggeredEvent),
     HpLost {
@@ -190,6 +216,11 @@ pub enum BattleEvent {
         source_uid: i64,
         target_uid: i64,
         amount: i32,
+    },
+    ToughnessBroken {
+        source_uid: i64,
+        target_uid: i64,
+        skill_id: i32,
     },
     Hit(HitEvent),
     EntityDied(EntityDiedEvent),
@@ -216,17 +247,57 @@ pub enum BattleEvent {
 }
 
 impl BattleEvent {
+    pub fn source_uid(&self) -> Option<i64> {
+        match self {
+            Self::ActionQueueCommitted { emitter_uid, .. }
+            | Self::PlayerActionsResolved { emitter_uid, .. }
+            | Self::ImpromptuResolved { emitter_uid, .. } => Some(*emitter_uid),
+            Self::SkillEffectStarted(action) | Self::SkillAction(action) => Some(action.source_uid),
+            Self::AllyAction(action) => Some(action.source_uid),
+            Self::BuffAdded(change) | Self::BuffChanged(change) | Self::BuffRemoved(change) => {
+                Some(change.source_uid)
+            }
+            Self::BuffRejected(change) => Some(change.source_uid),
+            Self::BuffStateChanged(change) => Some(change.source_uid),
+            Self::BuffFeatureTriggered(trigger) => Some(trigger.source_uid),
+            Self::HpLost { source_uid, .. }
+            | Self::HpHealed { source_uid, .. }
+            | Self::ToughnessBroken { source_uid, .. } => Some(*source_uid),
+            Self::Hit(hit) => Some(hit.source_uid),
+            Self::EntityDied(death) => Some(death.source_uid),
+            Self::ExPointChanged(change) | Self::ExPointOverflow(change) => Some(change.source_uid),
+            Self::EurekaChanged(change) => Some(change.source_uid),
+            Self::ConduitActivated(change) => Some(change.source_uid),
+            Self::GaugeChanged(change) => Some(change.source_uid),
+            Self::SummonChanged(change) => Some(change.owner_uid),
+            Self::ShellChanged(change) => Some(change.source_uid),
+            Self::EnterFight
+            | Self::EntityEntered { .. }
+            | Self::EntityTransformed { .. }
+            | Self::RoundStart
+            | Self::BattleTerminalCommitted { .. }
+            | Self::CardChanged(_)
+            | Self::FieldChanged(_)
+            | Self::BuffsSettled(_)
+            | Self::BloodtitheChanged { .. }
+            | Self::Kind(_) => None,
+        }
+    }
+
     pub fn target_uid(&self) -> Option<i64> {
         match self {
             Self::EntityEntered { target_uid }
             | Self::EntityTransformed { target_uid }
             | Self::HpLost { target_uid, .. }
-            | Self::HpHealed { target_uid, .. } => Some(*target_uid),
+            | Self::HpHealed { target_uid, .. }
+            | Self::ToughnessBroken { target_uid, .. } => Some(*target_uid),
             Self::SkillEffectStarted(action) | Self::SkillAction(action) => Some(action.target_uid),
             Self::AllyAction(action) => Some(action.target_uid),
             Self::BuffAdded(change) | Self::BuffChanged(change) | Self::BuffRemoved(change) => {
                 Some(change.target_uid)
             }
+            Self::BuffRejected(change) => Some(change.target_uid),
+            Self::BuffStateChanged(change) => Some(change.target_uid),
             Self::BuffFeatureTriggered(trigger) => Some(trigger.target_uid),
             Self::Hit(hit) => Some(hit.target_uid),
             Self::EntityDied(death) => Some(death.target_uid),
@@ -264,12 +335,15 @@ impl BattleEvent {
             Self::AllyAction(_) => EventKind::AllyAction,
             Self::BuffAdded(_) => EventKind::BuffAdded,
             Self::BuffChanged(_) => EventKind::BuffChanged,
+            Self::BuffStateChanged(_) => EventKind::BuffStateChanged,
             Self::BuffRemoved(_) => EventKind::BuffRemoved,
+            Self::BuffRejected(_) => EventKind::BuffRejected,
             Self::BuffsSettled(_) => EventKind::RoundEndFinalSettlement,
             Self::BuffFeatureTriggered(_) => EventKind::BuffFeatureTriggered,
             Self::HpLost { .. } => EventKind::HpLost,
             Self::HpHealed { .. } => EventKind::HpHealed,
             Self::Hit(_) => EventKind::TargetAttacked,
+            Self::ToughnessBroken { .. } => EventKind::ToughnessBroken,
             Self::EntityDied(_) => EventKind::EntityDied,
             Self::BattleTerminalCommitted { .. } => EventKind::BattleTerminalCommitted,
             Self::ExPointChanged(_) => EventKind::ExPointChanged,
@@ -338,8 +412,11 @@ mod subscription_tests {
             target_uid: -1,
             skill_id: 1,
             amount: 1,
+            shield_absorbed: 0,
+            career_restraint: false,
             damage_from,
             assassinate: false,
+            ignore_riposte: false,
         })
     }
 
@@ -378,9 +455,11 @@ mod subscription_tests {
             skill_type: 0,
             effect_tag: 1,
             assassinate: false,
+            ignore_riposte: false,
             damage_amount: 10,
             kill_count: 0,
             crit_count: 0,
+            guard_break_count: 0,
             additional_moxie: 0,
             extra_skill_kind: 0,
             mode: crate::engine::skill::action::SkillExecutionMode::Active,
@@ -388,6 +467,7 @@ mod subscription_tests {
             teammate_injury_count_not_reset: 0,
             team_injury_count_round: 0,
             card_enchants: Vec::new(),
+            buff_additions: Vec::new(),
         };
 
         assert_eq!(

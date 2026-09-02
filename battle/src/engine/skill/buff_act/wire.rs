@@ -14,8 +14,12 @@ pub struct BuffActWireDefinition {
     static_read: &'static [i32],
     refresh: &'static [i32],
     pub initial_state: Option<InitialStateRule>,
+    pub initial_state_marker: bool,
+    pub initial_private_state: Option<InitialPrivateStateRule>,
     pub max_hp: Option<MaxHpWireRule>,
     pub pre_add: Option<WireEffect>,
+    pub snapshot_reserve: Option<SnapshotReserveRule>,
+    pub refreshes_unchanged: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,23 +40,49 @@ pub enum InitialStateRule {
     CrystalSelection,
     ConduitCardSelection,
     ButterflyAllowedSkillKinds,
+    ZeroInteger,
     HeatScale,
     CurrentHpPermille,
+    SourceAttackThreshold,
     FirstArgument,
     SecondArgument,
+    StringCounter,
     GrantValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialPrivateStateRule {
+    FourthArgument,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotReserveRule {
+    ActCommonParamsTail,
 }
 
 impl BuffActWireDefinition {
     pub const fn all(key: DefinitionKey, markers: &'static [i32]) -> Self {
+        Self::new(key, markers, markers, markers)
+    }
+
+    pub const fn new(
+        key: DefinitionKey,
+        add: &'static [i32],
+        static_read: &'static [i32],
+        refresh: &'static [i32],
+    ) -> Self {
         Self {
             key,
-            add: markers,
-            static_read: markers,
-            refresh: markers,
+            add,
+            static_read,
+            refresh,
             initial_state: None,
+            initial_state_marker: true,
+            initial_private_state: None,
             max_hp: None,
             pre_add: None,
+            snapshot_reserve: None,
+            refreshes_unchanged: false,
         }
     }
 
@@ -63,8 +93,12 @@ impl BuffActWireDefinition {
             static_read: &[],
             refresh: &[],
             initial_state: None,
+            initial_state_marker: true,
+            initial_private_state: None,
             max_hp: None,
             pre_add: None,
+            snapshot_reserve: None,
+            refreshes_unchanged: false,
         }
     }
 
@@ -75,14 +109,35 @@ impl BuffActWireDefinition {
             static_read: &[],
             refresh: markers,
             initial_state: None,
+            initial_state_marker: true,
+            initial_private_state: None,
             max_hp: None,
             pre_add: None,
+            snapshot_reserve: None,
+            refreshes_unchanged: false,
         }
     }
 
     pub const fn with_initial_state(mut self, rule: InitialStateRule) -> Self {
         self.initial_state = Some(rule);
         self
+    }
+
+    pub const fn with_embedded_initial_state(mut self, rule: InitialStateRule) -> Self {
+        self.initial_state = Some(rule);
+        self.initial_state_marker = false;
+        self
+    }
+
+    pub const fn with_initial_private_state(mut self, rule: InitialPrivateStateRule) -> Self {
+        self.initial_private_state = Some(rule);
+        self
+    }
+
+    pub fn initial_private_state(self, values: &[i32]) -> Option<i32> {
+        match self.initial_private_state? {
+            InitialPrivateStateRule::FourthArgument => values.get(4).copied(),
+        }
     }
 
     pub const fn with_max_hp(mut self, repeats: u8, buff_act_id: i32) -> Self {
@@ -98,6 +153,29 @@ impl BuffActWireDefinition {
         self
     }
 
+    pub const fn with_snapshot_reserve(mut self, rule: SnapshotReserveRule) -> Self {
+        self.snapshot_reserve = Some(rule);
+        self
+    }
+
+    pub const fn with_unchanged_refresh(mut self) -> Self {
+        self.refreshes_unchanged = true;
+        self
+    }
+
+    pub fn snapshot_reserve_str(self, params: Option<&str>) -> Option<String> {
+        match self.snapshot_reserve? {
+            SnapshotReserveRule::ActCommonParamsTail => Some(
+                params
+                    .and_then(|params| params.split_once('#'))
+                    .filter(|(act_id, _)| act_id.parse::<i32>().ok() == Some(self.key.opcode))
+                    .map(|(_, values)| values)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
+        }
+    }
+
     pub fn markers(self, phase: WirePhase) -> &'static [i32] {
         match phase {
             WirePhase::Add => self.add,
@@ -111,8 +189,10 @@ impl BuffActWireDefinition {
             || !self.static_read.is_empty()
             || !self.refresh.is_empty()
             || self.initial_state.is_some()
+            || self.initial_private_state.is_some()
             || self.max_hp.is_some()
             || self.pre_add.is_some()
+            || self.snapshot_reserve.is_some()
     }
 }
 

@@ -1,10 +1,13 @@
 use super::*;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RefillStage {
     Opening,
     AfterActions,
     RoundStart,
+}
+
+pub(super) struct OpeningRefillSeed {
+    pub(super) draws: Vec<sonettobuf::CardInfo>,
 }
 
 /// Refills the normal hand deficit, then resolves composition and replacement rules.
@@ -59,7 +62,7 @@ pub(super) fn run_opening_hand_refill(
     determinism: &mut RoundDeterminism,
     context: TargetContext,
     hand_size: usize,
-    opening_draws: Vec<sonettobuf::CardInfo>,
+    seed: OpeningRefillSeed,
 ) -> Result<DrainResult, DrainError> {
     run_card_refill(
         managers,
@@ -70,7 +73,7 @@ pub(super) fn run_opening_hand_refill(
         hand_size,
         1,
         RefillStage::Opening,
-        opening_draws,
+        seed.draws,
     )
 }
 
@@ -142,7 +145,16 @@ fn run_card_refill(
     );
     append_round_phase(&mut result, composition);
     loop {
-        let ready_normal = if stage != RefillStage::Opening {
+        let needs_normal_card = match stage {
+            RefillStage::Opening => managers.card.hand().len() < hand_size,
+            RefillStage::AfterActions | RefillStage::RoundStart => {
+                crate::engine::mechanic::card::CardMechanic.refill_hand_len(managers, pool)
+                    < hand_size
+            }
+        };
+        let ready_normal = if stage == RefillStage::Opening {
+            Vec::new()
+        } else if needs_normal_card {
             crate::engine::mechanic::card::CardMechanic.normal_ultimate_cards(pool, managers)
         } else {
             Vec::new()
@@ -160,14 +172,7 @@ fn run_card_refill(
         } else {
             Vec::new()
         };
-        let needs_normal_card = match stage {
-            RefillStage::Opening => managers.card.hand().len() < hand_size,
-            RefillStage::AfterActions | RefillStage::RoundStart => {
-                crate::engine::mechanic::card::CardMechanic.refill_hand_len(managers, pool)
-                    < hand_size
-            }
-        };
-        if !needs_normal_card && ready_special.is_empty() && opening_draws.len() == 0 {
+        if !needs_normal_card && ready_normal.is_empty() && ready_special.is_empty() {
             break;
         }
         let ready_ultimates = pool
@@ -181,6 +186,21 @@ fn run_card_refill(
                     .cloned()
             })
             .collect::<Vec<_>>();
+        if needs_normal_card && ready_ultimates.is_empty() && managers.card.can_recycle_draw_pile()
+        {
+            let recycled = drain::run(
+                managers,
+                pool,
+                catalog,
+                determinism,
+                context,
+                [RuleOp::Command(BattleCommand::Card(
+                    CardCommand::RecycleDrawPile { origin, team_type },
+                ))],
+            )?;
+            append_round_phase(&mut result, recycled);
+            continue;
+        }
         let mut candidates = managers
             .card
             .draw_pile()
@@ -188,7 +208,8 @@ fn run_card_refill(
             .filter(|card| {
                 pool.entity(card.uid.unwrap_or_default())
                     .is_none_or(|entity| {
-                        !crate::engine::mechanic::card::CardMechanic.is_ultimate(card, entity)
+                        !crate::engine::mechanic::card::CardMechanic
+                            .is_ultimate(managers, card, entity)
                     })
             })
             .cloned()
@@ -201,28 +222,31 @@ fn run_card_refill(
                 candidates.push(ready.clone());
             }
         }
-        let (card, configured_opening) = if let Some(card) = opening_draws.next() {
-            (Some(card), true)
-        } else if determinism.has_queued_card_draw() {
-            (determinism.draw_cards(&candidates, 1).pop(), false)
-        } else {
-            (
-                ready_ultimates
-                    .first()
-                    .cloned()
-                    .or_else(|| determinism.draw_cards(&candidates, 1).pop()),
-                false,
-            )
-        };
+        let (card, configured_opening) =
+            if needs_normal_card && let Some(card) = opening_draws.next() {
+                (Some(card), true)
+            } else if !needs_normal_card {
+                (ready_ultimates.first().cloned(), false)
+            } else if determinism.has_queued_card_draw() {
+                (determinism.draw_cards(&candidates, 1).pop(), false)
+            } else {
+                (
+                    ready_ultimates
+                        .first()
+                        .cloned()
+                        .or_else(|| determinism.draw_cards(&candidates, 1).pop()),
+                    false,
+                )
+            };
         let Some(card) = card else {
             break;
         };
         let is_ultimate = pool
             .entity(card.uid.unwrap_or_default())
             .is_some_and(|entity| {
-                crate::engine::mechanic::card::CardMechanic.is_ultimate(&card, entity)
+                crate::engine::mechanic::card::CardMechanic.is_ultimate(managers, &card, entity)
             });
-        let is_device = crate::engine::mechanic::card::CardMechanic.is_device_card(&card);
+        let is_device = crate::engine::mechanic::card::CardMechanic.is_device_card(managers, &card);
         if is_ultimate
             && !ready_ultimates
                 .iter()
@@ -243,8 +267,8 @@ fn run_card_refill(
                 CardCommand::RefillOne(CardRefillOne {
                     origin,
                     card,
-                    consume_draw_pile: stage != RefillStage::Opening && !is_ultimate,
-                    consume_deck: stage != RefillStage::Opening
+                    consume_draw_pile: !configured_opening && !is_ultimate,
+                    consume_deck: !configured_opening
                         && !is_ultimate
                         && !is_device
                         && managers.card.refill_consumes_deck(),
@@ -301,6 +325,21 @@ fn run_card_refill(
         append_round_phase(&mut result, summary);
     }
     Ok(result)
+}
+
+pub fn run_post_action_refill_settlement(
+    managers: &mut BattleManagers,
+    pool: &TargetPool,
+    catalog: &SkillEffectCatalog,
+    determinism: &mut RoundDeterminism,
+    context: TargetContext,
+) -> Result<DrainResult, DrainError> {
+    let replenishment = buff_act::ex_point_overflow_bank::replenishment_rule_ops(managers);
+    if replenishment.is_empty() {
+        Ok(DrainResult::default())
+    } else {
+        drain::run_buff_act_ops(managers, pool, catalog, determinism, context, replenishment)
+    }
 }
 
 /// Emits the semantic round-deal cue without mutating card storage.

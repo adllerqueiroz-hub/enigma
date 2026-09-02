@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn conduit_inherits_the_rounds_selected_enemy() {
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(-3),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let commands = vec![
+        crate::engine::round::command::RoundCommand::PlayCard {
+            card_index: 0,
+            target_uid: Some(-3),
+            chosen_skill_id: None,
+            recorded_skill: None,
+        },
+        crate::engine::round::command::RoundCommand::PlayCard {
+            card_index: 1,
+            target_uid: Some(10),
+            chosen_skill_id: None,
+            recorded_skill: None,
+        },
+        crate::engine::round::command::RoundCommand::UseAssistBoss {
+            skill_id: 1,
+            target_uid: Some(-1),
+        },
+    ];
+
+    assert_eq!(
+        crate::engine::runtime::round::selected_enemy_target(
+            &commands,
+            &crate::engine::skill::target::TargetPool::from_fight(&fight),
+        ),
+        Some(-1)
+    );
+}
+
+#[test]
 fn destination_begin_round_owns_the_round_transition_and_reply_buckets() {
     crate::test_support::init_config();
     let fight = Fight {
@@ -24,7 +80,7 @@ fn destination_begin_round_owns_the_round_transition_and_reply_buckets() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime
         .build_begin_round_from_schedule(&BeginRoundRequest::default())
@@ -59,6 +115,241 @@ fn destination_begin_round_owns_the_round_transition_and_reply_buckets() {
 }
 
 #[test]
+fn advance_round_discards_state_after_late_projection_failure() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(77),
+        cur_round: Some(1),
+        version: Some(8),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+    let before = format!("{runtime:?}");
+
+    assert!(runtime.advance_round(BeginRoundRequest::default()).is_err());
+    assert_eq!(format!("{runtime:?}"), before);
+}
+
+#[test]
+fn no_conduit_round_clears_card_energy_once() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+    runtime
+        .managers
+        .execute_card(crate::engine::manager::card::CardCommand::Setup(
+            CardSetup {
+                hand: vec![CardInfo {
+                    energy: Some(2),
+                    ..Default::default()
+                }],
+                draw_pile: Vec::new(),
+                deck_num: 1,
+            },
+        ))
+        .unwrap();
+
+    let round = runtime
+        .build_begin_round_from_schedule(&BeginRoundRequest::default())
+        .unwrap();
+
+    assert_eq!(runtime.managers.card.hand()[0].energy, Some(0));
+    assert_eq!(
+        round
+            .fight_step
+            .iter()
+            .flat_map(|step| &step.act_effect)
+            .filter(|effect| {
+                effect.effect_type
+                    == Some(sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32)
+                    && effect.effect_num1 == Some(0)
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn client_conduit_selection_projects_two_top_level_confirmations_before_actions() {
+    crate::test_support::init_config();
+    let entity = |uid, model_id| FightEntityInfo {
+        uid: Some(uid),
+        model_id: Some(model_id),
+        current_hp: Some(100_000),
+        attr: Some(sonettobuf::HeroAttribute {
+            hp: Some(100_000),
+            attack: Some(1_000),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![entity(10, 3149)],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![entity(-1, 1001)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+    runtime
+        .managers
+        .execute_card(crate::engine::manager::card::CardCommand::Setup(
+            CardSetup {
+                hand: vec![
+                    CardInfo {
+                        uid: Some(10),
+                        skill_id: Some(31446011),
+                        temp_card: Some(false),
+                        card_type: Some(0),
+                        hero_id: Some(3149),
+                        ..Default::default()
+                    },
+                    CardInfo {
+                        uid: Some(11),
+                        energy: Some(3),
+                        ..Default::default()
+                    },
+                ],
+                draw_pile: Vec::new(),
+                deck_num: 1,
+            },
+        ))
+        .unwrap();
+    let round = runtime
+        .build_begin_round_from_schedule(&BeginRoundRequest {
+            opers: vec![BeginRoundOper {
+                oper_type: Some(crate::engine::manager::card::CardOpType::PlayCard as i32),
+                param1: Some(1),
+                ..Default::default()
+            }],
+            devices_opers: vec![sonettobuf::FightDeviceOper {
+                uid: Some(10),
+                index: Some(1),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let selection_effects = round
+        .fight_step
+        .iter()
+        .flat_map(|step| &step.act_effect)
+        .filter(|effect| {
+            effect.effect_type
+                == Some(sonettobuf::effect_type_enum::EffectType::Deviceskillindex as i32)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(selection_effects.len(), 2);
+    assert_eq!(selection_effects[0], selection_effects[1]);
+    let effect = selection_effects[0];
+    assert_eq!(effect.target_id, Some(10));
+    assert_eq!(effect.effect_num, Some(1));
+    assert_eq!(effect.team_type, Some(1));
+    assert_eq!(effect.config_effect, Some(0));
+    let use_cards = &round.fight_step[0].act_effect[0].card_info_list;
+    assert_eq!(use_cards.len(), 2);
+    assert_eq!(use_cards[0].uid, Some(10));
+    assert_eq!(use_cards[0].skill_id, Some(31446011));
+    assert_eq!(use_cards[1].uid, Some(0));
+    assert_eq!(use_cards[1].skill_id, Some(0));
+    assert_eq!(use_cards[1].hero_id, Some(0));
+    assert_eq!(
+        use_cards[1].card_type,
+        Some(sonettobuf::card_info::CardType::Device as i32)
+    );
+    assert_eq!(
+        round.fight_step[0]
+            .act_effect
+            .iter()
+            .map(|effect| effect.effect_type.unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            sonettobuf::effect_type_enum::EffectType::Usecards as i32,
+            sonettobuf::effect_type_enum::EffectType::Cardspush as i32,
+            sonettobuf::effect_type_enum::EffectType::Carddecknum as i32,
+        ]
+    );
+    for step in &round.fight_step[1..=2] {
+        assert_eq!(step.act_effect.len(), 1);
+        assert_eq!(&step.act_effect[0], effect);
+    }
+    let card_action_index = round
+        .fight_step
+        .iter()
+        .position(|step| step.act_id == Some(31446011))
+        .expect("the selected device card is played");
+    assert!(card_action_index > 2);
+    let conduit_stop_index = round
+        .fight_step
+        .iter()
+        .position(|step| {
+            step.act_effect.iter().any(|effect| {
+                effect.effect_type
+                    == Some(sonettobuf::effect_type_enum::EffectType::Devicerunning as i32)
+                    && effect.effect_num == Some(0)
+            })
+        })
+        .expect("Conduit stop is projected");
+    let clear_indices = round
+        .fight_step
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| {
+            step.act_effect.iter().any(|effect| {
+                effect.effect_type
+                    == Some(sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32)
+                    && effect.effect_num1 == Some(0)
+            })
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(clear_indices.len(), 1);
+    assert!(clear_indices[0] > conduit_stop_index);
+    assert_eq!(runtime.managers.card.hand()[0].energy, Some(0));
+}
+
+#[test]
 fn opening_round_uses_action_point_buffs_applied_during_setup() {
     crate::test_support::init_config();
     let fight = Fight {
@@ -69,6 +360,8 @@ fn opening_round_uses_action_point_buffs_applied_during_setup() {
                 model_id: Some(3149),
                 current_hp: Some(100),
                 passive_skill: vec![31490161],
+                skill_group1: vec![31490111],
+                skill_group2: vec![31490121],
                 ex_point_type: Some(4),
                 ex_point_max: Some(100),
                 ..Default::default()
@@ -85,7 +378,7 @@ fn opening_round_uses_action_point_buffs_applied_during_setup() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.start_round().unwrap();
 
@@ -137,7 +430,7 @@ fn opening_round_collects_static_ap_rules_without_runtime_dispatch() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.start_round().unwrap();
 
@@ -167,7 +460,7 @@ fn round_modifier_with_output_keeps_its_setup_command() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime.extend_battle_rule_skills([crate::engine::fight::rules::OwnedBattleSkill {
         owner_uid: crate::engine::fight::rules::ATTACKER_SIDE_UID,
         skill_id: 1_182_004,
@@ -230,7 +523,7 @@ fn begin_round_refills_any_normal_hand_deficit() {
         temp_card: Some(false),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .managers
         .execute_card(crate::engine::manager::card::CardCommand::Setup(
@@ -269,9 +562,9 @@ fn round_start_keeps_precast_above_normal_hand_capacity() {
         .join("../battle_preview/fixtures/battles/battle6/StartDungeonReply.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
-    crate::preview::normalize_live_json(&mut value);
+    sonettobuf::normalize::normalize_live_json(&mut value);
     let fight: Fight = serde_json::from_value(value["fight"].clone()).unwrap();
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     runtime.start_round().unwrap();
     assert!(
@@ -292,7 +585,7 @@ fn round_start_keeps_precast_above_normal_hand_capacity() {
         .unwrap(),
     )
     .unwrap();
-    crate::preview::normalize_live_json(&mut request_value);
+    sonettobuf::normalize::normalize_live_json(&mut request_value);
     let request: BeginRoundRequest = serde_json::from_value(request_value).unwrap();
     let round = runtime.build_begin_round_from_schedule(&request).unwrap();
     let normal = runtime.managers.card.normal_hand_len();
@@ -338,9 +631,9 @@ fn rank_three_emanation_updates_lingering_glow() {
         &std::fs::read_to_string(battle.join("StartDungeonReply.json")).unwrap(),
     )
     .unwrap();
-    crate::preview::normalize_live_json(&mut value);
+    sonettobuf::normalize::normalize_live_json(&mut value);
     let fight: Fight = serde_json::from_value(value["fight"].clone()).unwrap();
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime.start_round().unwrap();
     assert!(
         runtime
@@ -359,7 +652,7 @@ fn rank_three_emanation_updates_lingering_glow() {
                 .unwrap(),
         )
         .unwrap();
-        crate::preview::normalize_live_json(&mut value);
+        sonettobuf::normalize::normalize_live_json(&mut value);
         serde_json::from_value::<BeginRoundRequest>(value).unwrap()
     };
     runtime
@@ -425,7 +718,7 @@ fn begin_round_projects_the_canonical_hand_after_the_deal_composes() {
         ..Default::default()
     };
     let original = vec![card(200), card(300), card(400), card(500), card(100)];
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .managers
         .execute_card(crate::engine::manager::card::CardCommand::Setup(
@@ -485,7 +778,8 @@ fn begin_round_projects_the_canonical_hand_after_the_deal_composes() {
 }
 
 #[test]
-fn refill_sees_moxie_gained_before_the_fight_snapshot_is_synchronized() {
+fn opening_random_pool_never_contains_an_ultimate() {
+    crate::test_support::init_config();
     let fight = Fight {
         attacker: Some(FightTeam {
             entitys: vec![FightEntityInfo {
@@ -501,15 +795,15 @@ fn refill_sees_moxie_gained_before_the_fight_snapshot_is_synchronized() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime.managers.ex_point.add(10, 10, 1, 0);
 
     assert_eq!(
-        super::start::available_player_cards(&runtime.fight, &runtime.managers)
+        super::start::available_player_cards(runtime.managers.catalog(), &runtime.fight)
             .into_iter()
             .filter_map(|card| card.skill_id)
             .collect::<Vec<_>>(),
-        vec![900, 200]
+        vec![100, 200]
     );
 }
 
@@ -523,7 +817,7 @@ fn finished_round_does_not_promote_reserves_and_still_projects_the_next_round() 
         position: Some(position),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(Fight {
+    let mut runtime = runtime(Fight {
         cur_round: Some(1),
         version: Some(6),
         attacker: Some(FightTeam {

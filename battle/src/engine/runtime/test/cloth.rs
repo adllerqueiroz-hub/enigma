@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn rejects_unknown_cloth_skill_type_at_runtime_boundary() {
     crate::test_support::init_config();
-    let mut runtime = BattleRuntime::new(Fight::default());
+    let mut runtime = runtime(Fight::default());
     runtime.pending_redeal = Some(RedealCardInfoPush::default());
 
     assert!(
@@ -48,7 +48,7 @@ fn configured_cloth_skills_drive_universal_and_redeal_card_rules() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime.catalog =
         SkillEffectCatalog::from_roots(config::configs::get(), [30010201, 30010202], []);
     runtime
@@ -99,12 +99,70 @@ fn configured_cloth_skills_drive_universal_and_redeal_card_rules() {
             r#type: Some(ClothSkillType::ClothSkill as i32),
         })
         .unwrap();
-    assert_eq!(redeal.round.unwrap().power, Some(34));
+    let redeal = redeal.round.unwrap();
+    assert_eq!(redeal.power, Some(34));
+    let v6_effect = &redeal.fight_step[0].act_effect[0];
+    assert_eq!(
+        v6_effect.effect_type,
+        Some(sonettobuf::effect_type_enum::EffectType::Redealcard as i32)
+    );
+    assert_eq!(v6_effect.config_effect, Some(60012));
+    assert_eq!(v6_effect.team_type, Some(0));
+    assert!(v6_effect.card_info_list.is_empty());
     assert_eq!(runtime.card_hand()[0].skill_id, Some(201));
     assert_eq!(
         runtime.take_redeal_card_push().unwrap().card_group,
         runtime.card_hand()
     );
+
+    runtime.fight.version = Some(7);
+    let redeal = runtime
+        .use_cloth_skill(UseClothSkillRequest {
+            skill_id: Some(30010202),
+            from_id: Some(0),
+            to_id: Some(0),
+            r#type: Some(ClothSkillType::ClothSkill as i32),
+        })
+        .unwrap()
+        .round
+        .unwrap();
+    assert_eq!(redeal.power, Some(9));
+    assert_eq!(redeal.fight_step.len(), 2);
+    assert_eq!(
+        redeal.fight_step[0].act_effect[0].effect_type,
+        Some(sonettobuf::effect_type_enum::EffectType::Afterredealcard as i32)
+    );
+    assert_eq!(redeal.fight_step[0].act_effect[0].team_type, Some(1));
+    assert!(
+        redeal.fight_step[0].act_effect[0]
+            .card_info_list
+            .iter()
+            .map(|card| (card.uid, card.skill_id, card.temp_card.unwrap_or_default()))
+            .eq(runtime.card_hand().iter().map(|card| (
+                card.uid,
+                card.skill_id,
+                card.temp_card.unwrap_or_default()
+            )))
+    );
+    assert_eq!(
+        redeal.fight_step[1].act_effect[0].effect_type,
+        Some(sonettobuf::effect_type_enum::EffectType::Cardspush as i32)
+    );
+    assert_eq!(redeal.fight_step[1].act_effect[0].effect_num, Some(0));
+    assert_eq!(redeal.fight_step[1].act_effect[0].effect_num1, Some(0));
+    assert_eq!(redeal.fight_step[1].act_effect[0].team_type, Some(0));
+    assert!(
+        redeal.fight_step[1].act_effect[0]
+            .card_info_list
+            .iter()
+            .map(|card| (card.uid, card.skill_id, card.temp_card.unwrap_or_default()))
+            .eq(runtime.card_hand().iter().map(|card| (
+                card.uid,
+                card.skill_id,
+                card.temp_card.unwrap_or_default()
+            )))
+    );
+    assert!(runtime.take_redeal_card_push().is_none());
 }
 
 #[test]
@@ -129,7 +187,7 @@ fn conduit_selection_adds_the_configured_precast_and_commits_the_choice() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     let reply = runtime
         .use_cloth_skill(UseClothSkillRequest {
             skill_id: Some(0),
@@ -176,4 +234,195 @@ fn conduit_selection_adds_the_configured_precast_and_commits_the_choice() {
             })
             .is_none()
     );
+}
+
+#[test]
+fn contract_selection_uses_the_offered_uid_and_fight_const_buff_pair() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(-1),
+                    career: Some(4),
+                    ex_skill_level: Some(0),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(20),
+                    career: Some(1),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+    runtime
+        .managers
+        .contract
+        .execute(crate::engine::manager::contract::ContractCommand::Offer {
+            origin: crate::engine::skill::rule::CommandOrigin {
+                domain: crate::engine::skill::rule::RuleDomain::Behavior,
+                key: crate::engine::skill::rule::DefinitionKey::new(60092, "NotifyHeroContract"),
+            },
+            owner_uid: -1,
+            candidates: vec![20],
+        })
+        .unwrap();
+
+    let round = runtime
+        .use_cloth_skill(UseClothSkillRequest {
+            skill_id: Some(0),
+            from_id: Some(-1),
+            to_id: Some(20),
+            r#type: Some(ClothSkillType::Contract as i32),
+        })
+        .unwrap()
+        .round
+        .unwrap();
+
+    assert_eq!(runtime.managers.contract.bound_uid(-1), Some(20));
+    assert!(runtime.managers.buff.has_buff_id(-1, 31000221));
+    assert!(runtime.managers.buff.has_buff_id(20, 31000191));
+    let effects = round
+        .fight_step
+        .iter()
+        .flat_map(|step| &step.act_effect)
+        .collect::<Vec<_>>();
+    let kinds = effects
+        .iter()
+        .map(|effect| effect.effect_type.unwrap_or_default())
+        .collect::<Vec<_>>();
+    let owner_buff = effects
+        .iter()
+        .position(|effect| effect.buff.as_ref().and_then(|buff| buff.buff_id) == Some(31000221))
+        .unwrap();
+    let owner = kinds
+        .iter()
+        .position(|kind| *kind == sonettobuf::effect_type_enum::EffectType::Contranct as i32)
+        .unwrap();
+    let bound = kinds
+        .iter()
+        .position(|kind| *kind == sonettobuf::effect_type_enum::EffectType::Becontrancted as i32)
+        .unwrap();
+    let bound_buff = effects
+        .iter()
+        .position(|effect| effect.buff.as_ref().and_then(|buff| buff.buff_id) == Some(31000191))
+        .unwrap();
+    assert!(owner_buff < owner && owner < bound_buff && bound_buff < bound);
+}
+
+#[test]
+fn configured_upgrade_and_contract_prompts_resolve_in_opening_order() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(10),
+                    model_id: Some(3086),
+                    position: Some(1),
+                    team_type: Some(1),
+                    career: Some(6),
+                    current_hp: Some(100),
+                    passive_skill: vec![30864156, 30864112],
+                    enhance_info_box: Some(sonettobuf::EnhanceInfoBox {
+                        uid: Some(10),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(20),
+                    model_id: Some(3100),
+                    position: Some(2),
+                    team_type: Some(1),
+                    career: Some(4),
+                    ex_skill_level: Some(0),
+                    current_hp: Some(100),
+                    passive_skill: vec![31000141],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(30),
+                    position: Some(3),
+                    team_type: Some(1),
+                    career: Some(1),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+    let opening = runtime.start_round().unwrap();
+    let upgrade = sonettobuf::effect_type_enum::EffectType::Notifyupgradehero as i32;
+    let contract = sonettobuf::effect_type_enum::EffectType::Notifiyherocontract as i32;
+    fn collect_prompts(
+        effect: &sonettobuf::ActEffect,
+        upgrade: i32,
+        contract: i32,
+        prompts: &mut Vec<(i32, i64)>,
+    ) {
+        if effect
+            .effect_type
+            .is_some_and(|kind| kind == upgrade || kind == contract)
+        {
+            prompts.push((
+                effect.effect_type.unwrap(),
+                effect.target_id.unwrap_or_default(),
+            ));
+        }
+        if let Some(step) = &effect.fight_step {
+            for nested in &step.act_effect {
+                collect_prompts(nested, upgrade, contract, prompts);
+            }
+        }
+    }
+    let mut prompts = Vec::new();
+    for effect in opening.fight_step.iter().flat_map(|step| &step.act_effect) {
+        collect_prompts(effect, upgrade, contract, &mut prompts);
+    }
+    let contract_prompt = prompts
+        .iter()
+        .position(|prompt| *prompt == (contract, 20))
+        .unwrap();
+    assert!(contract_prompt > 0);
+    assert!(
+        prompts[..contract_prompt]
+            .iter()
+            .all(|prompt| *prompt == (upgrade, 10))
+    );
+    assert_eq!(&prompts[contract_prompt..], &[(contract, 20)]);
+
+    assert!(
+        runtime
+            .use_cloth_skill(UseClothSkillRequest {
+                skill_id: Some(308665),
+                from_id: Some(10),
+                to_id: Some(3086515),
+                r#type: Some(ClothSkillType::HeroUpgrade as i32),
+            })
+            .is_some()
+    );
+    assert!(
+        runtime
+            .use_cloth_skill(UseClothSkillRequest {
+                skill_id: Some(0),
+                from_id: Some(20),
+                to_id: Some(30),
+                r#type: Some(ClothSkillType::Contract as i32),
+            })
+            .is_some()
+    );
+    assert_eq!(runtime.managers.upgrade.selected_option(10), Some(3086515));
+    assert_eq!(runtime.managers.contract.bound_uid(20), Some(30));
 }

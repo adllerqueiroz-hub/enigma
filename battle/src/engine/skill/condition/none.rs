@@ -22,6 +22,7 @@ pub enum NoneMode {
     SkillDamage,
     SkillAfterAttack,
     Attacked,
+    ToughnessBroken,
     AllyAction,
     ImpromptuResolved,
     EnemyAction,
@@ -50,6 +51,15 @@ macro_rules! parser {
 
 parser!(always, Always);
 parser!(unconditional, Unconditional);
+
+pub fn unconditional_without_arguments(
+    _: i32,
+    _: &str,
+    args: &[String],
+) -> Option<ParsedConditionKind> {
+    args.is_empty()
+        .then_some(ParsedConditionKind::None(NoneMode::Unconditional))
+}
 parser!(enter_battle, EnterBattle);
 parser!(round_start, RoundStart);
 parser!(after_round_start, AfterRoundStart);
@@ -63,6 +73,7 @@ parser!(skill_action_after_hit, SkillActionAfterHit);
 parser!(skill_cast, SkillCast);
 parser!(skill_after_attack, SkillAfterAttack);
 parser!(attacked, Attacked);
+parser!(toughness_broken, ToughnessBroken);
 parser!(ally_action, AllyAction);
 parser!(impromptu_resolved, ImpromptuResolved);
 parser!(shell_deploy, ShellDeploy);

@@ -55,6 +55,7 @@ pub fn rule_ops(
             config_effect: 0,
             effect_kind: DamageEffectKind::Genesis,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: subscriber.source_uid,
                 is_crit: false,
@@ -148,8 +149,11 @@ mod tests {
             target_uid: 20,
             skill_id: 1,
             amount: 100,
+            shield_absorbed: 0,
+            career_restraint: false,
             damage_from: HurtDamageFromType::Skill,
             assassinate: false,
+            ignore_riposte: false,
         });
         let amount = |mode| match rule_ops(&managers, &subscriber(mode), &event)
             .unwrap()

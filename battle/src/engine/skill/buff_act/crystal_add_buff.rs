@@ -2,11 +2,11 @@ use crate::engine::{
     event::payload::BattleEvent,
     manager::{
         BattleManagers,
-        buff::{BuffCommand, BuffGrant},
+        buff::{BuffChildUidReservation, BuffCommand, BuffGrant},
         emanation::EmanationKind,
     },
     skill::{
-        action::SkillPhase,
+        action::{SkillExecutionMode, SkillPhase},
         condition::extra::skill_kind_from_is_extra,
         rule::output::{BattleCommand, RuleOp},
         subscriber::BuffActSubscriber,
@@ -44,7 +44,15 @@ pub fn rule_ops(
     let is_extra_action = skill_kind_from_is_extra(action.extra_skill_kind)
         .is_some_and(|kind| kind.is_extra_action());
     let blue = if is_extra_action { *blue_layer } else { 0 };
-    let purple = if is_extra_action { 0 } else { *purple_layer };
+    let purple = if !is_extra_action
+        && matches!(
+            action.mode,
+            SkillExecutionMode::Active | SkillExecutionMode::DirectBig
+        ) {
+        *purple_layer
+    } else {
+        0
+    };
     let layer = managers
         .emanation
         .count(feature.source_uid, EmanationKind::Blue)
@@ -66,21 +74,29 @@ pub fn rule_ops(
     }
 
     let source_uid = action.source_uid;
+    let origin = super::command_origin(feature).expect("registered crystal buff act");
     let commands = action
         .target_uids
         .iter()
         .copied()
         .filter(|target_uid| *target_uid != 0)
-        .map(|target_uid| {
-            BuffCommand::Grant(BuffGrant {
-                origin: super::command_origin(feature).expect("registered crystal buff act"),
-                source_uid,
-                target_uid,
-                buff_id: *buff_id,
-                amount: Some(layer),
-                occurrences: 1,
-                child_uid_reservations: 0,
-            })
+        .flat_map(|target_uid| {
+            [
+                BuffCommand::Grant(BuffGrant {
+                    origin,
+                    source_uid,
+                    target_uid,
+                    buff_id: *buff_id,
+                    amount: Some(layer),
+                    occurrences: 1,
+                    child_uid_reservations: 0,
+                }),
+                BuffCommand::ReserveChildUids(BuffChildUidReservation {
+                    origin,
+                    target_uid,
+                    count: 1,
+                }),
+            ]
         })
         .collect::<Vec<_>>();
     Some(
@@ -182,9 +198,11 @@ mod tests {
             skill_type: 0,
             effect_tag: 1,
             assassinate: false,
+            ignore_riposte: false,
             damage_amount: 100,
             kill_count: 0,
             crit_count: 0,
+            guard_break_count: 0,
             additional_moxie: 0,
             extra_skill_kind: 1,
             mode: SkillExecutionMode::Active,
@@ -192,6 +210,7 @@ mod tests {
             teammate_injury_count_not_reset: 0,
             team_injury_count_round: 0,
             card_enchants: Vec::new(),
+            buff_additions: Vec::new(),
         }
     }
 
@@ -205,19 +224,28 @@ mod tests {
     #[test]
     fn crystal_link_uses_configured_layer_and_acting_source() {
         let (mut managers, feature, event) = fixture();
-        assert!(managers.emanation.select(10, 110));
+        assert!(managers.emanation.select(10, 101));
 
         assert!(matches!(
             rule_ops(&managers, &feature, &event).as_deref(),
-            Some([RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(
-                BuffGrant {
+            Some([
+                RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(BuffGrant {
                     source_uid: 11,
                     target_uid: -1,
                     buff_id: 31340001,
                     amount: Some(1),
+                    occurrences: 1,
+                    child_uid_reservations: 0,
                     ..
-                }
-            )))])
+                }))),
+                RuleOp::Command(BattleCommand::Buff(BuffCommand::ReserveChildUids(
+                    BuffChildUidReservation {
+                        target_uid: -1,
+                        count: 1,
+                        ..
+                    }
+                )))
+            ])
         ));
     }
 
@@ -232,11 +260,14 @@ mod tests {
                 ..action()
             })
         };
-        let granted_layer = |event| match rule_ops(&managers, &feature, &event).unwrap().as_slice()
-        {
-            [RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(grant)))] => grant.amount,
-            [] => None,
-            other => panic!("unexpected crystal outputs: {other:?}"),
+        let granted_layer = |event| {
+            rule_ops(&managers, &feature, &event)
+                .unwrap()
+                .into_iter()
+                .find_map(|op| match op {
+                    RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(grant))) => grant.amount,
+                    _ => None,
+                })
         };
 
         assert_eq!(granted_layer(event(1, 0)), Some(2));
@@ -246,33 +277,48 @@ mod tests {
     }
 
     #[test]
-    fn one_action_emits_ordered_per_target_buff_commands() {
+    fn one_action_emits_grant_then_reservation_per_target() {
         let (mut managers, feature, mut event) = fixture();
-        assert!(managers.emanation.select(10, 110));
+        assert!(managers.emanation.select(10, 101));
         let BattleEvent::SkillAction(action) = &mut event else {
             unreachable!()
         };
         action.target_uids = vec![-1, -2, -3];
 
         let outputs = rule_ops(&managers, &feature, &event).unwrap();
-        assert_eq!(
-            outputs
-                .iter()
-                .filter_map(|op| match op {
-                    RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(grant))) => {
-                        Some(grant.target_uid)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-            vec![-1, -2, -3]
-        );
+        let origin = crate::engine::skill::buff_act::command_origin(&feature).unwrap();
+        let targets = [-1, -2, -3];
+        assert_eq!(outputs.len(), targets.len() * 2);
+        for (target_uid, pair) in targets.into_iter().zip(outputs.chunks_exact(2)) {
+            let [grant, reservation] = pair else {
+                unreachable!()
+            };
+            let RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(grant))) = grant else {
+                panic!("expected crystal grant for target {target_uid}")
+            };
+            assert_eq!(grant.origin, origin);
+            assert_eq!(grant.source_uid, 11);
+            assert_eq!(grant.target_uid, target_uid);
+            assert_eq!(grant.buff_id, 31340001);
+            assert_eq!(grant.amount, Some(1));
+            assert_eq!(grant.occurrences, 1);
+            assert_eq!(grant.child_uid_reservations, 0);
+
+            let RuleOp::Command(BattleCommand::Buff(BuffCommand::ReserveChildUids(reservation))) =
+                reservation
+            else {
+                panic!("expected crystal child reservation for target {target_uid}")
+            };
+            assert_eq!(reservation.origin, origin);
+            assert_eq!(reservation.target_uid, target_uid);
+            assert_eq!(reservation.count, 1);
+        }
     }
 
     #[test]
     fn crystal_link_ignores_attacks_without_a_selected_matching_crystal() {
         let (mut managers, feature, mut event) = fixture();
-        assert!(managers.emanation.select(10, 110));
+        assert!(managers.emanation.select(10, 101));
         let BattleEvent::SkillAction(action) = &mut event else {
             unreachable!()
         };
@@ -285,7 +331,7 @@ mod tests {
     #[test]
     fn green_crystal_applies_to_an_allies_rank_two_attack() {
         let (mut managers, feature, mut event) = fixture();
-        assert!(managers.emanation.select(10, 110));
+        assert!(managers.emanation.select(10, 101));
         let BattleEvent::SkillAction(action) = &mut event else {
             unreachable!()
         };
@@ -295,26 +341,63 @@ mod tests {
 
         assert!(matches!(
             rule_ops(&managers, &feature, &event).as_deref(),
-            Some([RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(
-                BuffGrant {
+            Some([
+                RuleOp::Command(BattleCommand::Buff(BuffCommand::Grant(BuffGrant {
                     amount: Some(1),
                     ..
-                }
-            )))])
+                }))),
+                RuleOp::Command(BattleCommand::Buff(BuffCommand::ReserveChildUids(
+                    BuffChildUidReservation {
+                        target_uid: -1,
+                        count: 1,
+                        ..
+                    }
+                )))
+            ])
         ));
+    }
+
+    #[test]
+    fn device_attacks_are_not_purple_active_incantations() {
+        let (mut managers, feature, mut event) = fixture();
+        assert!(managers.emanation.select(10, 10));
+        let BattleEvent::SkillAction(action) = &mut event else {
+            unreachable!()
+        };
+        action.mode = SkillExecutionMode::Device;
+
+        assert_eq!(rule_ops(&managers, &feature, &event), Some(Vec::new()));
+    }
+
+    #[test]
+    fn nested_non_extra_attacks_are_not_active_attacks() {
+        let (mut managers, feature, mut event) = fixture();
+        assert!(managers.emanation.select(10, 10));
+        let BattleEvent::SkillAction(action) = &mut event else {
+            unreachable!()
+        };
+        action.mode = SkillExecutionMode::Nested;
+
+        assert_eq!(rule_ops(&managers, &feature, &event), Some(Vec::new()));
     }
 
     #[test]
     fn crystal_link_frames_are_owned_by_the_force_field_applier() {
         let (mut managers, feature, event) = fixture();
-        assert!(managers.emanation.select(10, 110));
+        assert!(managers.emanation.select(10, 101));
 
         assert!(matches!(
             scoped_rule_ops(&managers, &feature, &event).as_deref(),
-            Some([BuffActRuleOp {
-                source: BuffActFrameSource::Applier,
-                ..
-            }])
+            Some([
+                BuffActRuleOp {
+                    source: BuffActFrameSource::Applier,
+                    ..
+                },
+                BuffActRuleOp {
+                    source: BuffActFrameSource::Applier,
+                    ..
+                }
+            ])
         ));
     }
 }

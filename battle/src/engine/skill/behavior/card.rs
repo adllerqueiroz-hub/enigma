@@ -2,8 +2,8 @@ use crate::engine::{
     manager::{
         buff::{BuffCommand, BuffSetState},
         card::{
-            CardAddUniversal, CardCommand, CardEnchantHand, CardEnergyChange, CardMarkTemporary,
-            CardQueueUse, EnchantedType, HandCardRankUp, QueuedCardRankUp,
+            CardAddTemporary, CardAddUniversal, CardCommand, CardEnchantHand, CardEnergyChange,
+            CardMarkTemporary, CardQueueUse, EnchantedType, HandCardRankUp, QueuedCardRankUp,
         },
         eureka::{EUREKA_RESOURCE_ID, EurekaChange, EurekaCommand},
     },
@@ -34,13 +34,29 @@ pub fn rule_op(behavior: &ParsedBehavior) -> Option<RuleOp> {
     )))
 }
 
+pub(super) fn supports_basic_card_energy(behavior: &ParsedBehavior) -> bool {
+    matches!(behavior.args.as_slice(), [1, -1, count] if *count > 0)
+}
+
 pub(super) struct Handler;
 
 impl BehaviorHandler for Handler {
     fn references(behavior: &ParsedBehavior) -> RuleReferences {
-        if behavior.spec.kind == BehaviorKind::AddQueuedSkillCard {
+        if matches!(
+            behavior.spec.kind,
+            BehaviorKind::AddQueuedSkillCard
+                | BehaviorKind::AddSpTempCard
+                | BehaviorKind::AddSpTempCard2
+        ) {
             return RuleReferences {
-                skills: behavior.arg_list(1).unwrap_or_default(),
+                skills: if matches!(
+                    behavior.spec.kind,
+                    BehaviorKind::AddSpTempCard | BehaviorKind::AddSpTempCard2
+                ) {
+                    behavior.args.clone()
+                } else {
+                    behavior.arg_list(1).unwrap_or_default()
+                },
                 ..Default::default()
             };
         }
@@ -56,6 +72,9 @@ impl BehaviorHandler for Handler {
         }
         if behavior.spec.kind == BehaviorKind::CardLevelChange {
             return card_level_change_ops(context, behavior);
+        }
+        if behavior.spec.kind == BehaviorKind::CardDeckTopRankCorrect {
+            return deck_top_rank_correct_ops(context, behavior);
         }
         if behavior.spec.kind == BehaviorKind::ConsumePowerUpgradeSkillCard {
             return power_card_upgrade_ops(context, behavior);
@@ -85,6 +104,35 @@ impl BehaviorHandler for Handler {
         if behavior.spec.kind == BehaviorKind::AddQueuedSkillCard {
             return queued_skill_card_ops(context, behavior);
         }
+        if matches!(
+            behavior.spec.kind,
+            BehaviorKind::AddSpTempCard | BehaviorKind::AddSpTempCard2
+        ) {
+            let [skill_id] = behavior.args.as_slice() else {
+                return None;
+            };
+            let reserve_id = i64::from(context.pool.entity(context.source_uid)?.model_id);
+            let kind = match behavior.spec.kind {
+                BehaviorKind::AddSpTempCard => {
+                    crate::engine::manager::card::TemporaryCardKind::GenericSkill
+                }
+                BehaviorKind::AddSpTempCard2 => {
+                    crate::engine::manager::card::TemporaryCardKind::ConfiguredSkill
+                }
+                _ => unreachable!("temporary-card branch has an exact kind guard"),
+            };
+            return Some(vec![RuleOp::Command(BattleCommand::Card(
+                CardCommand::AddTemporary(CardAddTemporary {
+                    origin: super::command_origin(behavior)?,
+                    target_uid: context.target_uid,
+                    skill_id: *skill_id,
+                    hero_id: None,
+                    reserve_id,
+                    team_type: context.source_team,
+                    kind,
+                }),
+            ))]);
+        }
         if behavior.spec.kind == BehaviorKind::BufferflyRecordSkill {
             if !behavior.raw_args.is_empty()
                 || context.target.recorded_skill_id <= 0
@@ -104,9 +152,13 @@ impl BehaviorHandler for Handler {
                             crate::engine::skill::buff_act::registry::BuffActKind::ButterflyRecordSkill,
                         )
                 });
-            let Some(feature) = feature
-                .filter(|feature| allows_recorded_skill(feature, context.target.recorded_skill_id))
-            else {
+            let Some(feature) = feature.filter(|feature| {
+                allows_recorded_skill(
+                    context.managers.catalog(),
+                    feature,
+                    context.target.recorded_skill_id,
+                )
+            }) else {
                 return Some(Vec::new());
             };
             let count = *feature.values.get(1)?;
@@ -134,23 +186,22 @@ impl BehaviorHandler for Handler {
                 .iter()
                 .filter(|card| {
                     card.card.uid == Some(context.source_uid)
-                        && context.pool.skill_slot(context.source_uid, card.skill_id) == skill_slot
-                        && effect_tags.contains(
-                            &crate::engine::skill::effect::catalog::configured_effect_tag(
-                                card.skill_id,
-                            ),
-                        )
+                        && context.pool.skill_slot(
+                            context.managers,
+                            context.source_uid,
+                            card.skill_id,
+                        ) == skill_slot
+                        && effect_tags
+                            .contains(&context.managers.catalog().skill_effect_tag(card.skill_id))
                 })
                 .filter_map(|card| {
-                    let effect_tag =
-                        crate::engine::skill::effect::catalog::configured_effect_tag(card.skill_id);
+                    let effect_tag = context.managers.catalog().skill_effect_tag(card.skill_id);
                     let levels = played
                         .iter()
                         .filter(|other| {
                             other.card_index != card.card_index
-                                && crate::engine::skill::effect::catalog::configured_effect_tag(
-                                    other.skill_id,
-                                ) == effect_tag
+                                && context.managers.catalog().skill_effect_tag(other.skill_id)
+                                    == effect_tag
                         })
                         .count() as i32;
                     (levels > 0).then_some(QueuedCardRankUp {
@@ -349,12 +400,11 @@ fn card_level_change_ops(
     context: BehaviorOpContext<'_>,
     behavior: &ParsedBehavior,
 ) -> Option<Vec<RuleOp>> {
-    let [selection_mode, count, levels] = behavior.args.as_slice() else {
-        return None;
+    let (mode, count) = match behavior.args.as_slice() {
+        [1, count, 1] if *count > 0 => (1, *count),
+        [3, 1, 1] => (3, 1),
+        _ => return None,
     };
-    if *selection_mode != 1 || *count <= 0 || *levels != 1 {
-        return None;
-    }
     let owner = context.pool.entity(context.target_uid)?;
     let mut candidates = context
         .managers
@@ -368,8 +418,18 @@ fn card_level_change_ops(
         .filter_map(|(hand_index, card)| next_skill(owner, card.skill_id?).map(|_| hand_index))
         .collect::<Vec<_>>();
     let origin = super::command_origin(behavior)?;
+    if mode == 3 {
+        let hand_index = candidates.pop()?;
+        return Some(vec![RuleOp::Command(BattleCommand::Card(
+            CardCommand::RankUpHand(HandCardRankUp {
+                origin,
+                owner_uid: context.target_uid,
+                hand_index,
+            }),
+        ))]);
+    }
     let mut ops = Vec::new();
-    for _ in 0..usize::try_from(*count).ok()? {
+    for _ in 0..usize::try_from(count).ok()? {
         let hand_index = context
             .determinism
             .take_hand_rank_choice(behavior.spec.key.opcode, context.target_uid, &candidates)
@@ -395,6 +455,25 @@ fn card_level_change_ops(
         }
     }
     Some(ops)
+}
+
+fn deck_top_rank_correct_ops(
+    _context: BehaviorOpContext<'_>,
+    behavior: &ParsedBehavior,
+) -> Option<Vec<RuleOp>> {
+    let [from, to, rank_delta] = behavior.args.as_slice() else {
+        return None;
+    };
+    let from = usize::try_from(*from).ok()?;
+    let to = usize::try_from(*to).ok()?;
+    Some(vec![RuleOp::Command(BattleCommand::Card(
+        CardCommand::RankUpDeckRange(crate::engine::manager::card::CardDeckRankUpRange {
+            origin: super::command_origin(behavior)?,
+            from,
+            to,
+            rank_delta: *rank_delta,
+        }),
+    ))])
 }
 
 fn power_card_upgrade_ops(
@@ -426,7 +505,7 @@ fn power_card_upgrade_ops(
             })
             .filter_map(|(hand_index, card)| {
                 let skill_id = card.skill_id?;
-                let rank = crate::engine::entity::skill::skill_rank(skill_id);
+                let rank = context.managers.catalog().skill_rank(skill_id);
                 let cost = match rank {
                     1 => *rank_one_cost,
                     2 => *rank_two_cost,
@@ -511,11 +590,15 @@ pub(super) fn supports_mark_hand_temporary(behavior: &ParsedBehavior) -> bool {
 }
 
 pub(super) fn supports_card_level_change(behavior: &ParsedBehavior) -> bool {
-    matches!(
-        behavior.args.as_slice(),
-        [selection_mode, count, levels]
-            if *selection_mode == 1 && *count > 0 && *levels == 1
-    )
+    match behavior.args.as_slice() {
+        [1, count, 1] => *count > 0,
+        [3, 1, 1] => true,
+        _ => false,
+    }
+}
+
+pub(super) fn supports_deck_top_rank_correct(behavior: &ParsedBehavior) -> bool {
+    matches!(behavior.args.as_slice(), [1, 1, 1] | [2, 3, 1] | [4, 4, 1])
 }
 
 pub(super) fn supports_power_card_upgrade(behavior: &ParsedBehavior) -> bool {
@@ -526,14 +609,19 @@ pub(super) fn supports_queued_skill_card(behavior: &ParsedBehavior) -> bool {
     queued_skill_card_arguments(behavior).is_some()
 }
 
+pub(super) fn supports_temporary_skill_card(behavior: &ParsedBehavior) -> bool {
+    matches!(behavior.args.as_slice(), [skill_id] if *skill_id > 0)
+}
+
 fn allows_recorded_skill(
+    catalog: crate::catalog::BattleCatalog,
     feature: &crate::engine::manager::buff::ActiveBuffFeature,
     skill_id: i32,
 ) -> bool {
-    if crate::engine::skill::effect::catalog::configured_is_big_skill(skill_id) {
+    if catalog.skill_is_big(skill_id) {
         return false;
     }
-    let effect_tag = crate::engine::skill::effect::catalog::configured_effect_tag(skill_id);
+    let effect_tag = catalog.skill_effect_tag(skill_id);
     feature
         .values
         .get(3..)
@@ -547,6 +635,116 @@ pub(super) fn supports_rank_by_effect_tag(behavior: &ParsedBehavior) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn special_temporary_card_uses_the_source_model_as_reserve_id() {
+        use sonettobuf::{Fight, FightEntityInfo, FightTeam};
+
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    model_id: Some(3149),
+                    team_type: Some(1),
+                    current_hp: Some(100),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let managers = crate::engine::manager::BattleManagers::seeded(&fight);
+        let pool = crate::engine::skill::target::TargetPool::from_fight(&fight);
+        let mut determinism = crate::engine::runtime::determinism::RoundDeterminism::default();
+        let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+        let mut target = crate::engine::skill::target::TargetContext::default();
+        let behavior = ParsedBehavior::new(60300, "AddSpTempCard2", vec![31446013]);
+
+        let ops = Handler::emit_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 0,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ops.as_slice(),
+            [RuleOp::Command(BattleCommand::Card(CardCommand::AddTemporary(add)))]
+                if add.target_uid == 10
+                    && add.skill_id == 31446013
+                    && add.reserve_id == 3149
+                    && add.team_type == 1
+        ));
+        assert_eq!(Handler::references(&behavior).skills, vec![31446013]);
+    }
+
+    #[test]
+    fn generic_temporary_card_keeps_target_metadata_but_is_unowned() {
+        use sonettobuf::{Fight, FightEntityInfo, FightTeam};
+
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    model_id: Some(3149),
+                    team_type: Some(1),
+                    current_hp: Some(100),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let managers = crate::engine::manager::BattleManagers::seeded(&fight);
+        let pool = crate::engine::skill::target::TargetPool::from_fight(&fight);
+        let mut determinism = crate::engine::runtime::determinism::RoundDeterminism::default();
+        let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+        let mut target = crate::engine::skill::target::TargetContext::default();
+        let behavior = ParsedBehavior::new(50031, "AddSpTempCard", vec![31446013]);
+
+        let ops = Handler::emit_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 0,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ops.as_slice(),
+            [RuleOp::Command(BattleCommand::Card(CardCommand::AddTemporary(add)))]
+                if add.target_uid == 10
+                    && add.skill_id == 31446013
+                    && add.reserve_id == 3149
+                    && add.team_type == 1
+                    && add.kind
+                        == crate::engine::manager::card::TemporaryCardKind::GenericSkill
+        ));
+        assert_eq!(Handler::references(&behavior).skills, vec![31446013]);
+    }
 
     #[test]
     fn queued_skill_card_uses_committed_rank_threshold_and_next_queue_index() {
@@ -793,8 +991,276 @@ mod tests {
     }
 
     #[test]
+    fn card_level_change_mode_three_selects_rightmost_owned_eligible_card_without_randomness() {
+        use crate::engine::runtime::determinism::{HandRankChoice, RoundDeterminism};
+        use sonettobuf::{CardInfo, Fight, FightEntityInfo, FightTeam};
+
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![
+                    FightEntityInfo {
+                        uid: Some(10),
+                        team_type: Some(1),
+                        current_hp: Some(100),
+                        skill_group1: vec![100, 101, 102],
+                        ..Default::default()
+                    },
+                    FightEntityInfo {
+                        uid: Some(20),
+                        team_type: Some(1),
+                        current_hp: Some(100),
+                        skill_group1: vec![200, 201],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let card = |uid, skill_id, temp_card| CardInfo {
+            uid: Some(uid),
+            skill_id: Some(skill_id),
+            temp_card: Some(temp_card),
+            ..Default::default()
+        };
+        let mut managers = crate::engine::manager::BattleManagers::seeded(&fight);
+        managers.card = crate::engine::manager::card::CardManager::new(vec![
+            card(10, 100, false),
+            card(20, 200, false),
+            card(10, 101, true),
+            card(10, 999, false),
+            card(10, 101, false),
+            card(20, 200, false),
+            card(10, 101, false),
+            card(10, 100, true),
+        ]);
+        let pool = crate::engine::skill::target::TargetPool::from_fight(&fight);
+        let behavior = ParsedBehavior::new(50011, "CardLevelChange", vec![3, 1, 1]);
+        let mut determinism = RoundDeterminism::default();
+        determinism.enqueue_hand_rank_choices([HandRankChoice {
+            opcode: 50011,
+            owner_uid: 10,
+            hand_index: 0,
+        }]);
+        let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+        let mut target = crate::engine::skill::target::TargetContext::default();
+
+        let ops = Handler::emit_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 0,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ops.as_slice(),
+            [RuleOp::Command(BattleCommand::Card(
+                CardCommand::RankUpHand(HandCardRankUp {
+                    owner_uid: 10,
+                    hand_index: 6,
+                    ..
+                })
+            ))]
+        ));
+        assert_eq!(determinism.take_hand_rank_choice(50011, 10, &[0]), Some(0));
+        let mut expected = RoundDeterminism::default();
+        assert_eq!(
+            determinism.lua_random_index(4),
+            expected.lua_random_index(4)
+        );
+
+        let mode_one = ParsedBehavior::new(50011, "CardLevelChange", vec![1, 1, 1]);
+        let mut determinism = RoundDeterminism::default();
+        determinism.enqueue_hand_rank_choices([HandRankChoice {
+            opcode: 50011,
+            owner_uid: 10,
+            hand_index: 4,
+        }]);
+        let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+        let mut target = crate::engine::skill::target::TargetContext::default();
+
+        let ops = Handler::emit_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 0,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &mode_one,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ops.as_slice(),
+            [RuleOp::Command(BattleCommand::Card(
+                CardCommand::RankUpHand(HandCardRankUp {
+                    owner_uid: 10,
+                    hand_index: 4,
+                    ..
+                })
+            ))]
+        ));
+    }
+
+    #[test]
+    fn card_level_change_rejects_unsupported_mode_three_variants() {
+        for args in [
+            vec![3, 0, 1],
+            vec![3, 2, 1],
+            vec![3, 1, 0],
+            vec![3, 1, 2],
+            vec![2, 1, 1],
+            vec![3, 1],
+            vec![3, 1, 1, 1],
+        ] {
+            let behavior = ParsedBehavior::new(50011, "CardLevelChange", args);
+            assert!(!supports_card_level_change(&behavior));
+            assert!(!crate::engine::skill::behavior::is_supported(&behavior));
+        }
+    }
+
+    #[test]
+    fn deck_top_rank_correct_selects_absolute_spellbox_positions() {
+        use sonettobuf::{CardInfo, Fight, FightEntityInfo, FightTeam};
+
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![
+                    FightEntityInfo {
+                        uid: Some(10),
+                        team_type: Some(1),
+                        current_hp: Some(100),
+                        skill_group1: vec![30650211, 30650212, 30650213],
+                        ..Default::default()
+                    },
+                    FightEntityInfo {
+                        uid: Some(20),
+                        team_type: Some(1),
+                        current_hp: Some(100),
+                        skill_group1: vec![30870121, 30870122, 30870123],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut managers = crate::engine::manager::BattleManagers::seeded(&fight);
+        managers
+            .execute_card(CardCommand::Setup(
+                crate::engine::manager::card::CardSetup {
+                    hand: Vec::new(),
+                    draw_pile: vec![
+                        CardInfo {
+                            uid: Some(10),
+                            skill_id: Some(30650211),
+                            ..Default::default()
+                        },
+                        CardInfo {
+                            uid: Some(20),
+                            skill_id: Some(30870121),
+                            ..Default::default()
+                        },
+                        CardInfo {
+                            uid: Some(10),
+                            skill_id: Some(30650211),
+                            ..Default::default()
+                        },
+                        CardInfo {
+                            uid: Some(20),
+                            skill_id: Some(30870121),
+                            ..Default::default()
+                        },
+                    ],
+                    deck_num: 4,
+                },
+            ))
+            .unwrap();
+        let pool = crate::engine::skill::target::TargetPool::from_fight(&fight);
+        let behavior = ParsedBehavior::new(60116, "CardDeckTopRankCorrect", vec![2, 3, 1]);
+        let mut determinism = crate::engine::runtime::determinism::RoundDeterminism::default();
+        let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+        let mut target = crate::engine::skill::target::TargetContext::default();
+
+        let ops = Handler::emit_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 20,
+                active_skill_id: 0,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ops.as_slice(),
+            [RuleOp::Command(BattleCommand::Card(
+                CardCommand::RankUpDeckRange(crate::engine::manager::card::CardDeckRankUpRange {
+                    from: 2,
+                    to: 3,
+                    rank_delta: 1,
+                    ..
+                })
+            ))]
+        ));
+    }
+
+    #[test]
+    fn deck_top_rank_correct_accepts_only_observed_argument_shape() {
+        for args in [vec![1, 1, 1], vec![2, 3, 1], vec![4, 4, 1]] {
+            let behavior = ParsedBehavior::new(60116, "CardDeckTopRankCorrect", args);
+            assert!(supports_deck_top_rank_correct(&behavior));
+            assert!(crate::engine::skill::behavior::is_supported(&behavior));
+        }
+        for args in [
+            vec![0, 1, 1],
+            vec![1, 2, 1],
+            vec![2, 2, 1],
+            vec![3, 3, 1],
+            vec![3, 2, 1],
+            vec![1, 1, 0],
+            vec![1, 1, 2],
+            vec![1, 1],
+            vec![1, 1, 1, 1],
+        ] {
+            let behavior = ParsedBehavior::new(60116, "CardDeckTopRankCorrect", args);
+            assert!(!supports_deck_top_rank_correct(&behavior));
+            assert!(!crate::engine::skill::behavior::is_supported(&behavior));
+        }
+    }
+
+    #[test]
     fn butterfly_records_basic_incantations_by_effect_tag() {
         crate::test_support::init_config();
+        let catalog = crate::catalog::BattleCatalog::new(crate::test_support::game_data());
         let feature = crate::engine::manager::buff::ActiveBuffFeature {
             owner_uid: 10,
             source_uid: 10,
@@ -818,9 +1284,9 @@ mod tests {
             crate::engine::skill::effect::catalog::configured_effect_tag(31390111),
             3
         );
-        assert!(allows_recorded_skill(&feature, 31390111));
-        assert!(allows_recorded_skill(&feature, 31390121));
-        assert!(!allows_recorded_skill(&feature, 31390131));
+        assert!(allows_recorded_skill(catalog, &feature, 31390111));
+        assert!(allows_recorded_skill(catalog, &feature, 31390121));
+        assert!(!allows_recorded_skill(catalog, &feature, 31390131));
     }
 
     #[test]

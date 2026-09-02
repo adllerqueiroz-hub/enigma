@@ -7,7 +7,7 @@ use crate::engine::{
     },
     runtime::determinism::RoundDeterminism,
     skill::{
-        action::{SkillModifiers, SkillRateModifier},
+        action::{PostImmediateTargetBuffModifier, SkillModifiers, SkillRateModifier},
         behavior::{
             AttackModifierContext, BehaviorOpContext, classify::BehaviorKind,
             registry::BehaviorHandler,
@@ -57,26 +57,34 @@ impl BehaviorHandler for Handler {
                     effect_type: sonettobuf::effect_type_enum::EffectType::Twinsupcount as i32,
                     effect_num: consumed,
                     config_effect: behavior.spec.key.opcode,
+                    reserve_id: None,
+                    reserve_str: None,
                 },
             ]);
         }
         if behavior.spec.kind == BehaviorKind::CrystalAddSkillRate {
-            let [all_rate, raw_limit, focus_rate, buff_id, crystal_type] = behavior.args.as_slice()
+            let [all_rate, raw_limit, focus_rate, buff_id, buff_layer] = behavior.args.as_slice()
             else {
                 return None;
             };
-            let crystal_count = crystal_count(context.managers, context.source_uid, *crystal_type);
+            let crystal_count = context
+                .managers
+                .emanation
+                .count(
+                    context.source_uid,
+                    crate::engine::manager::emanation::EmanationKind::Purple,
+                )
+                .max(0);
             let gauge_key = crate::engine::mechanic::lingering_glow::key(context.source_team);
             if *all_rate != 0 && crystal_count > 0 {
                 context.modifiers.rates.push(SkillRateModifier::new(
                     0,
                     behavior.spec.key.opcode,
-                    crate::engine::skill::action::SkillRateAmount::gauge_raw(
+                    crate::engine::skill::action::SkillRateAmount::gauge_current(
                         gauge_key,
-                        *raw_limit,
+                        *raw_limit / 1000,
                         *all_rate,
                         crystal_count,
-                        1000,
                     ),
                     crystal_rate_career_scaled(behavior.spec.kind, false),
                 ));
@@ -93,15 +101,23 @@ impl BehaviorHandler for Handler {
                 context.modifiers.rates.push(SkillRateModifier::new(
                     target_uid,
                     behavior.spec.key.opcode,
-                    crate::engine::skill::action::SkillRateAmount::gauge_raw(
+                    crate::engine::skill::action::SkillRateAmount::gauge_current(
                         gauge_key,
-                        *raw_limit,
+                        *raw_limit / 1000,
                         *focus_rate,
                         crystal_count,
-                        1000,
                     ),
                     crystal_rate_career_scaled(behavior.spec.kind, true),
                 ));
+            }
+            if crystal_count > 0 {
+                context.modifiers.post_immediate_target_buffs.push(
+                    PostImmediateTargetBuffModifier {
+                        origin: super::command_origin(behavior)?,
+                        buff_id: *buff_id,
+                        amount: crystal_count.saturating_mul(*buff_layer),
+                    },
+                );
             }
             return Some(Vec::new());
         }
@@ -166,6 +182,19 @@ impl BehaviorHandler for Handler {
             }
             return Some(Vec::new());
         }
+        if behavior.spec.kind == BehaviorKind::SkillRateUp2 {
+            let target_uid = context.target.runtime_target_uid;
+            let delta = status_skill_rate(&context.managers.buff, target_uid, behavior);
+            if context.active_skill_id != 0 && target_uid != 0 && delta != 0 {
+                context.modifiers.rates.push(SkillRateModifier::fixed(
+                    target_uid,
+                    behavior.spec.key.opcode,
+                    delta,
+                    true,
+                ));
+            }
+            return Some(Vec::new());
+        }
         let additional_moxie = context.target.additional_moxie;
         emit(
             context.modifiers,
@@ -221,6 +250,14 @@ pub(super) fn supports_conduit_rate(behavior: &ParsedBehavior) -> bool {
     )
 }
 
+pub(super) fn supports_bullet_crit_rate(behavior: &ParsedBehavior) -> bool {
+    matches!(
+        behavior.args.as_slice(),
+        [base_rate, bonus_rate, max_count]
+            if *base_rate >= 0 && *bonus_rate >= 0 && *max_count > 0
+    )
+}
+
 pub(super) fn supports_conduit_power_up(behavior: &ParsedBehavior) -> bool {
     conduit_power_up_args(behavior).is_some()
 }
@@ -230,6 +267,8 @@ fn conduit_power_up_ops(
     behavior: &ParsedBehavior,
 ) -> Option<Vec<RuleOp>> {
     let args = conduit_power_up_args(behavior)?;
+    context.modifiers.attack_career = Some(args.power_ids[0]);
+    context.modifiers.additional_attack_career = Some(args.power_ids[1]);
     let spent = args
         .power_ids
         .iter()
@@ -289,6 +328,8 @@ fn conduit_power_up_ops(
             effect_type: sonettobuf::effect_type_enum::EffectType::Twinspowerupcount as i32,
             effect_num: spent,
             config_effect: behavior.spec.key.opcode,
+            reserve_id: None,
+            reserve_str: None,
         },
     ])
 }
@@ -318,7 +359,7 @@ fn conduit_power_up_args(behavior: &ParsedBehavior) -> Option<ConduitPowerUpArgs
         penetration: (AttrId::from_raw(behavior.arg(10)?)?, behavior.arg(11)?),
         excess_crit_conversion: behavior.arg(12)?,
     };
-    (args.power_ids.iter().all(|id| *id > 0)
+    (args.power_ids.iter().all(|id| (1..=8).contains(id))
         && args.rate_per_power >= 0
         && args.thresholds.iter().all(|threshold| *threshold > 0)
         && args.thresholds.windows(2).all(|pair| pair[0] < pair[1])
@@ -601,6 +642,7 @@ pub(crate) fn incoming_target_attack_modifiers(
     }
     context.hit_source_uid = source_uid;
     context.hit_target_uid = target_uid;
+    context.event_source_uid = source_uid;
     context.runtime_target_uid = source_uid;
     let mut passive_skills = managers
         .entity
@@ -800,6 +842,15 @@ pub(super) fn supports_heat_scale_rate(behavior: &ParsedBehavior) -> bool {
         if *divisor > 0 && *rate > 0 && *limit > 0)
 }
 
+pub(super) fn supports_crystal_skill_rate(behavior: &ParsedBehavior) -> bool {
+    matches!(behavior.args.as_slice(), [all_rate, raw_limit, focus_rate, buff_id, buff_layer]
+        if *all_rate > 0
+            && *raw_limit > 0
+            && *focus_rate > 0
+            && *buff_id > 0
+            && *buff_layer > 0)
+}
+
 fn heat_scale_skill_rate(current: i32, args: &[i32]) -> i32 {
     let [divisor, rate, limit] = args else {
         return 0;
@@ -858,13 +909,6 @@ fn card_rank_skill_rate(
         })
         .fold(0_i32, i32::saturating_add);
     total.min(cap)
-}
-
-fn crystal_count(managers: &BattleManagers, source_uid: i64, crystal_type: i32) -> i32 {
-    crate::engine::manager::emanation::EmanationKind::from_id(crystal_type)
-        .map(|kind| managers.emanation.count(source_uid, kind))
-        .unwrap_or_default()
-        .max(0)
 }
 
 fn crystal_rate_career_scaled(kind: BehaviorKind, _focus: bool) -> bool {

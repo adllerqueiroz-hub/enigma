@@ -64,7 +64,7 @@ impl SkillEffectCatalog {
                     .filter_map(|skill| skill.skill_id),
             );
         }
-        if let Some(battle) = crate::engine::fight::configured_battle(fight) {
+        if let Some(battle) = crate::engine::fight::configured_battle_with_game_data(db, fight) {
             for rule_id in
                 numeric_ids(&battle.addition_rule).chain(numeric_ids(&battle.hidden_rule))
             {
@@ -74,6 +74,10 @@ impl SkillEffectCatalog {
                 }
             }
         }
+        skills.extend(
+            crate::engine::manager::conduit::ConduitManager::seed_with_game_data(db, fight)
+                .skill_ids(),
+        );
         let catalog = Self::from_roots(db, skills, buffs);
         catalog.warn_unsupported(db);
         catalog
@@ -177,94 +181,30 @@ impl SkillEffectCatalog {
                     continue;
                 };
                 for raw in buff.features.split('|') {
-                    let values = crate::engine::entity::skill::split_ids(raw);
-                    let Some(&feature_id) = values.first() else {
+                    let Some(feature) =
+                        crate::engine::skill::buff_act::registry::resolve_feature(Some(db), raw)
+                    else {
                         continue;
                     };
-                    let Some(act) = db.buff_act.get(feature_id) else {
+                    let Some(feature_id) = feature.act_id else {
+                        continue;
+                    };
+                    if feature.is_malformed() {
+                        continue;
+                    }
+                    if feature.definition.is_none() {
                         if db.skill_buff.get(feature_id).is_some() {
                             buffs.push_back(feature_id);
                         }
                         continue;
-                    };
-                    use crate::engine::skill::buff_act::registry::BuffActKind;
-                    match crate::engine::skill::buff_act::registry::kind(act.id, &act.r#type) {
-                        Some(BuffActKind::SubBuff) => buffs.extend(values.get(1).copied()),
-                        Some(BuffActKind::AddBuffToEnter) => buffs.extend(
-                            crate::engine::skill::buff_act::add_buff_to_enter::referenced_buff(
-                                &values[1..],
-                            ),
-                        ),
-                        Some(BuffActKind::TransferEnergyBuff) => buffs.extend(
-                            crate::engine::skill::buff_act::transfer_energy_buff::referenced_buff(
-                                &values[1..],
-                            ),
-                        ),
-                        Some(BuffActKind::AddPassiveSkills)
-                        | Some(BuffActKind::AddSpTempCard)
-                        | Some(BuffActKind::CastChannel)
-                        | Some(BuffActKind::SpecialCountCastChannel) => {
-                            skills.extend(values.get(1).copied())
-                        }
-                        Some(BuffActKind::AddCardCastChannel) => skills.extend(
-                            crate::engine::skill::buff_act::add_card_cast_channel::referenced_skill(
-                                &values[1..],
-                            ),
-                        ),
-                        Some(BuffActKind::BeatBack) => skills.extend(
-                            crate::engine::skill::buff_act::riposte::holder_skill(&values[1..]),
-                        ),
-                        Some(BuffActKind::CardNotCalSize) => skills.extend(
-                            values
-                                .iter()
-                                .skip(1)
-                                .copied()
-                                .filter(|id| db.skill.get(*id).is_some()),
-                        ),
-                        Some(BuffActKind::AdrenalineAddCard) => skills.extend(
-                            raw.split('#')
-                                .nth(2)
-                                .into_iter()
-                                .flat_map(|ids| ids.split(','))
-                                .filter_map(|id| id.parse::<i32>().ok()),
-                        ),
-                        Some(BuffActKind::NuoDiKaCastChannel) => skills.extend(
-                            crate::engine::skill::buff_act::nuo_di_ka_cast_channel::referenced_skills(
-                                &values[1..],
-                            ),
-                        ),
-                        Some(BuffActKind::HeatScaleUseSkill) => skills.extend(
-                            crate::engine::mechanic::heat_scale::referenced_skills(raw),
-                        ),
-                        Some(BuffActKind::PaperCircleContinueChannel) => skills.extend(
-                            crate::engine::skill::buff_act::paper_circle_continue_channel::referenced_skill(raw),
-                        ),
-                        Some(BuffActKind::BloodValueUseSkill) => {
-                            skills.extend(values.get(3).copied())
-                        }
-                        Some(
-                            BuffActKind::UseSkillToEnemy
-                            | BuffActKind::ConsumeBuffContinueChannel
-                            | BuffActKind::ConsumeBuffAddBuffContinueChannel
-                            | BuffActKind::MonitorContinueChannel,
-                        ) => skills.extend(
-                            crate::engine::skill::buff_act::use_skill::linked_for(
-                                0,
-                                act.id,
-                                &act.r#type,
-                                &values[1..],
-                            )
-                            .map(|request| request.skill_id),
-                        ),
-                        Some(BuffActKind::EmitterTag) => skills.extend(
-                            crate::engine::mechanic::impromptu::ImpromptuDefinition::from_config()
-                                .map(|definition| definition.skill_id()),
-                        ),
-                        Some(BuffActKind::BeatBackDependOnAttackMe) => {
-                            skills.extend(values.iter().skip(1).take(2).copied())
-                        }
-                        _ => {}
                     }
+                    if !feature.arguments_supported {
+                        continue;
+                    }
+                    let references = feature.references(Some(db));
+                    skills.extend(references.skills);
+                    buffs.extend(references.buffs);
+                    models.extend(references.models);
                 }
             }
             while let Some(model_id) = models.pop_front() {
@@ -321,6 +261,12 @@ impl SkillEffectCatalog {
                     references.skills.extend(found.skills);
                     references.buffs.extend(found.buffs);
                     references.models.extend(found.models);
+                }
+                if slot.behavior.spec.kind == BehaviorKind::NotifyUpgradeHero {
+                    let found =
+                        hero_upgrade_references(db, slot.behavior.arg(0).unwrap_or_default());
+                    references.skills.extend(found.skills);
+                    references.buffs.extend(found.buffs);
                 }
                 slots.push(slot);
             } else {
@@ -425,14 +371,46 @@ impl SkillEffectCatalog {
             let Some(buff) = db.skill_buff.get(buff_id) else {
                 continue;
             };
+            let handler_owns_duration = buff.features.split('|').any(|raw| {
+                let Some(feature) =
+                    crate::engine::skill::buff_act::registry::resolve_feature(Some(db), raw)
+                else {
+                    return false;
+                };
+                let Some(act_id) = feature.act_id else {
+                    return false;
+                };
+                db.buff_act.get(act_id).is_some_and(|act| {
+                    crate::engine::skill::buff_act::registry::owns_duration(act.id, &act.r#type)
+                })
+            });
+            if let Ok(policy) = crate::engine::manager::buff::BuffPolicy::try_for_buff_id(buff_id)
+                && policy.lifetime.duration > 0
+                && !handler_owns_duration
+                && !crate::engine::skill::buff_act::effect_time::supports_duration_policy(
+                    policy.lifetime.take_stage,
+                )
+            {
+                tracing::warn!(
+                    buff_id,
+                    duration = policy.lifetime.duration,
+                    take_stage = policy.lifetime.take_stage,
+                    "unsupported buff duration stage in current battle"
+                );
+            }
             for raw in buff
                 .features
                 .split('|')
                 .map(str::trim)
                 .filter(|raw| !raw.is_empty())
             {
-                let values = crate::engine::entity::skill::split_ids(raw);
-                let Some((&act_id, args)) = values.split_first() else {
+                let Some(feature) =
+                    crate::engine::skill::buff_act::registry::resolve_feature(Some(db), raw)
+                else {
+                    tracing::warn!(buff_id, raw, "malformed buff act in current battle");
+                    continue;
+                };
+                let Some(act_id) = feature.act_id else {
                     tracing::warn!(buff_id, raw, "malformed buff act in current battle");
                     continue;
                 };
@@ -453,10 +431,17 @@ impl SkillEffectCatalog {
                         raw,
                         "unregistered buff act in current battle"
                     );
-                } else if crate::engine::skill::buff_act::registry::destination(
-                    act.id,
-                    &act.r#type,
-                    args,
+                } else if feature.is_malformed() {
+                    tracing::warn!(
+                        buff_id,
+                        act_id = act.id,
+                        act_type = %act.r#type,
+                        raw,
+                        "malformed buff act arguments in current battle"
+                    );
+                } else if crate::engine::skill::buff_act::registry::destination_for_feature(
+                    Some(db),
+                    &feature,
                 )
                 .is_none()
                 {
@@ -472,6 +457,40 @@ impl SkillEffectCatalog {
             }
         }
     }
+}
+
+fn hero_upgrade_references(
+    db: &GameDB,
+    upgrade_id: i32,
+) -> crate::engine::skill::rule::RuleReferences {
+    let mut references = crate::engine::skill::rule::RuleReferences::default();
+    let Some(upgrade) = db.hero_upgrade.get(upgrade_id) else {
+        return references;
+    };
+
+    for option_id in numeric_ids(&upgrade.options) {
+        let Some(option) = db.hero_upgrade_options.get(option_id) else {
+            continue;
+        };
+        references
+            .skills
+            .extend(numeric_ids(&option.replace_skill_group1));
+        references
+            .skills
+            .extend(numeric_ids(&option.replace_skill_group2));
+        references
+            .skills
+            .extend((option.replace_big_skill > 0).then_some(option.replace_big_skill));
+        references
+            .skills
+            .extend(numeric_ids(&option.replace_passive_skill));
+        references
+            .skills
+            .extend(numeric_ids(&option.add_passive_skill));
+        references.buffs.extend(numeric_ids(&option.add_buff));
+    }
+
+    references
 }
 
 fn warn_unsupported_conditions(

@@ -34,6 +34,7 @@ pub(super) fn resource_event(event: &BattleEvent) -> Option<ResourceEvent> {
         BattleEvent::ConduitActivated(change) => Some(ResourceEvent::Conduit {
             target_uid: change.source_uid,
             power_id: change.power_id,
+            activation_cost: change.activation_cost,
             spent: change.spent,
         }),
         _ => None,
@@ -84,7 +85,12 @@ pub(super) fn resource_fire_count(
     ))
 }
 
-pub(super) fn apply_event_context(context: &mut TargetContext, event: &BattleEvent) {
+pub(super) fn apply_event_context(
+    catalog: crate::catalog::BattleCatalog,
+    context: &mut TargetContext,
+    event: &BattleEvent,
+) {
+    context.event_source_uid = event.source_uid().unwrap_or_default();
     match event {
         BattleEvent::BuffAdded(change) | BattleEvent::BuffChanged(change) => {
             context.runtime_target_uid = change.target_uid;
@@ -97,6 +103,14 @@ pub(super) fn apply_event_context(context: &mut TargetContext, event: &BattleEve
             context.removed_buff_id = change.buff_id;
             context.removed_buff_target_uid = change.target_uid;
         }
+        BattleEvent::BuffRejected(change) => {
+            context.runtime_target_uid = change.target_uid;
+            context.rejected_buff_id = change.buff_id;
+            context.rejected_buff_type_id = change.type_id;
+        }
+        BattleEvent::BuffStateChanged(change) => {
+            context.runtime_target_uid = change.target_uid;
+        }
         BattleEvent::BuffFeatureTriggered(trigger) => {
             context.runtime_target_uid = trigger.target_uid;
             context.triggered_buff_act_id = trigger.act_id;
@@ -105,13 +119,19 @@ pub(super) fn apply_event_context(context: &mut TargetContext, event: &BattleEve
         BattleEvent::HpLost { target_uid, .. } | BattleEvent::HpHealed { target_uid, .. } => {
             context.runtime_target_uid = *target_uid
         }
+        BattleEvent::ToughnessBroken { target_uid, .. } => {
+            context.runtime_target_uid = *target_uid;
+            context.toughness_broken_uid = *target_uid;
+        }
         BattleEvent::Hit(hit) => {
             context.runtime_target_uid = hit.target_uid;
             context.hit_source_uid = hit.source_uid;
             context.hit_target_uid = hit.target_uid;
+            context.hit_career_restraint = Some(hit.career_restraint);
             context.hit_damage_from = Some(hit.damage_from);
             context.active_skill_id = hit.skill_id;
             context.active_skill_source_uid = hit.source_uid;
+            context.active_skill_rank = catalog.skill_rank(hit.skill_id);
         }
         BattleEvent::EntityDied(death) => context.runtime_target_uid = death.target_uid,
         BattleEvent::EntityEntered { target_uid }
@@ -189,10 +209,12 @@ pub(super) fn apply_event_context(context: &mut TargetContext, event: &BattleEve
             context.active_skill_type = action.skill_type;
             context.active_skill_effect_tag = action.effect_tag;
             context.active_skill_assassinate = action.assassinate;
+            context.active_skill_mode = action.mode;
             context.action_damage_amount = action.damage_amount;
             context.action_dealt_damage = action.damage_amount > 0;
             context.action_kill_count = action.kill_count;
             context.action_crit_count = action.crit_count;
+            context.action_guard_break_count = action.guard_break_count;
             context.additional_moxie = action.additional_moxie;
             context.extra_skill_kind = action.extra_skill_kind;
             context.teammate_injury_count = action.teammate_injury_count;
@@ -210,6 +232,7 @@ pub(super) fn apply_event_context(context: &mut TargetContext, event: &BattleEve
             context.active_skill_type = action.skill_type;
             context.active_skill_effect_tag = action.effect_tag;
             context.additional_moxie = action.additional_moxie;
+            context.active_skill_mode = action.mode;
             context.extra_skill_kind = action.extra_skill_kind;
             context.action_damage_amount = action.damage_amount;
             context.action_dealt_damage = action.damage_amount > 0;

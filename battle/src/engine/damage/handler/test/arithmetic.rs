@@ -61,9 +61,11 @@ fn noncritical_heal_remains_owned_by_its_declaring_skill() {
 }
 
 #[test]
-fn burn_applies_its_unstackable_healing_taken_reduction() {
+fn burn_reduces_ordinary_healing_but_not_full_restores() {
     crate::test_support::init_config();
-    let burn_type = super::heal::burn_type_id().expect("FightConst 29 defines Burn");
+    let burn_type = crate::catalog::BattleCatalog::new(crate::test_support::game_data())
+        .burn_buff_type_id()
+        .expect("FightConst 29 defines Burn");
     let fight = sonettobuf::Fight {
         attacker: Some(sonettobuf::FightTeam {
             entitys: vec![sonettobuf::FightEntityInfo {
@@ -97,8 +99,127 @@ fn burn_applies_its_unstackable_healing_taken_reduction() {
         }),
         ..Default::default()
     };
-    let managers = crate::engine::manager::BattleManagers::seeded(&fight);
+    let mut managers = crate::engine::manager::BattleManagers::seeded(&fight);
+    managers.attribute.override_sp(
+        10,
+        &HeroSpAttribute {
+            heal: Some(500),
+            ..Default::default()
+        },
+    );
 
     assert!(managers.buff.has_active_buff_id_or_type(-1, burn_type));
-    assert_eq!(super::heal::modified(1_000, 10, -1, &managers), 850);
+    assert_eq!(super::heal::modified(1_000, 10, -1, &managers), 1_275);
+
+    let full_from_source = ParsedBehavior::new(20001, "Heal", vec![0, AttrId::Hp.id(), 1000]);
+    let full_from_target = ParsedBehavior::new(20001, "Heal", vec![1, AttrId::Hp.id(), 1000]);
+    let partial = ParsedBehavior::new(20001, "Heal", vec![1, AttrId::Hp.id(), 500]);
+
+    assert_eq!(
+        super::heal::amount(10, -1, &managers, false, &full_from_source),
+        Some(1_000)
+    );
+    assert_eq!(
+        super::heal::amount(10, -1, &managers, false, &full_from_target),
+        Some(1_000)
+    );
+    assert_eq!(
+        super::heal::amount(10, -1, &managers, true, &full_from_target),
+        Some(1_000)
+    );
+    assert_eq!(
+        super::heal::amount(10, -1, &managers, false, &partial),
+        Some(637)
+    );
+}
+
+#[test]
+fn nasty_wound_reduces_healing_taken_by_its_configured_value() {
+    crate::test_support::init_config();
+    let fight = sonettobuf::Fight {
+        attacker: Some(sonettobuf::FightTeam {
+            entitys: vec![sonettobuf::FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(1_000),
+                attr: Some(sonettobuf::HeroAttribute {
+                    hp: Some(1_000),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(sonettobuf::FightTeam {
+            entitys: vec![sonettobuf::FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(1),
+                attr: Some(sonettobuf::HeroAttribute {
+                    hp: Some(1_000),
+                    ..Default::default()
+                }),
+                buffs: vec![sonettobuf::BuffInfo {
+                    buff_id: Some(5112),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = crate::engine::manager::BattleManagers::seeded(&fight);
+
+    assert_eq!(super::heal::modified(1_000, 10, -1, &managers), 500);
+}
+
+#[test]
+fn missing_hp_healing_uses_the_configured_base_bucket_and_cap() {
+    crate::test_support::init_config();
+    let fight = sonettobuf::Fight {
+        attacker: Some(sonettobuf::FightTeam {
+            entitys: vec![
+                sonettobuf::FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(1_000),
+                    attr: Some(sonettobuf::HeroAttribute {
+                        hp: Some(1_000),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                sonettobuf::FightEntityInfo {
+                    uid: Some(11),
+                    current_hp: Some(5_000),
+                    attr: Some(sonettobuf::HeroAttribute {
+                        hp: Some(10_000),
+                        ..Default::default()
+                    }),
+                    buffs: vec![sonettobuf::BuffInfo {
+                        buff_id: Some(31200124),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                sonettobuf::FightEntityInfo {
+                    uid: Some(12),
+                    current_hp: Some(500),
+                    attr: Some(sonettobuf::HeroAttribute {
+                        hp: Some(10_000),
+                        ..Default::default()
+                    }),
+                    buffs: vec![sonettobuf::BuffInfo {
+                        buff_id: Some(31200124),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = crate::engine::manager::BattleManagers::seeded(&fight);
+
+    assert_eq!(super::heal::modified(1_000, 10, 11, &managers), 1_575);
+    assert_eq!(super::heal::modified(1_000, 10, 12, &managers), 1_800);
 }

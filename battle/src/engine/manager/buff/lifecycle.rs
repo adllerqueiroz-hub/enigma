@@ -121,6 +121,8 @@ impl BuffManager {
         self.act_states.clear();
         self.act_values.clear();
         self.grant_values.clear();
+        self.mode_attributes = rouge2_attributes(fight);
+        self.transition_progress.clear();
         let fight_version = fight.version.unwrap_or_default();
         self.shared_uid_lane = uid::uses_shared_lane(fight_version);
         self.attacker = BuffUidAllocator::new(uid::attacker_start(fight_version));
@@ -132,7 +134,48 @@ impl BuffManager {
         if let Some(team) = &fight.defender {
             self.seed_team(team, 2);
         }
+        self.reconcile_transition_progress();
         self.seed_grant_values();
+        self.seed_rouge2_hp_deltas();
+    }
+
+    pub(crate) fn mode_attribute(&self, id: i32) -> i32 {
+        self.mode_attributes.get(&id).copied().unwrap_or_default()
+    }
+
+    fn seed_rouge2_hp_deltas(&mut self) {
+        let values = self
+            .buffs
+            .iter()
+            .filter_map(|active| {
+                let buff_uid = active.buff.uid?;
+                let feature = active.definition.as_ref()?.features().iter().find(|feature| {
+                    feature.arguments_supported
+                        && feature.kind
+                            == Some(
+                                crate::engine::skill::buff_act::registry::BuffActKind::Rouge2AttrToRole,
+                            )
+                        && feature.values.get(2).copied()
+                            == Some(crate::engine::entity::attr::AttrId::Hp.id())
+                })?;
+                let delta =
+                    crate::engine::skill::buff_act::rouge2_attr_to_role::attribute_delta(
+                        &feature.values,
+                        crate::engine::entity::attr::AttrId::Hp,
+                        self,
+                    );
+                (delta > 0).then_some((buff_uid, delta))
+            })
+            .collect::<Vec<_>>();
+        for (buff_uid, delta) in values {
+            self.act_values.insert(
+                (
+                    buff_uid,
+                    crate::engine::skill::buff_act::rouge2_attr_to_role::ACT_ID,
+                ),
+                delta,
+            );
+        }
     }
 
     pub(crate) fn sync_entity(&self, entity: &mut FightEntityInfo) {
@@ -277,6 +320,13 @@ impl BuffManager {
         self.plan_duration_advances_matching(take_stage, owner_uids, None)
     }
 
+    pub(crate) fn duration_buff_uids(&self, take_stage: i32, owner_uids: &[i64]) -> Vec<i64> {
+        self.plan_duration_advances(take_stage, owner_uids)
+            .into_iter()
+            .map(|plan| plan.buff_uid)
+            .collect()
+    }
+
     pub(crate) fn plan_duration_advances_for_snapshot(
         &self,
         take_stage: i32,
@@ -376,24 +426,6 @@ impl BuffManager {
         }
     }
 
-    pub(crate) fn plan_round_start_cleanup(&self) -> Vec<BuffLifecyclePlan> {
-        self.buffs
-            .iter()
-            .filter_map(|active| {
-                let should_remove = active.definition.as_ref().is_some_and(|definition| {
-                    definition.cleans_up_at_round_start()
-                        && active.buff.count.unwrap_or_default() == 0
-                        && active.buff.layer.unwrap_or_default() <= 1
-                });
-                let buff_uid = active.buff.uid?;
-                should_remove.then_some(BuffLifecyclePlan {
-                    target_uid: active.owner_uid,
-                    buff_uid,
-                })
-            })
-            .collect()
-    }
-
     fn seed_team(&mut self, team: &FightTeam, fallback_team_type: i32) {
         for entity in &team.entitys {
             self.seed_entity(entity, fallback_team_type, true);
@@ -428,7 +460,10 @@ impl BuffManager {
             if let Some(uid) = buff.uid {
                 self.allocator_for(team_type).observe(uid);
             }
-            let definition = BuffDefinition::get(buff.buff_id.unwrap_or_default());
+            let definition = BuffDefinition::configured(
+                self.catalog().game_data(),
+                buff.buff_id.unwrap_or_default(),
+            );
             let type_id = definition
                 .as_ref()
                 .map(BuffDefinition::effective_type_id)
@@ -449,6 +484,7 @@ impl BuffManager {
         self.team_types.remove(&uid);
         self.buffs.retain(|active| active.owner_uid != uid);
         self.seed_entity(entity, fallback_team_type, true);
+        self.reconcile_transition_progress();
     }
 
     pub(crate) fn sync_roster(&mut self, fight: &Fight) {
@@ -461,4 +497,64 @@ impl BuffManager {
                 .any(|entity| entity.uid == Some(tracked.uid));
         }
     }
+}
+
+fn rouge2_attributes(fight: &Fight) -> HashMap<i32, i32> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Rouge2Data {
+        #[serde(deserialize_with = "deserialize_rouge2_attributes")]
+        attr_final_val: HashMap<i32, i32>,
+    }
+
+    let mut entries = fight
+        .custom_data
+        .iter()
+        .filter(|data| data.r#type == Some(sonettobuf::custom_data::CustomDataType::Rouge2 as i32));
+    let (Some(entry), None) = (entries.next(), entries.next()) else {
+        return HashMap::new();
+    };
+    let Some(data) = entry
+        .data
+        .as_deref()
+        .and_then(|data| serde_json::from_str::<Rouge2Data>(data).ok())
+    else {
+        return HashMap::new();
+    };
+
+    data.attr_final_val
+}
+
+fn deserialize_rouge2_attributes<'de, D>(deserializer: D) -> Result<HashMap<i32, i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct AttributesVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for AttributesVisitor {
+        type Value = HashMap<i32, i32>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of positive attribute ids to nonnegative values")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut attributes = HashMap::new();
+            while let Some((raw_id, value)) = map.next_entry::<String, i32>()? {
+                let id = raw_id.parse::<i32>().map_err(serde::de::Error::custom)?;
+                if id <= 0 || value < 0 {
+                    return Err(serde::de::Error::custom("invalid roguelike attribute"));
+                }
+                if attributes.insert(id, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate roguelike attribute id"));
+                }
+            }
+            Ok(attributes)
+        }
+    }
+
+    deserializer.deserialize_map(AttributesVisitor)
 }

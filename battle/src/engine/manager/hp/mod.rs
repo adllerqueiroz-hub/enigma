@@ -90,6 +90,7 @@ pub struct HpDamage {
     pub config_effect: i32,
     pub effect_kind: DamageEffectKind,
     pub assassinate: bool,
+    pub ignore_riposte: bool,
     pub hurt: HurtInfoData,
 }
 
@@ -253,6 +254,7 @@ pub struct HpChanges {
     pub shield_granted: Option<ShieldGain>,
     pub max_hp: Option<MaxHpChange>,
     pub hp: Option<HpChange>,
+    pub toughness: Option<super::toughness::ToughnessChange>,
     pub kill: Option<i32>,
     pub death: Option<DeathTransition>,
 }
@@ -263,10 +265,16 @@ pub struct DamageRecord {
     pub config_effect: i32,
     pub effect_kind: DamageEffectKind,
     pub assassinate: bool,
+    pub ignore_riposte: bool,
     pub hurt: HurtInfoData,
 }
 
 impl HpChanges {
+    pub fn caused_death(&self) -> bool {
+        self.hp
+            .is_some_and(|change| change.before > 0 && change.after == 0)
+    }
+
     pub fn applied_damage(&self) -> i32 {
         if self.kill.is_some() {
             return 0;
@@ -324,9 +332,30 @@ impl HpChanges {
                     .filter(|change| change.delta < 0)
                     .map(|change| change.delta.saturating_abs())
                     .unwrap_or_default(),
+                shield_absorbed: self
+                    .shield_absorbed
+                    .map(|change| change.absorbed)
+                    .unwrap_or_default()
+                    .saturating_add(
+                        self.team_shared_shield_absorbed
+                            .map(|change| change.absorbed)
+                            .unwrap_or_default(),
+                    ),
+                career_restraint: damage.hurt.career_restraint,
                 damage_from: damage.hurt.damage_from,
                 assassinate: damage.assassinate,
+                ignore_riposte: damage.ignore_riposte,
             }));
+        }
+        if self.toughness.is_some_and(|change| change.broke) {
+            events.push(BattleEvent::ToughnessBroken {
+                source_uid: self.source_uid,
+                target_uid: self.target_uid,
+                skill_id: self
+                    .damage
+                    .map(|damage| damage.hurt.skill_id)
+                    .unwrap_or_default(),
+            });
         }
         if let Some(removed) = &self.team_shared_shield_removed {
             events.extend(removed.events());
@@ -612,6 +641,7 @@ impl HpManager {
             shield_granted: None,
             max_hp: None,
             hp: None,
+            toughness: None,
             kill: None,
             death: None,
         };
@@ -622,6 +652,7 @@ impl HpManager {
                     config_effect: value.config_effect,
                     effect_kind: value.effect_kind,
                     assassinate: value.assassinate,
+                    ignore_riposte: value.ignore_riposte,
                     hurt: value.hurt,
                 });
                 changes.team_shared_shield_absorbed = team_shared.and_then(|plan| {
@@ -749,14 +780,13 @@ impl HpManager {
                 value.origin,
                 value.source_uid,
                 value.target_uid,
-                value.amount > 0
-                    || (value.amount == 0 && value.effect_kind == DamageEffectKind::Avoided),
+                value.amount >= 0,
             ),
             HpCommand::Lose(value) => (
                 value.origin,
                 value.source_uid,
                 value.target_uid,
-                value.amount > 0,
+                value.amount > 0 || (value.amount == 0 && value.hurt.is_some()),
             ),
             HpCommand::Kill(value) => (
                 value.origin,

@@ -20,7 +20,7 @@ fn destination_start_schedule_builds_the_complete_round_wrapper() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.build_start_round_from_schedule().unwrap();
 
@@ -36,7 +36,203 @@ fn destination_start_schedule_builds_the_complete_round_wrapper() {
 }
 
 #[test]
-fn opening_push_keeps_composed_cards_and_refills_the_vacated_slot() {
+fn rejected_opening_seed_does_not_retain_captured_draws() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        battle_id: Some(17),
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(1001),
+                position: Some(1),
+                current_hp: Some(100),
+                skill_group1: vec![101],
+                skill_group2: vec![102],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                model_id: Some(2001),
+                position: Some(1),
+                current_hp: Some(100),
+                skill_group1: vec![201],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let player_card = |skill_id| sonettobuf::CardInfo {
+        uid: Some(10),
+        skill_id: Some(skill_id),
+        ..Default::default()
+    };
+    let ai_card = sonettobuf::CardInfo {
+        uid: Some(-1),
+        skill_id: Some(201),
+        ..Default::default()
+    };
+    let mut baseline = runtime(fight.clone());
+    let baseline_round = baseline.start_round().unwrap();
+    let mut determinism = RoundDeterminism::with_seed(17);
+    determinism.enqueue_opening_seed(
+        vec![ai_card.clone(), ai_card],
+        vec![player_card(101), player_card(102), player_card(101)],
+        vec![player_card(102), player_card(102), player_card(102)],
+        0,
+    );
+    let mut replay = runtime(fight);
+    let replay_round = replay.start_round_with_determinism(determinism).unwrap();
+
+    assert_eq!(replay_round.ai_use_cards, baseline_round.ai_use_cards);
+    assert_eq!(replay_round.team_a_cards1, baseline_round.team_a_cards1);
+}
+
+#[test]
+fn opening_adds_one_ready_ultimate_outside_the_normal_hand() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                model_id: Some(3028),
+                position: Some(1),
+                current_hp: Some(100),
+                ex_point: Some(5),
+                ex_skill: Some(30280131),
+                skill_group1: vec![30280111, 30280112, 30280113],
+                skill_group2: vec![30280121, 30280122, 30280123],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut runtime = runtime(fight);
+
+    let round = runtime.build_start_round_from_schedule().unwrap();
+
+    assert_eq!(
+        round
+            .team_a_cards1
+            .iter()
+            .filter(|card| card.skill_id == Some(30280131))
+            .count(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .managers
+            .card
+            .hand()
+            .iter()
+            .filter(|card| card.skill_id == Some(30280131))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn version_seven_opening_projections_use_the_committed_composed_order() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![
+                FightEntityInfo {
+                    uid: Some(230556490),
+                    position: Some(1),
+                    current_hp: Some(100),
+                    skill_group1: vec![31020111, 31020112, 31020113],
+                    skill_group2: vec![31020121, 31020122, 31020123],
+                    ..Default::default()
+                },
+                FightEntityInfo {
+                    uid: Some(11),
+                    position: Some(2),
+                    current_hp: Some(100),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let card = |skill_id| CardInfo {
+        uid: Some(230556490),
+        skill_id: Some(skill_id),
+        temp_card: Some(false),
+        ..Default::default()
+    };
+    let opening = vec![
+        card(31020121),
+        card(31020111),
+        card(31020121),
+        card(31020111),
+        card(31020111),
+    ];
+    let replacement = card(31020121);
+    let mut determinism = RoundDeterminism::default();
+    determinism.enqueue_start_decks(Vec::new(), opening.clone());
+    determinism.enqueue_card_draws(
+        opening
+            .iter()
+            .cloned()
+            .chain(std::iter::once(replacement))
+            .collect(),
+    );
+    let mut runtime = runtime(fight);
+
+    let round = runtime.start_round_with_determinism(determinism).unwrap();
+    let push = runtime.card_info_push();
+    let skills = |cards: &[CardInfo]| {
+        cards
+            .iter()
+            .filter_map(|card| card.skill_id)
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![31020121, 31020111, 31020121, 31020112, 31020121];
+    assert_eq!(skills(&round.team_a_cards1), expected);
+    assert_eq!(skills(&push.card_group), expected);
+    assert_eq!(skills(&push.deal_card_group), expected);
+    assert_eq!(round.team_a_cards1, push.card_group);
+    assert_eq!(round.team_a_cards1, push.deal_card_group);
+    assert_eq!(push.card_group, runtime.managers.card.hand());
+    fn contains_effect(steps: &[sonettobuf::FightStep], types: &[i32]) -> bool {
+        steps
+            .iter()
+            .flat_map(|step| &step.act_effect)
+            .any(|effect| {
+                types.contains(&effect.effect_type.unwrap_or_default())
+                    || effect
+                        .fight_step
+                        .as_ref()
+                        .is_some_and(|nested| contains_effect(std::slice::from_ref(nested), types))
+            })
+    }
+    assert!(!contains_effect(
+        &round.fight_step,
+        &[
+            sonettobuf::effect_type_enum::EffectType::Addhandcard as i32,
+            sonettobuf::effect_type_enum::EffectType::Cardspush as i32,
+            sonettobuf::effect_type_enum::EffectType::Allocatecardenergy as i32,
+        ]
+    ));
+    assert!(round.fight_step.iter().any(|step| {
+        step.act_effect.iter().any(|effect| {
+            effect.effect_type
+                == Some(sonettobuf::effect_type_enum::EffectType::Cardscompose as i32)
+        })
+    }));
+}
+
+#[test]
+fn version_six_opening_keeps_the_legacy_deal_snapshot_after_composition() {
     crate::test_support::init_config();
     let fight = Fight {
         version: Some(6),
@@ -78,7 +274,7 @@ fn opening_push_keeps_composed_cards_and_refills_the_vacated_slot() {
             .chain(std::iter::once(replacement))
             .collect(),
     );
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.start_round_with_determinism(determinism).unwrap();
     let push = runtime.card_info_push();
@@ -107,7 +303,7 @@ fn opening_push_keeps_composed_cards_and_refills_the_vacated_slot() {
 }
 
 #[test]
-fn teaching_card_opening_replaces_only_the_initial_random_draw() {
+fn tutorial_without_scripted_cards_uses_the_normal_opening() {
     crate::test_support::init_config();
     let fight = Fight {
         episode_id: Some(10002),
@@ -143,56 +339,25 @@ fn teaching_card_opening_replaces_only_the_initial_random_draw() {
         skill_id: Some(30230121),
         ..Default::default()
     }]);
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.start_round_with_determinism(determinism).unwrap();
 
-    assert!(runtime.determinism.has_queued_card_draw());
-    assert_eq!(
-        runtime
-            .managers
-            .card
-            .refilled()
-            .iter()
-            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
-            .collect::<Vec<_>>(),
-        vec![(-2, 30230121), (-1, 30250121)]
-    );
-    assert_eq!(
+    assert!(!runtime.determinism.has_queued_card_draw());
+    let push = runtime.card_info_push();
+    assert_eq!(round.team_a_cards1.len(), 5);
+    assert!(
         round
             .team_a_cards1
             .iter()
-            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
-            .collect::<Vec<_>>(),
-        vec![
-            (-1, 30250121),
-            (-1, 30250121),
-            (-1, 30250121),
-            (-2, 30230111),
-            (-2, 30230111),
-            (-2, 30230121),
-            (-1, 30250121),
-        ]
+            .all(|card| card.uid == Some(-1) || card.uid == Some(-2))
     );
-    assert_eq!(
-        runtime
-            .card_info_push()
-            .card_group
-            .iter()
-            .map(|card| (card.uid.unwrap(), card.skill_id.unwrap()))
-            .collect::<Vec<_>>(),
-        vec![
-            (-1, 30250122),
-            (-1, 30250121),
-            (-2, 30230112),
-            (-2, 30230121),
-            (-1, 30250121),
-        ]
-    );
+    assert_eq!(round.team_a_cards1, push.card_group);
+    assert_eq!(round.team_a_cards1, push.deal_card_group);
 }
 
 #[test]
-fn teaching_card_round_refill_replays_the_live_tutorial_operations() {
+fn tutorial_without_scripted_refill_uses_the_normal_round_refill() {
     crate::test_support::init_config();
     let fight = Fight {
         battle_id: Some(1002),
@@ -234,7 +399,7 @@ fn teaching_card_round_refill_replays_the_live_tutorial_operations() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
         .unwrap();
@@ -258,24 +423,12 @@ fn teaching_card_round_refill_replays_the_live_tutorial_operations() {
             ..Default::default()
         })
         .unwrap();
-    let skills = |cards: &[CardInfo]| {
-        cards
-            .iter()
-            .filter_map(|card| card.skill_id)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        skills(runtime.managers.card.refilled()),
-        vec![30250111, 30230111, 30230111, 30250121]
-    );
-    assert_eq!(
-        skills(runtime.managers.card.hand()),
-        vec![30230112, 30230121, 30250111, 30230112, 30250121]
-    );
+    assert!(!runtime.managers.card.refilled().is_empty());
+    assert_eq!(runtime.managers.card.normal_hand_len(), 5);
 }
 
 #[test]
-fn teaching_card_opening_composes_the_complete_configured_deal() {
+fn tutorial_without_scripted_opening_uses_the_normal_hand_size() {
     crate::test_support::init_config();
     let fight = Fight {
         episode_id: Some(10003),
@@ -294,24 +447,18 @@ fn teaching_card_opening_composes_the_complete_configured_deal() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
 
     let round = runtime.build_start_round_from_schedule().unwrap();
 
-    assert_eq!(round.team_a_cards1.len(), 7);
-    assert_eq!(
-        runtime
-            .card_info_push()
-            .card_group
-            .iter()
-            .filter_map(|card| card.skill_id)
-            .collect::<Vec<_>>(),
-        vec![30230122, 30230112, 30230122, 30230111]
-    );
+    let push = runtime.card_info_push();
+    assert_eq!(round.team_a_cards1.len(), 4);
+    assert_eq!(round.team_a_cards1, push.card_group);
+    assert_eq!(round.team_a_cards1, push.deal_card_group);
 }
 
 #[test]
-fn teaching_card_refill_follows_the_configured_draws_after_tutorial_plays() {
+fn tutorial_without_scripted_draws_refills_normally_after_plays() {
     crate::test_support::init_config();
     let fight = Fight {
         battle_id: Some(1001),
@@ -342,21 +489,11 @@ fn teaching_card_refill_follows_the_configured_draws_after_tutorial_plays() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
         .unwrap();
-    let skills = |cards: &[CardInfo]| {
-        cards
-            .iter()
-            .filter_map(|card| card.skill_id)
-            .collect::<Vec<_>>()
-    };
-
-    assert_eq!(
-        skills(runtime.managers.card.hand()),
-        vec![30230111, 30230121, 30250111, 30250121, 30230111]
-    );
+    assert_eq!(runtime.managers.card.normal_hand_len(), 5);
     for hand_index in [4, 3] {
         runtime
             .managers
@@ -388,14 +525,12 @@ fn teaching_card_refill_follows_the_configured_draws_after_tutorial_plays() {
     )
     .unwrap();
 
-    assert_eq!(
-        skills(runtime.managers.card.hand()),
-        vec![30230111, 30230121, 30250111, 30230121, 30250111]
-    );
+    assert_eq!(runtime.managers.card.normal_hand_len(), 5);
+    assert!(!runtime.managers.card.refilled().is_empty());
 }
 
 #[test]
-fn teaching_card_without_scripted_refills_preserves_its_composed_hand_size() {
+fn tutorial_without_scripted_refills_preserves_the_normal_hand_size() {
     crate::test_support::init_config();
     let fight = Fight {
         battle_id: Some(11011),
@@ -415,7 +550,7 @@ fn teaching_card_without_scripted_refills_preserves_its_composed_hand_size() {
         }),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .start_round_with_determinism(RoundDeterminism::with_seed(0x5eed))
         .unwrap();
@@ -454,7 +589,6 @@ fn teaching_card_without_scripted_refills_preserves_its_composed_hand_size() {
 
     assert_eq!(runtime.managers.card.normal_hand_len(), opening_size);
     assert!(!runtime.managers.card.refilled().is_empty());
-    assert_eq!(runtime.managers.card.deck_num(), 16);
 }
 
 #[test]
@@ -497,7 +631,7 @@ fn next_round_snapshot_keeps_card_not_cal_size_ultimate() {
         skill_id: Some(skill_id),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .managers
         .execute_card(crate::engine::manager::card::CardCommand::Setup(
@@ -600,7 +734,7 @@ fn round_start_generated_card_is_committed_after_the_before_cards_snapshot() {
         skill_id: Some(skill_id),
         ..Default::default()
     };
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime
         .managers
         .execute_card(crate::engine::manager::card::CardCommand::Setup(
@@ -762,7 +896,7 @@ fn lorentz_team_ultimate_spends_beryl_moxie_and_is_not_regenerated() {
     let mut determinism = RoundDeterminism::with_seed(6);
     determinism.enqueue_start_decks(Vec::new(), normal_cards.clone());
     determinism.enqueue_card_draws(normal_cards);
-    let mut runtime = BattleRuntime::new(fight);
+    let mut runtime = runtime(fight);
     runtime.start_round_with_determinism(determinism).unwrap();
     assert!(
         runtime

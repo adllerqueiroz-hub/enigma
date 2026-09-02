@@ -65,6 +65,48 @@ fn id_or_type_consume_plans_update_then_depletion_removal() {
 }
 
 #[test]
+fn zero_cost_consume_keeps_and_snapshots_the_current_amount() {
+    crate::test_support::init_config();
+    let mut manager = BuffManager::default();
+    manager.seed(&Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                buffs: vec![BuffInfo {
+                    buff_id: Some(31280113),
+                    uid: Some(2),
+                    layer: Some(110),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let changes = manager
+        .execute(
+            &HpManager::default(),
+            BuffCommand::Consume(BuffConsume {
+                origin: CommandOrigin {
+                    domain: RuleDomain::BuffAct,
+                    key: DefinitionKey::new(1031, "ConsumeBuffAddBuffContinueChannel"),
+                },
+                target_uid: 10,
+                selector: BuffSelector::IdOrType(31280113),
+                amount: 0,
+                depleted: DepletedBuff::Remove,
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(changes.change.refreshed[0].before.layer, Some(110));
+    assert_eq!(changes.change.refreshed[0].after.layer, Some(110));
+    assert!(manager.has_buff_id(10, 31280113));
+}
+
+#[test]
 fn layered_consume_publishes_only_the_resulting_amount() {
     crate::test_support::init_config();
     let mut manager = BuffManager::default();
@@ -107,7 +149,7 @@ fn layered_consume_publishes_only_the_resulting_amount() {
 }
 
 #[test]
-fn depleted_stacked_consume_keeps_the_last_visible_layer_in_the_delete_snapshot() {
+fn depleted_stacked_consume_reports_zero_in_the_delete_snapshot() {
     crate::test_support::init_config();
     let mut manager = BuffManager::default();
     manager.seed(&Fight {
@@ -145,7 +187,7 @@ fn depleted_stacked_consume_keeps_the_last_visible_layer_in_the_delete_snapshot(
 
     assert!(manager.snapshot(10, 20).is_none());
     assert_eq!(changes.change.removed[0].before_amount, 1);
-    assert_eq!(changes.change.removed[0].buff.layer, Some(1));
+    assert_eq!(changes.change.removed[0].buff.layer, Some(0));
     assert!(matches!(
         changes.events().as_slice(),
         [BattleEvent::BuffRemoved(event)]
@@ -504,6 +546,28 @@ fn exact_uid_commands_do_not_collapse_duplicate_buff_ids() {
         .execute(
             &HpManager::default(),
             BuffCommand::SetState(BuffSetState {
+                ex_info: Some(3),
+                origin: CommandOrigin {
+                    domain: RuleDomain::Behavior,
+                    key: DefinitionKey::new(60094, "ReduceCastChannelCount"),
+                },
+                target_uid: 10,
+                buff_uid: 2,
+                params: None,
+                act_info: None,
+            }),
+        )
+        .unwrap();
+    assert!(matches!(
+        changes.events().as_slice(),
+        [BattleEvent::BuffStateChanged(event)]
+            if event.before_ex_info == 0 && event.after_ex_info == 3
+    ));
+
+    let changes = manager
+        .execute(
+            &HpManager::default(),
+            BuffCommand::SetState(BuffSetState {
                 ex_info: None,
                 origin: CommandOrigin {
                     domain: RuleDomain::BuffAct,
@@ -628,6 +692,7 @@ fn dispel_plans_matching_statuses_and_preserves_behavior_provenance() {
                 },
                 target_uid: -1,
                 statuses: vec![super::super::BuffStatus::PositiveStatus],
+                excluded_ids_or_types: Vec::new(),
                 count: 0,
             }),
         )
@@ -639,4 +704,54 @@ fn dispel_plans_matching_statuses_and_preserves_behavior_provenance() {
     assert_eq!(changes.change.removed[0].buff.uid, Some(1));
     assert_eq!(changes.change.removed[0].config_effect, 30003);
     assert!(manager.has_buff_id(-1, 530000112));
+}
+
+#[test]
+fn dispel_exclusions_preserve_matching_ids_or_types() {
+    crate::test_support::init_config();
+    let mut manager = BuffManager::default();
+    manager.seed(&Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                buffs: vec![
+                    BuffInfo {
+                        buff_id: Some(4150001),
+                        uid: Some(1),
+                        count: Some(1),
+                        layer: Some(3),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(303),
+                        uid: Some(2),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let plan = manager
+        .plan(
+            &HpManager::default(),
+            BuffCommand::Dispel(BuffDispel {
+                origin: CommandOrigin {
+                    domain: RuleDomain::Behavior,
+                    key: DefinitionKey::new(60060, "DisperseExclude"),
+                },
+                target_uid: 10,
+                statuses: vec![super::super::BuffStatus::NegativeStatus],
+                excluded_ids_or_types: vec![4150001],
+                count: 0,
+            }),
+        )
+        .unwrap();
+    manager.commit(&HpManager::default(), plan);
+
+    assert!(manager.has_buff_id(10, 4150001));
+    assert!(!manager.has_buff_id(10, 303));
 }

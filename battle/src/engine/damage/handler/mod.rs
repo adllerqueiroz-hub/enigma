@@ -1,12 +1,9 @@
 use crate::engine::{
     damage::butterfly_damage,
     entity::attr::AttrId,
-    manager::{
-        buff::BuffManager,
-        hp::{
-            DamageEffectKind, HpCommand, HpDamage, HpHeal, HpHealKind, HpLoss, HurtDamageFromType,
-            HurtInfoData,
-        },
+    manager::hp::{
+        DamageEffectKind, HpCommand, HpDamage, HpHeal, HpHealKind, HpLoss, HurtDamageFromType,
+        HurtInfoData,
     },
     skill::{
         behavior::{BehaviorOpContext, classify::BehaviorKind, registry::BehaviorHandler},
@@ -17,6 +14,9 @@ use crate::engine::{
 };
 use sonettobuf::effect_type_enum::EffectType;
 
+#[cfg(test)]
+use crate::engine::manager::buff::BuffManager;
+
 mod affinity;
 mod critical;
 mod heal;
@@ -24,8 +24,8 @@ mod loss;
 mod origin;
 mod resolve;
 
-use affinity::{critical_technique_bonus, regular_multiplier, strongest_career_multiplier};
-pub(crate) use affinity::{restrains, restrains_target};
+use affinity::{critical_technique_bonus, regular_multiplier};
+pub(crate) use affinity::{restrains_target, restrains_target_either};
 pub(crate) use critical::{
     chance as crit_chance, damage_multiplier as crit_damage_multiplier,
     excess_rate as excess_crit_rate,
@@ -51,6 +51,13 @@ pub fn supports_origin_damage(behavior: &ParsedBehavior) -> bool {
     matches!(
         behavior.args.as_slice(),
         [0 | 1, raw_attr, rate] if AttrId::from_raw(*raw_attr).is_some() && *rate >= 0
+    )
+}
+
+pub fn supports_attribute_damage(behavior: &ParsedBehavior) -> bool {
+    matches!(
+        behavior.args.as_slice(),
+        [1, raw_attr, 100] if AttrId::from_raw(*raw_attr) == Some(AttrId::Hp)
     )
 }
 
@@ -112,12 +119,13 @@ impl BehaviorHandler for Handler {
         };
         match (behavior.spec.key.opcode, behavior.spec.kind) {
             (20001 | 90001, BehaviorKind::Heal) => {
-                let is_crit = context.determinism.roll_hidden_crit(
-                    context.active_skill_id,
-                    source_uid,
-                    target_uid,
-                    crit_chance(source_uid, target_uid, context.pool, context.managers),
-                );
+                let is_crit = !heal::is_full_restore(behavior)
+                    && context.determinism.roll_hidden_crit(
+                        context.active_skill_id,
+                        source_uid,
+                        target_uid,
+                        crit_chance(source_uid, target_uid, context.pool, context.managers),
+                    );
                 return heal::amount(source_uid, target_uid, context.managers, is_crit, behavior)
                     .map(|amount| {
                         heal(
@@ -152,10 +160,34 @@ impl BehaviorHandler for Handler {
                 let [rate] = behavior.args.as_slice() else {
                     return None;
                 };
+                let leech_rate = rate
+                    .saturating_add(
+                        context
+                            .managers
+                            .attribute
+                            .get(source_uid, AttrId::LeechRate),
+                    )
+                    .saturating_add(
+                        context
+                            .managers
+                            .buff
+                            .attribute_delta(source_uid, AttrId::LeechRate),
+                    );
+                let efficacy = 1000_i32
+                    .saturating_sub(
+                        context
+                            .managers
+                            .buff
+                            .buff_act_scalar(source_uid, BuffActKind::InjuryAbsorb),
+                    )
+                    .max(0);
                 return Some(heal(
                     crate::engine::damage::scale_permille(
-                        context.target.action_damage_amount,
-                        *rate,
+                        crate::engine::damage::scale_permille(
+                            context.target.action_damage_amount,
+                            leech_rate,
+                        ),
+                        efficacy,
                     ),
                     HpHealKind::Bloodlust,
                 ));
@@ -210,6 +242,7 @@ impl BehaviorHandler for Handler {
                         config_effect: behavior.config_effect,
                         effect_kind: DamageEffectKind::Genesis,
                         assassinate: false,
+                        ignore_riposte: false,
                         hurt,
                     }),
                     BehaviorKind::OriginDamageCanCrit => HpCommand::Lose(HpLoss {
@@ -355,6 +388,7 @@ impl BehaviorHandler for Handler {
                         config_effect: behavior.config_effect,
                         effect_kind: DamageEffectKind::Genesis,
                         assassinate: false,
+                        ignore_riposte: false,
                         hurt: HurtInfoData {
                             from_uid: source_uid,
                             is_crit: false,
@@ -371,7 +405,8 @@ impl BehaviorHandler for Handler {
                     },
                 )))]);
             }
-            (30005 | 30006 | 30018 | 60288 | 60310, BehaviorKind::LostLife) => {
+            (30005 | 30006 | 30018 | 60288, BehaviorKind::LostLife)
+            | (60310, BehaviorKind::ToughnessOverflowDamage) => {
                 let amount = loss::amount(target_uid, context.managers, behavior)?;
                 if amount <= 0 {
                     return Some(Vec::new());
@@ -463,7 +498,10 @@ impl BehaviorHandler for Handler {
                 if *replacement_buff_id <= 0 || *count_scope != 3 || *rate_per_character <= 0 {
                     return None;
                 }
-                let mut feature = BuffManager::configured_features(*replacement_buff_id)
+                let mut feature = context
+                    .managers
+                    .buff
+                    .definition_features(*replacement_buff_id)
                     .into_iter()
                     .find(|feature| is_kind(feature, BuffActKind::AttrOnlyCalDamageReplaceAttr))?;
                 feature.owner_uid = source_uid;
@@ -497,6 +535,8 @@ impl BehaviorHandler for Handler {
                         attack_attributes: &context.modifiers.attack_attributes,
                         career_ratio_bonus: context.modifiers.career_ratio_bonus,
                         attack_career: context.modifiers.attack_career,
+                        additional_attack_career: context.modifiers.additional_attack_career,
+                        critical_multiplier_remainder: 0,
                         is_conduit: context
                             .managers
                             .conduit
@@ -511,7 +551,7 @@ impl BehaviorHandler for Handler {
                         buffs: &context.managers.buff,
                         target_buffs: &context.managers.buff,
                         hp: &context.managers.hp,
-                        fields: Some(&context.managers.field),
+                        fields: Some((&context.managers.field, context.managers.catalog())),
                         emitter: None,
                         team_inspiration: 0,
                     },
@@ -539,11 +579,14 @@ impl BehaviorHandler for Handler {
                                     DamageEffectKind::Normal
                                 },
                                 assassinate: false,
+                                ignore_riposte: false,
                                 hurt: HurtInfoData {
                                     from_uid: source_uid,
                                     is_crit,
-                                    career_restraint: restrains_target(
+                                    career_restraint: restrains_target_either(
+                                        context.managers.catalog(),
                                         context.modifiers.attack_career.unwrap_or(source.career),
+                                        context.modifiers.additional_attack_career,
                                         target,
                                     ),
                                     reduce_hp: 0,
@@ -567,9 +610,51 @@ impl BehaviorHandler for Handler {
             }
             _ => {}
         }
+        if matches!(
+            (behavior.spec.key.opcode, behavior.spec.kind),
+            (10006, BehaviorKind::Damage)
+        ) {
+            let amount = origin::amount(
+                context.source_uid,
+                context.target_uid,
+                origin::OriginRuntime {
+                    managers: context.managers,
+                    pool: context.pool,
+                    extra_action,
+                },
+                &context.modifiers.attack_attributes,
+                false,
+                behavior,
+            )?;
+            return Some(vec![RuleOp::Command(BattleCommand::Hp(HpCommand::Damage(
+                HpDamage {
+                    origin,
+                    source_uid: context.source_uid,
+                    target_uid: context.target_uid,
+                    amount,
+                    config_effect: behavior.config_effect,
+                    effect_kind: DamageEffectKind::Genesis,
+                    assassinate: false,
+                    ignore_riposte: false,
+                    hurt: HurtInfoData {
+                        from_uid: context.source_uid,
+                        is_crit: false,
+                        career_restraint: false,
+                        reduce_hp: 0,
+                        effect_id: context.active_skill_id,
+                        skill_id: context.target.active_skill_id,
+                        damage_from: HurtDamageFromType::SkillEffect,
+                        buff_act_id: 0,
+                        buff_uid: 0,
+                        hurt_effect_type: EffectType::Origindamage as i32,
+                        display_amount: None,
+                    },
+                },
+            )))]);
+        }
         if !matches!(
             (behavior.spec.key.opcode, behavior.spec.kind),
-            (10006, BehaviorKind::Damage) | (10008, BehaviorKind::Damage2)
+            (10008, BehaviorKind::Damage2)
         ) {
             return None;
         }

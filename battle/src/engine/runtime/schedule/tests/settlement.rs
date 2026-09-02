@@ -155,6 +155,227 @@ fn entity_settlement_uses_attacker_and_defender_roster_order() {
     assert_eq!(managers.buff.snapshot(-1, -20).unwrap().duration, Some(1));
 }
 
+#[test]
+fn entity_settlement_buff_presence_fires_once_only_for_the_matching_owner() {
+    init_config();
+    let entity = |uid, buffs| FightEntityInfo {
+        uid: Some(uid),
+        team_type: Some(1),
+        current_hp: Some(100),
+        ex_point: Some(0),
+        passive_skill: vec![100],
+        buffs,
+        ..Default::default()
+    };
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![
+                entity(
+                    10,
+                    vec![BuffInfo {
+                        uid: Some(20),
+                        buff_id: Some(31460001),
+                        from_uid: Some(10),
+                        layer: Some(1),
+                        ..Default::default()
+                    }],
+                ),
+                entity(11, Vec::new()),
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let mut slot = SkillEffectSlot::new(
+        ParsedBehavior::from_spec(BehaviorSpec::new(20002, "AddExPoint"), vec![1], Vec::new()),
+        TargetRequest::self_only(),
+    );
+    slot.conditions = crate::engine::skill::condition::parse::parse_conditions(
+        config::configs::get(),
+        "19303#31460001",
+    );
+    slot.compiled_route = ConditionRoute::compile(&slot.conditions);
+    let mut catalog = SkillEffectCatalog::default();
+    catalog.insert(ParsedSkillEffect {
+        skill_id: 100,
+        slots: vec![slot],
+    });
+
+    let subscribers = crate::engine::skill::subscriber::for_compiled_owner_events(
+        &pool,
+        &managers,
+        &catalog,
+        [EventKind::RoundEndEntitySettlement],
+        &[10, 11],
+    )
+    .unwrap();
+    assert_eq!(
+        subscribers
+            .skills
+            .iter()
+            .map(|subscriber| subscriber.owner_uid)
+            .collect::<Vec<_>>(),
+        vec![10, 11]
+    );
+
+    run_entity_settlement(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        &[10, 11],
+        SettlementSide::Attacker,
+    )
+    .unwrap();
+
+    assert_eq!(managers.ex_point.get(10), 1);
+    assert_eq!(managers.ex_point.get(11), 0);
+}
+
+#[test]
+fn entity_settlement_keeps_event_owned_buff_changes_outside_the_nested_skill() {
+    init_config();
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                team_type: Some(1),
+                model_id: Some(3146),
+                current_hp: Some(100),
+                ex_point: Some(0),
+                passive_skill: vec![100],
+                buffs: vec![
+                    BuffInfo {
+                        uid: Some(1006),
+                        buff_id: Some(31460143),
+                        from_uid: Some(10),
+                        act_info: vec![sonettobuf::BuffActInfo {
+                            act_id: Some(1139),
+                            param: vec![70_000],
+                            str_param: Some(String::new()),
+                        }],
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        uid: Some(1150),
+                        buff_id: Some(31460001),
+                        from_uid: Some(10),
+                        layer: Some(2),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let behavior = ParsedBehavior::from_spec(
+        BehaviorSpec::new(60305, "ConsumeBuffMeiLeiEr"),
+        Vec::new(),
+        ["31460001", "1", "8000", "1", "31460111,1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    );
+    let mut slot = SkillEffectSlot::new(behavior, TargetRequest::self_only());
+    slot.conditions = crate::engine::skill::condition::parse::parse_conditions(
+        config::configs::get(),
+        "19303#31460001",
+    );
+    slot.compiled_route = ConditionRoute::compile(&slot.conditions);
+    let mut catalog = SkillEffectCatalog::default();
+    catalog.insert(ParsedSkillEffect {
+        skill_id: 100,
+        slots: vec![slot],
+    });
+
+    let result = run_entity_settlement(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut RoundDeterminism::default(),
+        TargetContext::default(),
+        &[10],
+        SettlementSide::Attacker,
+    )
+    .unwrap();
+
+    assert_eq!(managers.buff.snapshot(10, 1150).unwrap().layer, Some(1));
+    assert_eq!(
+        managers.buff.snapshot(10, 1006).unwrap().act_info[0].param,
+        vec![78_000]
+    );
+    assert!(managers.buff.has_buff_id(10, 31460111));
+    assert_eq!(managers.ex_point.get(10), 1);
+
+    fn find_parent(
+        step: &sonettobuf::FightStep,
+        skill_id: i32,
+    ) -> Option<(&sonettobuf::FightStep, &sonettobuf::FightStep)> {
+        for child in step
+            .act_effect
+            .iter()
+            .filter_map(|effect| effect.fight_step.as_ref())
+        {
+            if child.act_id == Some(skill_id) {
+                return Some((step, child));
+            }
+            if let Some(found) = find_parent(child, skill_id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let steps = crate::engine::packet::timeline::project(&result.output.frames).unwrap();
+    let (parent, skill) = steps
+        .iter()
+        .find_map(|step| find_parent(step, 100))
+        .expect("entity settlement must contain the passive skill");
+    let buff_index = |buff_id| {
+        parent
+            .act_effect
+            .iter()
+            .position(|effect| effect.buff.as_ref().and_then(|buff| buff.buff_id) == Some(buff_id))
+    };
+    let skill_index = parent
+        .act_effect
+        .iter()
+        .position(|effect| {
+            effect
+                .fight_step
+                .as_ref()
+                .is_some_and(|step| step.act_id == Some(100))
+        })
+        .unwrap();
+    let consume_index = buff_index(31460001).expect("parent owns the consumed buff update");
+    let reward_index = buff_index(31460111).expect("parent owns the reward buff grant");
+    assert!(skill_index < consume_index && consume_index < reward_index);
+    assert!(skill.act_effect.iter().all(|effect| {
+        !matches!(
+            effect.buff.as_ref().and_then(|buff| buff.buff_id),
+            Some(31460001 | 31460111)
+        )
+    }));
+    assert!(skill.act_effect.iter().any(|effect| {
+        effect.effect_type
+            == Some(sonettobuf::effect_type_enum::EffectType::Buffactinfoupdate as i32)
+            && effect
+                .buff_act_info
+                .as_ref()
+                .is_some_and(|info| info.act_id == Some(1139) && info.param == [78_000])
+    }));
+    assert!(skill.act_effect.iter().any(|effect| {
+        effect.effect_type == Some(sonettobuf::effect_type_enum::EffectType::Expointchange as i32)
+    }));
+}
+
 #[cfg(feature = "private-fixtures")]
 #[test]
 fn setup_reserves_summoned_lanes_before_the_next_buff() {
@@ -163,12 +384,13 @@ fn setup_reserves_summoned_lanes_before_the_next_buff() {
         .join("../battle_preview/fixtures/battles/battle7/StartDungeonReply.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
-    crate::preview::normalize_live_json(&mut value);
+    sonettobuf::normalize::normalize_live_json(&mut value);
     let fight: Fight = serde_json::from_value(value["fight"].clone()).unwrap();
     let pool = TargetPool::from_fight(&fight);
     let mut managers = BattleManagers::seeded(&fight);
 
     run_start(
+        managers.catalog(),
         &mut managers,
         &pool,
         crate::engine::skill::effect::catalog::global(),
@@ -200,7 +422,7 @@ fn heat_tag_setup_selects_lingering_glow_over_bloodtithe() {
         .join("../battle_preview/fixtures/battles/battle6/StartDungeonReply.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
-    crate::preview::normalize_live_json(&mut value);
+    sonettobuf::normalize::normalize_live_json(&mut value);
     let fight: Fight = serde_json::from_value(value["fight"].clone()).unwrap();
     let pool = TargetPool::from_fight(&fight);
     let mut managers = BattleManagers::seeded(&fight);
@@ -656,4 +878,170 @@ fn defender_after_settlement_runs_its_registered_passive_skill() {
         result.frames
     );
     assert!(steps.iter().any(|step| contains_skill(step, 22_302_351)));
+}
+
+#[test]
+fn special_count_channel_casts_once_then_deletes_its_carrier() {
+    init_config();
+    let entity = |uid, team_type, model_id, buffs| FightEntityInfo {
+        uid: Some(uid),
+        team_type: Some(team_type),
+        model_id: Some(model_id),
+        current_hp: Some(10_000),
+        attr: Some(HeroAttribute {
+            hp: Some(10_000),
+            attack: Some(1_000),
+            defense: Some(100),
+            mdefense: Some(100),
+            ..Default::default()
+        }),
+        buffs,
+        ..Default::default()
+    };
+    let fight = Fight {
+        version: Some(7),
+        attacker: Some(FightTeam {
+            entitys: vec![entity(
+                10,
+                1,
+                3107,
+                vec![BuffInfo {
+                    uid: Some(20),
+                    buff_id: Some(31070131),
+                    from_uid: Some(10),
+                    duration: Some(1),
+                    ..Default::default()
+                }],
+            )],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![entity(-1, 2, 1000, Vec::new())],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let catalog = SkillEffectCatalog::from_fight(config::configs::get(), &fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    managers.card = crate::engine::manager::card::CardManager::new(vec![
+        CardInfo {
+            uid: Some(10),
+            skill_id: Some(31070111),
+            status: Some(0),
+            ..Default::default()
+        },
+        CardInfo {
+            uid: Some(10),
+            skill_id: Some(31070121),
+            status: Some(0),
+            ..Default::default()
+        },
+    ]);
+    let mut determinism = RoundDeterminism::default();
+    let subscribers = crate::engine::skill::subscriber::for_compiled_owner_events(
+        &pool,
+        &managers,
+        &catalog,
+        [EventKind::RoundEndEntitySettlement],
+        &[10],
+    )
+    .unwrap();
+    assert!(subscribers.buff_acts.iter().any(|subscriber| {
+        subscriber.buff_uid == 20
+            && subscriber
+                .key
+                .definition
+                .matches(1002, "SpecialCountCastChannel")
+    }));
+
+    let first = run_entity_settlement(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut determinism,
+        TargetContext::default(),
+        &[10],
+        SettlementSide::Attacker,
+    )
+    .unwrap();
+
+    assert!(!managers.buff.has_buff_id(10, 31070131));
+    fn find_step(step: &sonettobuf::FightStep, act_id: i32) -> Option<&sonettobuf::FightStep> {
+        (step.act_id == Some(act_id)).then_some(step).or_else(|| {
+            step.act_effect.iter().find_map(|effect| {
+                effect
+                    .fight_step
+                    .as_ref()
+                    .and_then(|nested| find_step(nested, act_id))
+            })
+        })
+    }
+    fn collect_steps<'a>(
+        step: &'a sonettobuf::FightStep,
+        act_id: i32,
+        found: &mut Vec<&'a sonettobuf::FightStep>,
+    ) {
+        if step.act_id == Some(act_id) {
+            found.push(step);
+        }
+        for nested in step
+            .act_effect
+            .iter()
+            .filter_map(|effect| effect.fight_step.as_ref())
+        {
+            collect_steps(nested, act_id, found);
+        }
+    }
+    let steps = crate::engine::packet::timeline::project(&first.output.frames).unwrap();
+    let mut channel = Vec::new();
+    for step in &steps {
+        collect_steps(step, 31070131, &mut channel);
+    }
+    assert_eq!(channel.len(), 2, "steps={steps:#?}");
+    assert!(find_step(channel[0], 31070151).is_some());
+    let removed = &channel[1].act_effect[0];
+    assert_eq!(
+        removed.effect_type,
+        Some(sonettobuf::effect_type_enum::EffectType::Buffdel as i32)
+    );
+    assert_eq!(removed.buff.as_ref().and_then(|buff| buff.uid), Some(20));
+
+    let (_, next_round) = run_round_start_split(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut determinism,
+        TargetContext {
+            current_round: 2,
+            ..Default::default()
+        },
+        1,
+    )
+    .unwrap();
+    let next_round = crate::engine::packet::timeline::project(&next_round.frames).unwrap();
+    let cards = next_round
+        .iter()
+        .flat_map(|step| &step.act_effect)
+        .flat_map(|effect| &effect.card_info_list)
+        .filter(|card| card.uid == Some(10))
+        .collect::<Vec<_>>();
+    assert_eq!(cards.len(), 2);
+    assert!(cards.iter().all(|card| card.status == Some(0)));
+
+    let second = run_entity_settlement(
+        &mut managers,
+        &pool,
+        &catalog,
+        &mut determinism,
+        TargetContext {
+            current_round: 2,
+            ..Default::default()
+        },
+        &[10],
+        SettlementSide::Attacker,
+    )
+    .unwrap();
+    let steps = crate::engine::packet::timeline::project(&second.output.frames).unwrap();
+    assert!(!steps.iter().any(|step| find_step(step, 31070151).is_some()));
 }

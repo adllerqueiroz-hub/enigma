@@ -47,10 +47,11 @@ fn damage_command_commits_shield_hp_crit_and_death_once() {
             config_effect: 7,
             effect_kind: DamageEffectKind::Critical,
             assassinate: false,
+            ignore_riposte: true,
             hurt: HurtInfoData {
                 from_uid: 0,
                 is_crit: false,
-                career_restraint: false,
+                career_restraint: true,
                 reduce_hp: 0,
                 effect_id: 0,
                 skill_id: 0,
@@ -87,8 +88,11 @@ fn damage_command_commits_shield_hp_crit_and_death_once() {
                 target_uid: 10,
                 skill_id: 0,
                 amount: 50,
+                shield_absorbed: 20,
+                career_restraint: true,
                 damage_from: HurtDamageFromType::Skill,
                 assassinate: false,
+                ignore_riposte: true,
             }),
             BattleEvent::EntityDied(EntityDiedEvent {
                 source_uid: 1,
@@ -126,6 +130,7 @@ fn shield_only_damage_is_a_hit_but_not_hp_loss() {
             config_effect: 7,
             effect_kind: DamageEffectKind::Normal,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: 0,
                 is_crit: false,
@@ -153,8 +158,11 @@ fn shield_only_damage_is_a_hit_but_not_hp_loss() {
             target_uid: 10,
             skill_id: 123,
             amount: 0,
+            shield_absorbed: 10,
+            career_restraint: false,
             damage_from: HurtDamageFromType::Skill,
             assassinate: false,
+            ignore_riposte: false,
         })]
     );
 }
@@ -216,6 +224,7 @@ fn round_skill_damage_ledger_counts_committed_skill_damage_only() {
             config_effect: -1,
             effect_kind: DamageEffectKind::Normal,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: source_uid,
                 is_crit: false,
@@ -270,6 +279,7 @@ fn shielded_buff_damage_does_not_publish_another_hit() {
             config_effect: 0,
             effect_kind: DamageEffectKind::Genesis,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: 1,
                 is_crit: false,
@@ -490,7 +500,7 @@ fn kill_bypasses_shield_and_publishes_only_the_death_transition() {
         },
     );
     hp.set_shield(10, 50);
-    let changes = hp
+    let mut changes = hp
         .execute_command(HpCommand::Kill(HpKill {
             origin: CommandOrigin {
                 domain: RuleDomain::Behavior,
@@ -505,6 +515,7 @@ fn kill_bypasses_shield_and_publishes_only_the_death_transition() {
     assert_eq!(hp.current(10), 0);
     assert_eq!(hp.shield(10), 50);
     assert_eq!(changes.kill, Some(60019));
+    assert!(changes.caused_death());
     assert!(matches!(
         changes.events().as_slice(),
         [BattleEvent::EntityDied(EntityDiedEvent {
@@ -512,4 +523,6 @@ fn kill_bypasses_shield_and_publishes_only_the_death_transition() {
             target_uid: 10,
         })]
     ));
+    changes.death.take();
+    assert!(changes.caused_death());
 }

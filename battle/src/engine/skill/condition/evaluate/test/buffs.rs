@@ -1,6 +1,92 @@
 use super::*;
 
 #[test]
+fn round_start_card_buff_gate_matches_an_active_type_variant_only() {
+    init_config();
+    let matches = |duration| {
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(1),
+                    buffs: vec![BuffInfo {
+                        buff_id: Some(30870331),
+                        duration: Some(duration),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let managers = BattleManagers::seeded(&fight);
+        let condition = ParsedCondition {
+            opcode: 19106,
+            type_name: "HasBuffId".into(),
+            kind: ParsedConditionKind::BuffId {
+                mode: BuffConditionMode::Present,
+                buff_ids: vec![30870131],
+            },
+            raw_args: vec!["30870131".into()],
+        };
+
+        conditions_match(
+            &[condition],
+            10,
+            &[10],
+            Some(&managers),
+            &TargetPool::from_fight(&fight),
+            TargetContext::default(),
+        )
+    };
+
+    assert!(matches(1));
+    assert!(!matches(0));
+}
+
+#[test]
+fn exact_buff_id_condition_does_not_match_a_buff_type() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(1),
+                buffs: vec![BuffInfo {
+                    buff_id: Some(26030),
+                    duration: Some(1),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let condition = ParsedCondition {
+        opcode: 19205,
+        type_name: "HasBuffId".into(),
+        kind: ParsedConditionKind::BuffId {
+            mode: BuffConditionMode::ExactPresent,
+            buff_ids: vec![5022],
+        },
+        raw_args: vec!["5022".into()],
+    };
+
+    assert!(managers.buff.has_active_buff_id_or_type(10, 5022));
+    assert!(!conditions_match(
+        &[condition],
+        10,
+        &[10],
+        Some(&managers),
+        &TargetPool::from_fight(&fight),
+        TargetContext::default(),
+    ));
+}
+
+#[test]
 fn repeated_absence_conditions_require_every_buff_to_be_absent() {
     init_config();
     let fight = Fight {
@@ -99,6 +185,83 @@ fn master_halo_requires_active_state_not_an_owned_passive_definition() {
         buff_id: Some(30860161),
         ..Default::default()
     }])));
+}
+
+#[test]
+fn final_settlement_buff_threshold_reads_accumulated_layers() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let condition = exact_condition(581307, "AccAddBuffCountByBuffId", &["118353082", "5"]);
+    let matches = |managers: &BattleManagers| {
+        conditions_match(
+            std::slice::from_ref(&condition),
+            10,
+            &[10],
+            Some(managers),
+            &pool,
+            TargetContext::default(),
+        )
+    };
+
+    for _ in 0..4 {
+        managers.buff.add(&managers.hp, 10, 10, 118353082, 1);
+    }
+    assert!(!matches(&managers));
+    managers.buff.add(&managers.hp, 10, 10, 118353082, 1);
+    assert!(matches(&managers));
+}
+
+#[test]
+fn player_buff_condition_reads_the_configured_team() {
+    init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pool = TargetPool::from_fight(&fight);
+    let mut managers = BattleManagers::seeded(&fight);
+    let condition = exact_condition(750101, "PlayerHasBuff", &["2", "0", "109320002"]);
+    let matches = |managers: &BattleManagers| {
+        conditions_match(
+            std::slice::from_ref(&condition),
+            10,
+            &[10],
+            Some(managers),
+            &pool,
+            TargetContext::default(),
+        )
+    };
+
+    assert!(matches(&managers));
+    managers.buff.add(&managers.hp, 10, -1, 109320002, 1);
+    assert!(!matches(&managers));
 }
 
 #[test]

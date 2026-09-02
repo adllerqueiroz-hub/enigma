@@ -1,4 +1,5 @@
 pub mod absorb_hurt;
+pub mod action_point;
 pub mod add_action_point;
 pub mod add_attr_by_other_buff_layer;
 pub mod add_attr_by_special_count;
@@ -9,6 +10,7 @@ pub mod add_buff_by_other_ex_skill;
 pub mod add_buff_to_enter;
 pub mod add_card_cast_channel;
 pub mod add_sp_temp_card;
+pub mod add_to_buff_entity;
 pub mod add_to_buff_entity_2;
 pub mod add_to_target;
 pub mod additional_damage;
@@ -21,21 +23,30 @@ pub mod attr_by_heat_scale;
 pub mod attr_by_hero_id;
 pub mod attr_by_lost_hp;
 pub mod attr_by_shield;
+pub mod attr_by_skill_target_count;
 pub mod attr_from_entity;
 pub mod attr_only_cal_damage_attack;
 pub mod attr_only_cal_damage_hp_replace_attack;
 pub mod attr_only_cal_damage_replace_attr_ad_creator;
 pub mod be_attack_by_emitter_damage;
+pub mod bendith;
 pub mod big_skill_no_use_action_point;
 pub mod blood_pool;
+pub mod buff_round_add;
 pub mod bullet;
+pub mod burn_real_hurt_fix;
 pub mod butterfly_record_skill;
+pub mod card_level_add;
 pub mod card_record;
 pub mod career_ratio_fix;
 pub mod career_restraint;
 pub mod cast_channel;
+pub mod change_remove_buff_use_skill_param;
 pub mod conduit_select;
+pub mod consume_buff_add_buff_continue_channel;
+pub mod contract_cast_channel;
 pub mod control_team_injury_count_round;
+pub mod count_continue_channel;
 pub mod create_additional_damage;
 pub mod create_max_hp_additional_damage_and_remove;
 pub mod crit_rate_alter2;
@@ -47,10 +58,12 @@ pub mod damage_over_time;
 pub mod deadly_poison;
 pub mod device_cost_reduce;
 pub mod disarm;
+pub mod disperse_by_tag;
 pub mod dodge_spec_skill;
 pub mod dot_no_limit;
 pub mod dudu_bone_continue_channel;
 pub mod each_change_attr;
+pub mod each_change_attr_one_way;
 pub mod effect_time;
 pub mod electric_transform;
 pub mod emitter_card_allocate_change;
@@ -60,6 +73,7 @@ pub mod emitter_num_change;
 pub mod emitter_rend_target;
 pub mod emitter_tag;
 pub mod ex_point_add_by_hit;
+pub mod ex_point_del;
 pub mod ex_point_overflow_bank;
 pub mod fix_attr_by_sub_buff_layer;
 pub mod fix_attr_by_teammate_injury_count;
@@ -68,22 +82,27 @@ pub mod fix_electric_upgrade;
 pub mod fix_temp_attr_by_buff_layer;
 pub mod fixed_hurt;
 pub mod forbid;
+pub mod frozen;
 pub mod heat_scale_tag;
 pub mod heat_scale_use_skill;
 pub mod injury_bank;
 pub mod life_attack_fix_rate;
 pub mod lost_hp_add_extra_blood_pool_value;
 pub mod lost_hp_count_add_buff;
+pub mod modify_attr_by_buff_layer;
 pub mod monitor_continue_channel;
 pub mod must_crit_and_fix_temp_attr;
 pub mod nuo_di_ka_cast_channel;
 pub mod paper_circle_continue_channel;
+pub mod petrified;
 pub mod raspberry;
 pub mod real_damage_kill;
 pub mod rebound;
+pub mod red_or_blue_count;
 pub mod registry;
 pub mod revive;
 pub mod riposte;
+pub mod rouge2_attr_to_role;
 pub mod share_hurt;
 pub mod shell;
 pub mod shield;
@@ -92,6 +111,7 @@ pub mod special_count_cast_channel;
 pub mod special_count_continue_channel;
 pub mod team_immunity_times;
 pub mod team_share_shield;
+pub mod toughness;
 pub mod transfer_energy_buff;
 pub mod use_damage_skill_add_to_target;
 pub mod use_skill;
@@ -101,7 +121,7 @@ pub mod wire;
 
 use crate::engine::{
     entity::attr::AttrId,
-    event::payload::BattleEvent,
+    event::{kind::EventKind, payload::BattleEvent, subscription::SubscriptionKey},
     manager::{
         BattleManagers,
         buff::{ActiveBuffFeature, CommandOrigin},
@@ -175,6 +195,29 @@ pub fn feature_command_origin(feature: &ActiveBuffFeature) -> Option<CommandOrig
     origin(feature.act_id()?, &feature.act_type)
 }
 
+pub fn subscriber_from_feature(
+    feature: ActiveBuffFeature,
+    event: EventKind,
+) -> Option<BuffActSubscriber> {
+    let (&act_id, args) = feature.values.split_first()?;
+    let definition = registry::find(act_id, &feature.act_type)?;
+    Some(BuffActSubscriber {
+        owner_uid: feature.owner_uid,
+        source_uid: feature.source_uid,
+        buff_uid: feature.buff_uid,
+        buff_id: feature.buff_id,
+        team_type: feature.team_type,
+        owner_alive: feature.owner_alive,
+        amount: feature.amount,
+        key: SubscriptionKey::new(event, definition.key),
+        act_type: feature.act_type,
+        effect_time: feature.effect_time,
+        effect_condition: feature.effect_condition,
+        args: args.to_vec(),
+        raw: feature.raw,
+    })
+}
+
 pub fn feature_runtime_frame_scope(
     feature: &ActiveBuffFeature,
 ) -> Option<registry::RuntimeFrameScope> {
@@ -229,6 +272,7 @@ pub fn transaction_rule_ops(
 }
 
 fn changed_features(
+    managers: &BattleManagers,
     event: &BattleEvent,
     kind: registry::BuffActKind,
 ) -> Vec<(ActiveBuffFeature, i32)> {
@@ -239,7 +283,9 @@ fn changed_features(
         _ => return Vec::new(),
     };
     let amount_delta = change.after_amount - change.before_amount;
-    crate::engine::manager::buff::BuffManager::configured_features(change.buff_id)
+    managers
+        .buff
+        .definition_features(change.buff_id)
         .into_iter()
         .filter_map(|mut feature| {
             (feature_kind(&feature) == Some(kind)).then(|| {
@@ -259,7 +305,7 @@ fn attribute_transaction_rule_ops(
     kind: registry::BuffActKind,
     rule_op: fn(&BattleManagers, &ActiveBuffFeature, i32) -> Option<RuleOp>,
 ) -> Vec<(ActiveBuffFeature, RuleOp)> {
-    changed_features(event, kind)
+    changed_features(managers, event, kind)
         .into_iter()
         .flat_map(|(feature, amount_delta)| {
             let Some(op) = rule_op(managers, &feature, amount_delta) else {
@@ -293,16 +339,61 @@ fn attribute_transaction_rule_ops(
 }
 
 fn ex_point_max_transaction_rule_ops(
-    _managers: &BattleManagers,
+    managers: &BattleManagers,
     event: &BattleEvent,
 ) -> Vec<(ActiveBuffFeature, RuleOp)> {
-    changed_features(event, registry::BuffActKind::ExPointMaxAdd)
+    ex_point_max_rule_ops(
+        managers,
+        event,
+        registry::BuffActKind::ExPointMaxAdd,
+        |_| Some(crate::engine::manager::ex_point::ExPointMaxWire::Delta),
+    )
+}
+
+fn sp_ex_point_max_transaction_rule_ops(
+    managers: &BattleManagers,
+    event: &BattleEvent,
+) -> Vec<(ActiveBuffFeature, RuleOp)> {
+    ex_point_max_rule_ops(
+        managers,
+        event,
+        registry::BuffActKind::SpExPointMaxAdd,
+        |feature| {
+            (crate::engine::manager::ex_point::ExPointKind::from_wire(
+                managers.ex_point.kind(feature.owner_uid),
+            ) == crate::engine::manager::ex_point::ExPointKind::Common)
+                .then(
+                    || crate::engine::manager::ex_point::ExPointMaxWire::Special {
+                        max_add: managers.buff.buff_act_argument_scalar(
+                            feature.owner_uid,
+                            registry::BuffActKind::SpExPointMaxAdd,
+                            0,
+                        ),
+                        ultimate_cost_offset: managers.buff.buff_act_argument_scalar(
+                            feature.owner_uid,
+                            registry::BuffActKind::SpExPointMaxAdd,
+                            1,
+                        ),
+                    },
+                )
+        },
+    )
+}
+
+fn ex_point_max_rule_ops(
+    managers: &BattleManagers,
+    event: &BattleEvent,
+    kind: registry::BuffActKind,
+    wire: impl Fn(&ActiveBuffFeature) -> Option<crate::engine::manager::ex_point::ExPointMaxWire>,
+) -> Vec<(ActiveBuffFeature, RuleOp)> {
+    changed_features(managers, event, kind)
         .into_iter()
         .filter_map(|(feature, amount_delta)| {
             let [_, delta, ..] = feature.values.as_slice() else {
                 return None;
             };
             let delta = delta.saturating_mul(amount_delta);
+            let wire = wire(&feature)?;
             (delta != 0).then(|| {
                 (
                     feature.clone(),
@@ -313,6 +404,7 @@ fn ex_point_max_transaction_rule_ops(
                                     .expect("a registered feature has an origin"),
                                 target_uid: feature.owner_uid,
                                 delta,
+                                wire,
                             },
                         ),
                     )),
@@ -362,10 +454,10 @@ fn with_feature_runtime_markers(
 }
 
 fn power_max_transaction_rule_ops(
-    _managers: &BattleManagers,
+    managers: &BattleManagers,
     event: &BattleEvent,
 ) -> Vec<(ActiveBuffFeature, RuleOp)> {
-    changed_features(event, registry::BuffActKind::PowerMaxAdd)
+    changed_features(managers, event, registry::BuffActKind::PowerMaxAdd)
         .into_iter()
         .filter_map(|(feature, amount_delta)| {
             let [_, power_id, delta] = feature.values.as_slice() else {
@@ -420,6 +512,7 @@ pub fn attack_consumption_rule_ops(
 pub fn be_attacked_consumption_rule_ops(
     managers: &BattleManagers,
     target_uid: i64,
+    damage_types: &[crate::engine::skill::target::EntityDamageType],
 ) -> Vec<(ActiveBuffFeature, RuleOp)> {
     managers
         .buff
@@ -427,7 +520,7 @@ pub fn be_attacked_consumption_rule_ops(
         .into_iter()
         .filter(|feature| feature.owner_uid == target_uid)
         .filter(|feature| {
-            feature_kind(feature) == Some(registry::BuffActKind::AttrOnlyCalDamageBeAttacked)
+            attr_only_cal_damage_attack::applies_to_any_incoming_damage(feature, damage_types)
         })
         .filter_map(|feature| {
             attr_only_cal_damage_attack::consume_rule_op(managers, &feature).map(|op| (feature, op))
@@ -439,12 +532,7 @@ pub fn configured_command_origin(
     act_id: i32,
     expected_kind: registry::BuffActKind,
 ) -> Option<CommandOrigin> {
-    let act_type = &config::try_get()?.buff_act.get(act_id)?.r#type;
-    let definition = registry::find(act_id, act_type)?;
-    (definition.kind == expected_kind).then_some(CommandOrigin {
-        domain: RuleDomain::BuffAct,
-        key: definition.key,
-    })
+    crate::catalog::BattleCatalog::try_global()?.buff_act_origin(act_id, expected_kind)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -684,14 +772,16 @@ fn runtime_marker_op(
         registry::RuntimeMarkerTarget::Source => source_uid,
         registry::RuntimeMarkerTarget::EventSource => event_source_uid(event?)?,
     };
-    let effect_type = wire::find(definition.key.opcode, definition.key.type_name)
-        .and_then(|wire| {
-            wire.markers(wire::WirePhase::Static)
-                .first()
-                .or_else(|| wire.markers(wire::WirePhase::Add).first())
-        })
-        .copied()
-        .unwrap_or(sonettobuf::effect_type_enum::EffectType::None as i32);
+    let effect_type = marker.effect_type.unwrap_or_else(|| {
+        wire::find(definition.key.opcode, definition.key.type_name)
+            .and_then(|wire| {
+                wire.markers(wire::WirePhase::Static)
+                    .first()
+                    .or_else(|| wire.markers(wire::WirePhase::Add).first())
+            })
+            .copied()
+            .unwrap_or(sonettobuf::effect_type_enum::EffectType::None as i32)
+    });
     Some(RuleOp::BuffFeatureMarker {
         target_uid,
         effect_type,
@@ -709,6 +799,7 @@ fn event_source_uid(event: &BattleEvent) -> Option<i64> {
         BattleEvent::BuffAdded(change)
         | BattleEvent::BuffChanged(change)
         | BattleEvent::BuffRemoved(change) => Some(change.source_uid),
+        BattleEvent::BuffStateChanged(change) => Some(change.source_uid),
         BattleEvent::HpLost { source_uid, .. } | BattleEvent::HpHealed { source_uid, .. } => {
             Some(*source_uid)
         }
@@ -776,10 +867,9 @@ pub fn attack_attribute_delta_for_skill(
     extra_action: bool,
 ) -> i32 {
     match feature_kind(feature) {
-        Some(
-            registry::BuffActKind::AttrOnlyCalDamageAttack
-            | registry::BuffActKind::AttrOnlyCalDamageBeAttacked,
-        ) => attr_only_cal_damage_attack::attribute_delta(feature, attr_id),
+        Some(registry::BuffActKind::AttrOnlyCalDamageAttack) => {
+            attr_only_cal_damage_attack::attribute_delta(feature, attr_id)
+        }
         Some(registry::BuffActKind::AttrOnlyCalDamageAttackBigSkill) if is_big_skill => {
             attr_only_cal_damage_attack::attribute_delta(feature, attr_id)
         }
@@ -794,6 +884,23 @@ pub fn attack_attribute_delta_for_skill(
         }
         _ => 0,
     }
+}
+
+pub fn incoming_target_attack_attribute_delta(
+    managers: &BattleManagers,
+    target_uid: i64,
+    damage_type: crate::engine::skill::target::EntityDamageType,
+    attr_id: AttrId,
+) -> i32 {
+    managers
+        .buff
+        .active_features(&managers.hp)
+        .into_iter()
+        .filter(|feature| feature.owner_uid == target_uid)
+        .map(|feature| {
+            attr_only_cal_damage_attack::incoming_attribute_delta(&feature, damage_type, attr_id)
+        })
+        .sum()
 }
 
 pub fn calculated_attack_attribute_delta_for_skill(
@@ -838,6 +945,9 @@ pub fn dynamic_attribute_delta(
                 buffs,
                 include_trigger_history,
             )
+        }
+        Some(registry::BuffActKind::ModifyAttrByBuffLayer) => {
+            modify_attr_by_buff_layer::attribute_delta(feature, attr_id, buffs)
         }
         _ => 0,
     }

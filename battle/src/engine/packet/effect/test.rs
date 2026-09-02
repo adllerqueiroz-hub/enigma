@@ -1,14 +1,45 @@
-use crate::engine::fight::versions::HurtInfoWireLayout;
+use crate::engine::fight::versions::{AbsorbHurtMapLayout, HurtInfoWireLayout};
 use crate::engine::manager::{
-    ex_point::{ExPointApplyResult, ExPointKind},
+    ex_point::{ExPointApplyResult, ExPointKind, ExPointMaxApplyResult, ExPointMaxWire},
     hp::DamageEffectKind,
 };
 
 use super::*;
 
 #[test]
+fn emitter_create_uses_the_canonical_activation_identity() {
+    let effect = EffectPacket::emitter_create();
+
+    assert_eq!(effect.target_id, Some(0));
+    assert_eq!(effect.effect_type, Some(EffectType::Emittercreate as i32));
+    assert_eq!(effect.effect_num, Some(1));
+    assert_eq!(effect.entity, Some(emitter::activation_entity()));
+    assert_eq!(effect.emitter_info, Some(EmitterInfo { energy: Some(0) }));
+}
+
+#[test]
 fn clear_universal_card_is_owned_by_the_player_team() {
     assert_eq!(EffectPacket::clear_universal_card().team_type, Some(1));
+}
+
+#[test]
+fn special_moxie_cap_projects_the_captured_snapshot() {
+    let effect = EffectPacket::ex_point_max(ExPointMaxApplyResult {
+        target_uid: -1,
+        before: 5,
+        requested_delta: 7,
+        applied_delta: 7,
+        after: 12,
+        wire: ExPointMaxWire::Special {
+            max_add: 7,
+            ultimate_cost_offset: 3,
+        },
+    });
+
+    assert_eq!(effect.target_id, Some(-1));
+    assert_eq!(effect.effect_type, Some(EffectType::Spexpointmaxadd as i32));
+    assert_eq!(effect.effect_num, Some(0));
+    assert_eq!(effect.reserve_str.as_deref(), Some("7#3"));
 }
 
 #[test]
@@ -40,6 +71,7 @@ fn hp_change_uses_damage_or_heal_effect_type() {
             display_amount: None,
         },
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
     let heal = EffectPacket::hp_with_hurt_info_layout(
         HpChange {
@@ -55,6 +87,7 @@ fn hp_change_uses_damage_or_heal_effect_type() {
             display_amount: None,
         },
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
     let overheal = EffectPacket::hp_with_hurt_info_layout(
         HpChange {
@@ -70,6 +103,7 @@ fn hp_change_uses_damage_or_heal_effect_type() {
             display_amount: Some(2),
         },
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
 
     assert_eq!(damage.effect_type, Some(EffectType::Damage as i32));
@@ -109,6 +143,7 @@ fn crit_is_encoded_by_effect_type() {
             display_amount: None,
         },
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
 
     assert_eq!(damage.effect_type, Some(EffectType::Crit as i32));
@@ -124,14 +159,141 @@ fn crit_is_encoded_by_effect_type() {
 }
 
 #[test]
+fn career_restraint_projection_follows_damage_origin() {
+    let project = |damage_from, career_restraint| {
+        EffectPacket::hp_with_hurt_info_layout(
+            HpChange {
+                target_uid: 1,
+                before: 10,
+                delta: -3,
+                after: 7,
+                max: 10,
+                config_effect: 0,
+                hurt: Some(HurtInfoData {
+                    from_uid: 2,
+                    is_crit: false,
+                    career_restraint,
+                    reduce_hp: -3,
+                    effect_id: 0,
+                    skill_id: 0,
+                    damage_from,
+                    buff_act_id: 0,
+                    buff_uid: 0,
+                    hurt_effect_type: 0,
+                    display_amount: None,
+                }),
+                assassinate: false,
+                effect_type: 0,
+                display_amount: None,
+            },
+            HurtInfoWireLayout::Version6,
+            AbsorbHurtMapLayout::default(),
+        )
+        .hurt_info
+        .unwrap()
+        .career_restraint
+    };
+
+    assert_eq!(project(HurtDamageFromType::SkillEffect, true), None);
+    assert_eq!(project(HurtDamageFromType::Buff, true), None);
+    assert_eq!(project(HurtDamageFromType::Skill, false), Some(false));
+    assert_eq!(project(HurtDamageFromType::Skill, true), Some(true));
+}
+
+#[test]
+fn version7_damage_projects_committed_toughness_delta() {
+    use crate::engine::manager::toughness::{ToughnessChange, ToughnessState};
+
+    let before = ToughnessState {
+        value: 20,
+        point: 3,
+        segment_value: 100,
+        max_point: 3,
+        team_type: 2,
+        broken: false,
+    };
+    let after = ToughnessState {
+        value: 90,
+        point: 2,
+        segment_value: 100,
+        max_point: 3,
+        team_type: 2,
+        broken: false,
+    };
+    let effect = EffectPacket::hp_with_hurt_info_and_toughness_layout(
+        HpChange {
+            target_uid: -1,
+            before: 1_000,
+            delta: -30,
+            after: 970,
+            max: 1_000,
+            config_effect: 0,
+            hurt: Some(HurtInfoData {
+                from_uid: 1,
+                is_crit: false,
+                career_restraint: true,
+                reduce_hp: -30,
+                effect_id: 0,
+                skill_id: 1,
+                damage_from: HurtDamageFromType::Skill,
+                buff_act_id: 0,
+                buff_uid: 0,
+                hurt_effect_type: 0,
+                display_amount: None,
+            }),
+            assassinate: false,
+            effect_type: 0,
+            display_amount: None,
+        },
+        Some(ToughnessChange {
+            target_uid: -1,
+            before,
+            value_delta: -70,
+            point_delta: 1,
+            after,
+            broke: false,
+        }),
+        HurtInfoWireLayout::Version7,
+        AbsorbHurtMapLayout::default(),
+    );
+
+    let hurt = effect.hurt_info.unwrap();
+    assert_eq!(hurt.toughness_value, Some(-70));
+    assert_eq!(hurt.toughness_point, Some(1));
+    assert_eq!(hurt.broken, Some(false));
+}
+
+#[test]
+fn toughness_recovery_uses_the_captured_point_and_segment_payload() {
+    let effect =
+        EffectPacket::toughness_recover(crate::engine::manager::toughness::ToughnessRecovery {
+            target_uid: -1,
+            point: 3,
+            value: 60_900,
+            config_effect: 60_287,
+            team_type: 2,
+        });
+
+    assert_eq!(effect.target_id, Some(-1));
+    assert_eq!(
+        effect.effect_type,
+        Some(EffectType::Toughnessrecover as i32)
+    );
+    assert_eq!(effect.reserve_str.as_deref(), Some("3,60900"));
+    assert_eq!(effect.config_effect, Some(60_287));
+    assert_eq!(effect.team_type, Some(2));
+}
+
+#[test]
 fn fully_absorbed_buff_damage_keeps_its_exact_buff_act_opcode() {
-    let effect = EffectPacket::fully_absorbed_damage_with_hurt_info_layout(
+    let effect = EffectPacket::fully_absorbed_damage_with_toughness_layout(
         20,
         DamageRecord {
             amount: 400,
             config_effect: 0,
             effect_kind: DamageEffectKind::Genesis,
             assassinate: false,
+            ignore_riposte: false,
             hurt: HurtInfoData {
                 from_uid: 10,
                 is_crit: false,
@@ -146,7 +308,9 @@ fn fully_absorbed_buff_damage_keeps_its_exact_buff_act_opcode() {
                 display_amount: Some(400),
             },
         },
+        None,
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
 
     assert_eq!(effect.effect_num, Some(0));
@@ -182,6 +346,7 @@ fn assassinate_is_carried_by_the_damage_change() {
             display_amount: Some(500),
         },
         HurtInfoWireLayout::Version6,
+        AbsorbHurtMapLayout::default(),
     );
 
     assert_eq!(effect.hurt_info.unwrap().assassinate, Some(true));
@@ -257,6 +422,7 @@ fn buff_update_and_delete_use_snapshot_without_scalar_buff_id() {
         config_effect: 0,
         delete_reason: None,
         depleted: false,
+        fixed_max_hp_delta: 0,
     })];
 
     assert_eq!(update[0].effect_type, Some(EffectType::Buffupdate as i32));
@@ -276,6 +442,7 @@ fn buff_update_and_delete_use_snapshot_without_scalar_buff_id() {
         config_effect: 0,
         delete_reason: None,
         depleted: true,
+        fixed_max_hp_delta: 0,
     });
     assert_eq!(depleted.buff.unwrap().duration, Some(1));
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use sonettobuf::{BuffActInfo, BuffInfo, Fight, FightEntityInfo, FightTeam};
 
-use crate::engine::buff::{halo, marker};
+use crate::engine::buff::halo;
 use crate::engine::entity::attr::AttrId;
 use crate::engine::manager::hp::HpManager;
 
@@ -24,10 +24,11 @@ mod update;
 pub use crate::engine::skill::rule::CommandOrigin;
 pub(crate) use command::BuffPlan;
 pub use command::{
-    BuffAccumulateActValue, BuffAmount, BuffChangeDuration, BuffChanges, BuffChildUidReservation,
-    BuffCommand, BuffCommandError, BuffConsume, BuffConvert, BuffDispel, BuffDurationAdvance,
-    BuffGrant, BuffGrantChild, BuffGrantRelation, BuffGrantUidReservation, BuffLifecycleTransition,
-    BuffRefreshWire, BuffRemove, BuffRemoveSelector, BuffReplace, BuffRoundStartCleanup,
+    BuffAccumulateActValue, BuffAccumulateCappedActState, BuffAmount, BuffChangeDuration,
+    BuffChanges, BuffChildUidReservation, BuffCommand, BuffCommandError, BuffConsume, BuffConvert,
+    BuffDispel, BuffDurationAdvance, BuffGrant, BuffGrantChild, BuffGrantRelation,
+    BuffGrantUidReservation, BuffLifecycleTransition, BuffMasterHaloFanout, BuffRefreshDuration,
+    BuffRefreshDurationBySelector, BuffRefreshWire, BuffRemove, BuffRemoveSelector, BuffReplace,
     BuffRoundStartDurationSync, BuffSelector, BuffSetAmount, BuffSetState, BuffSpecialCount,
     BuffStateSnapshotWire, DepletedBuff, RelatedBuffGrant,
 };
@@ -50,10 +51,6 @@ pub use rules::{
 pub use status::BuffStatus;
 use uid::{ATTACKER_BUFF_UID_START, BuffUidAllocator, DEFENDER_BUFF_UID_START};
 
-pub(crate) fn configured_status(buff_id: i32) -> Option<BuffStatus> {
-    BuffDefinition::get(buff_id).map(|definition| definition.status)
-}
-
 pub(crate) fn wire_markers(
     buff_id: i32,
     phase: crate::engine::skill::buff_act::wire::WirePhase,
@@ -67,6 +64,7 @@ pub(crate) fn wire_markers(
 /// Owns active buff instances, storage policy, private act state, and buff UID allocation.
 /// Callers submit `BuffCommand`s rather than choosing stacking, exclusion, or UID policy.
 pub struct BuffManager {
+    catalog_data: Option<crate::catalog::BattleCatalog>,
     buffs: Vec<ActiveBuff>,
     entities: Vec<TrackedEntity>,
     team_types: HashMap<i64, i32>,
@@ -76,6 +74,8 @@ pub struct BuffManager {
     act_states: HashMap<(i64, i32), state::DotState>,
     act_values: HashMap<(i64, i32), i32>,
     grant_values: HashMap<(i64, i32), i32>,
+    mode_attributes: HashMap<i32, i32>,
+    transition_progress: HashMap<(i64, i32), i32>,
     reserved_grant_uids: HashMap<(i64, i32), VecDeque<i64>>,
     transaction: BuffTransactionState,
     shared_uid_lane: bool,
@@ -86,6 +86,7 @@ pub struct BuffManager {
 impl Default for BuffManager {
     fn default() -> Self {
         Self {
+            catalog_data: None,
             buffs: Vec::new(),
             entities: Vec::new(),
             team_types: HashMap::new(),
@@ -95,6 +96,8 @@ impl Default for BuffManager {
             act_states: HashMap::new(),
             act_values: HashMap::new(),
             grant_values: HashMap::new(),
+            mode_attributes: HashMap::new(),
+            transition_progress: HashMap::new(),
             reserved_grant_uids: HashMap::new(),
             transaction: BuffTransactionState::default(),
             shared_uid_lane: false,
@@ -111,6 +114,50 @@ struct BuffTransactionState {
 }
 
 impl BuffManager {
+    fn tracks_single_transition(definition: &BuffDefinition) -> bool {
+        matches!(definition.stack_transition(), Some((threshold, replacement))
+            if threshold > 0 && replacement > 0)
+            && BuffPolicy::from_definition(definition).storage == BuffStorage::Single
+    }
+
+    fn reconcile_transition_progress(&mut self) {
+        let active = self
+            .buffs
+            .iter()
+            .filter_map(|buff| {
+                let definition = buff.definition.as_ref()?;
+                Self::tracks_single_transition(definition).then_some((
+                    (buff.owner_uid, buff.buff.buff_id?),
+                    count_or_layer_from(&buff.buff, Some(definition)).max(1),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+
+        self.transition_progress
+            .retain(|key, _| active.contains_key(key));
+        for (key, initial) in active {
+            self.transition_progress.entry(key).or_insert(initial);
+        }
+    }
+
+    pub(crate) fn set_catalog(&mut self, catalog: crate::catalog::BattleCatalog) {
+        self.catalog_data = Some(catalog);
+    }
+
+    pub(crate) fn try_catalog(&self) -> Option<crate::catalog::BattleCatalog> {
+        self.catalog_data
+    }
+
+    fn catalog(&self) -> crate::catalog::BattleCatalog {
+        if let Some(catalog) = self.catalog_data {
+            return catalog;
+        }
+        #[cfg(test)]
+        return crate::catalog::BattleCatalog::new(crate::test_support::game_data());
+        #[cfg(not(test))]
+        panic!("buff manager was not constructed with a catalog")
+    }
+
     pub(crate) fn begin_transaction(&mut self) {
         if self.transaction.depth == 0 {
             self.transaction.progressed_stack_buff_ids.clear();
@@ -213,8 +260,13 @@ enum LayerHaloWireType {
     Slave = 2,
 }
 
-fn buff_wire_type(buff_id: i32, source_uid: i64, target_uid: i64) -> i32 {
-    if halo::has_layer_master(buff_id) {
+fn buff_wire_type(
+    catalog: crate::catalog::BattleCatalog,
+    buff_id: i32,
+    source_uid: i64,
+    target_uid: i64,
+) -> i32 {
+    if halo::has_layer_master(catalog, buff_id) {
         if source_uid == target_uid {
             LayerHaloWireType::Master as i32
         } else {
@@ -237,7 +289,12 @@ fn fallback_type_id(buff: &BuffInfo) -> i32 {
 }
 
 fn count_or_layer(buff: &BuffInfo) -> i32 {
-    match buff.buff_id.and_then(BuffDefinition::get) {
+    let definition = buff.buff_id.and_then(BuffDefinition::get);
+    count_or_layer_from(buff, definition.as_ref())
+}
+
+fn count_or_layer_from(buff: &BuffInfo, definition: Option<&BuffDefinition>) -> i32 {
+    match definition {
         Some(definition) if definition.uses_stack_layer() => buff.layer.unwrap_or_default().max(0),
         Some(definition) if definition.uses_typed_count() => buff.count.unwrap_or_default().max(0),
         _ => buff

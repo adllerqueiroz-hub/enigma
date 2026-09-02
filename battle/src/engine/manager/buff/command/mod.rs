@@ -8,9 +8,11 @@ use crate::engine::{
 
 use super::{
     ActiveBuff, BuffActInfoMarkerResult, BuffAddArgs, BuffDefinition, BuffDeleteReason,
-    BuffManager, BuffMarkerResult, BuffPolicy, BuffReplaceResult, BuffRoute,
-    BuffShieldRemoveResult, BuffStatus, count_or_layer,
-    grant_plan::{GrantAction, LayerRefreshPlan, PlannedFanout, PlannedFanoutRefresh},
+    BuffFanoutResult, BuffManager, BuffMarkerResult, BuffPolicy, BuffReplaceResult, BuffRoute,
+    BuffShieldRemoveResult, BuffStatus, BuffStorage, count_or_layer_from,
+    grant_plan::{
+        GrantAction, LayerRefreshPlan, PlannedFanout, PlannedFanoutRefresh, PlannedMasterHaloFanout,
+    },
     typed_count_repeat,
     uid_policy::{self, UidAllocationPlan},
 };
@@ -127,6 +129,7 @@ pub struct BuffDispel {
     pub origin: CommandOrigin,
     pub target_uid: i64,
     pub statuses: Vec<super::BuffStatus>,
+    pub excluded_ids_or_types: Vec<i32>,
     pub count: i32,
 }
 
@@ -182,11 +185,37 @@ pub struct BuffAccumulateActValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuffAccumulateCappedActState {
+    pub origin: CommandOrigin,
+    pub target_uid: i64,
+    pub buff_uid: i64,
+    pub act_id: i32,
+    pub delta: i32,
+    pub maximum: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuffChangeDuration {
     pub origin: CommandOrigin,
     pub target_uid: i64,
     pub selector: BuffSelector,
     pub delta: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuffRefreshDuration {
+    pub origin: CommandOrigin,
+    pub target_uid: i64,
+    pub buff_uid: i64,
+    pub minimum_duration: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuffRefreshDurationBySelector {
+    pub origin: CommandOrigin,
+    pub target_uid: i64,
+    pub selector: BuffSelector,
+    pub minimum_duration: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,6 +241,27 @@ pub struct BuffGrantUidReservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuffMasterHaloFanout {
+    pub origin: CommandOrigin,
+    pub target_uids: Vec<i64>,
+}
+
+const WAVE_ENTRY_MASTER_HALO_KEY: crate::engine::skill::rule::DefinitionKey =
+    crate::engine::skill::rule::DefinitionKey::new(0, "WaveEntryMasterHalo");
+
+impl BuffMasterHaloFanout {
+    pub fn new(target_uids: Vec<i64>) -> Self {
+        Self {
+            origin: CommandOrigin {
+                domain: RuleDomain::Lifecycle,
+                key: WAVE_ENTRY_MASTER_HALO_KEY,
+            },
+            target_uids,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuffDurationAdvance {
     pub origin: CommandOrigin,
     pub take_stage: i32,
@@ -221,8 +271,6 @@ pub struct BuffDurationAdvance {
 
 const ROUND_START_DURATION_SYNC_KEY: crate::engine::skill::rule::DefinitionKey =
     crate::engine::skill::rule::DefinitionKey::new(0, "RoundStartDurationSync");
-const ROUND_START_CLEANUP_KEY: crate::engine::skill::rule::DefinitionKey =
-    crate::engine::skill::rule::DefinitionKey::new(0, "RoundStartCleanup");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuffRoundStartDurationSync {
@@ -242,28 +290,6 @@ impl BuffRoundStartDurationSync {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BuffRoundStartCleanup {
-    pub origin: CommandOrigin,
-}
-
-impl BuffRoundStartCleanup {
-    pub fn new() -> Self {
-        Self {
-            origin: CommandOrigin {
-                domain: RuleDomain::Lifecycle,
-                key: ROUND_START_CLEANUP_KEY,
-            },
-        }
-    }
-}
-
-impl Default for BuffRoundStartCleanup {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BuffDurationAdvance {
     pub fn new(take_stage: i32, owner_uids: Vec<i64>, buff_uids: Option<Vec<i64>>) -> Option<Self> {
         let definition = crate::engine::skill::buff_act::effect_time::find(take_stage)?;
@@ -278,15 +304,29 @@ impl BuffDurationAdvance {
         })
     }
 
-    pub fn for_event(event: &BattleEvent) -> Option<Self> {
-        let BattleEvent::SkillAction(action) = event else {
-            return None;
+    pub fn for_event(event: &BattleEvent) -> Vec<Self> {
+        let (take_stages, owner_uid) = match event {
+            BattleEvent::SkillAction(action) => (
+                crate::engine::skill::buff_act::effect_time::duration_stage_for_skill_phase(
+                    action.phase,
+                )
+                .into_iter()
+                .collect::<Vec<_>>(),
+                action.source_uid,
+            ),
+            BattleEvent::AllyAction(action) => (
+                crate::engine::skill::buff_act::effect_time::duration_stages_for_event(
+                    crate::engine::event::kind::EventKind::AllyAction,
+                )
+                .collect::<Vec<_>>(),
+                action.source_uid,
+            ),
+            _ => return Vec::new(),
         };
-        let take_stage =
-            crate::engine::skill::buff_act::effect_time::duration_stage_for_skill_phase(
-                action.phase,
-            )?;
-        Self::new(take_stage, vec![action.source_uid], None)
+        take_stages
+            .into_iter()
+            .filter_map(|take_stage| Self::new(take_stage, vec![owner_uid], None))
+            .collect()
     }
 }
 
@@ -318,13 +358,16 @@ pub enum BuffCommand {
     SetInternalState(BuffSetState),
     SetStateSnapshot(BuffSetState),
     AccumulateActValue(BuffAccumulateActValue),
+    AccumulateCappedActState(BuffAccumulateCappedActState),
     ChangeDuration(BuffChangeDuration),
+    RefreshDuration(BuffRefreshDuration),
+    RefreshDurationBySelector(BuffRefreshDurationBySelector),
     AddSpecialCount(BuffSpecialCount),
     ReserveChildUids(BuffChildUidReservation),
     ReserveGrantUid(BuffGrantUidReservation),
+    FanoutMasterHalo(BuffMasterHaloFanout),
     AdvanceDuration(BuffDurationAdvance),
     SyncRoundStartDuration(BuffRoundStartDurationSync),
-    CleanupRoundStart(BuffRoundStartCleanup),
 }
 
 #[derive(Debug, Clone)]
@@ -333,7 +376,16 @@ pub(crate) struct BuffPlan {
     action: BuffPlanAction,
 }
 
+type SourceRelativeAttributeFeatures = (i64, Vec<(i32, i32, i32, i32)>);
+
 impl BuffPlan {
+    pub(crate) fn planned_reservation_uids(&self) -> Option<Vec<i64>> {
+        let BuffPlanAction::ReserveChildUids(plan) = &self.action else {
+            return None;
+        };
+        Some(plan.uids.iter().map(|uid| uid.uid).collect())
+    }
+
     pub(crate) fn added_buff_uid(&self) -> Option<i64> {
         let plan = match &self.action {
             BuffPlanAction::Grant(plan) => plan.as_ref(),
@@ -342,6 +394,47 @@ impl BuffPlan {
         matches!(plan.action, GrantAction::Add | GrantAction::ReplaceExisting)
             .then(|| plan.uid.map(|uid| uid.uid))
             .flatten()
+    }
+
+    pub(crate) fn source_relative_attribute_features(
+        &self,
+    ) -> Option<SourceRelativeAttributeFeatures> {
+        let plan = match &self.action {
+            BuffPlanAction::Grant(plan) => plan.as_ref(),
+            _ => return None,
+        };
+        self.added_buff_uid()?;
+        let features = plan
+            .definition
+            .features()
+            .iter()
+            .filter(|feature| {
+                feature.arguments_supported
+                    && feature.kind
+                    == Some(
+                        crate::engine::skill::buff_act::registry::BuffActKind::EachChangeAttrOneWay,
+                    )
+            })
+            .filter_map(|feature| match feature.values.as_slice() {
+                [act_id, raw_attr, rate, cap] => Some((*act_id, *raw_attr, *rate, *cap)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (!features.is_empty()).then_some((plan.route.source_uid, features))
+    }
+
+    pub(crate) fn initialize_added_act_info_without_markers(&mut self, values: Vec<BuffActInfo>) {
+        if values.is_empty() {
+            return;
+        }
+        let plan = match &mut self.action {
+            BuffPlanAction::Grant(plan) => plan.as_mut(),
+            _ => return,
+        };
+        plan.initial_act_info
+            .get_or_insert_with(Vec::new)
+            .extend(values);
+        plan.initial_act_info_markers = Some(Vec::new());
     }
 
     pub(crate) fn initialize_added_act_value(
@@ -409,13 +502,14 @@ enum BuffPlanAction {
     SetInternalState(SetStatePlan),
     SetStateSnapshot(SetStatePlan),
     AccumulateActValue(BuffAccumulateActValue),
+    AccumulateCappedActState(AccumulateCappedActStatePlan),
     ChangeDuration(Vec<DurationChangePlan>),
     AddSpecialCount(SpecialCountPlan),
     ReserveChildUids(UidReservationPlan),
     ReserveGrantUid(GrantUidReservationPlan),
+    FanoutMasterHalo(Vec<PlannedMasterHaloFanout>),
     AdvanceDuration(Vec<super::lifecycle::BuffDurationPlan>),
     SyncRoundStartDuration(Vec<super::lifecycle::BuffLifecyclePlan>),
-    CleanupRoundStart(Vec<super::lifecycle::BuffLifecyclePlan>),
 }
 
 #[derive(Debug, Clone)]
@@ -468,6 +562,12 @@ struct SetStatePlan {
     params: Option<String>,
     act_info: Option<Vec<BuffActInfo>>,
     exists: bool,
+}
+
+#[derive(Debug, Clone)]
+struct AccumulateCappedActStatePlan {
+    state: SetStatePlan,
+    marker: Option<BuffActInfoMarkerResult>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -540,6 +640,7 @@ pub(super) struct GrantPlan {
     dot_snapshots: Vec<super::state::DotSnapshotPlan>,
     grant_values: Vec<(i32, i32)>,
     immunity_action: Option<(i64, ConsumeAction)>,
+    transition_progress: Option<i32>,
     transition: Option<Box<ReplacePlan>>,
 }
 

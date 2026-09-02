@@ -25,9 +25,14 @@ pub fn damage_multiplier(
     let technique = pool
         .entity(source_uid)
         .zip(pool.entity(target_uid))
-        .map(|(source, target)| critical_technique_bonus(source, target.level, 12))
+        .map(|(source, target)| {
+            critical_technique_bonus(managers.catalog(), source, target.level, 12)
+        })
         .unwrap_or_default();
     let multiplier = managers.attribute.get(source_uid, AttrId::CriticalDmg)
+        + managers
+            .buff
+            .fixed_attribute_delta(source_uid, AttrId::CriticalDmg)
         + technique
         + modifiers::dynamic_attribute_delta(
             &managers.buff,
@@ -87,7 +92,7 @@ fn raw_chance(
         0
     };
     managers.attribute.get(source_uid, AttrId::CriticalRate)
-        + critical_technique_bonus(source, target.level, 11)
+        + critical_technique_bonus(managers.catalog(), source, target.level, 11)
         + modifiers::dynamic_attribute_delta(
             &managers.buff,
             &managers.hp,

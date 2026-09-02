@@ -100,6 +100,27 @@ impl SkillEffectCatalog {
             .or_else(|| self.effects.get(&skill_id))
     }
 
+    pub fn random_skill_references(&self, skill_id: i32) -> Vec<i32> {
+        let Some(effect) = self.get(skill_id) else {
+            return Vec::new();
+        };
+        effect
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                let definition = crate::engine::skill::behavior::registry::find(&slot.behavior)?;
+                matches!(
+                    definition.kind,
+                    BehaviorKind::RandomUseSkill
+                        | BehaviorKind::CrystalReuse
+                        | BehaviorKind::RemoveBuffUseSkill
+                )
+                .then(|| (definition.references)(&slot.behavior).skills)
+            })
+            .flatten()
+            .collect()
+    }
+
     pub fn random_condition_keys(&self) -> Vec<(i32, i32)> {
         fn append(
             conditions: &[crate::engine::skill::condition::ParsedCondition],
@@ -380,7 +401,7 @@ pub use parse::{
     configured_is_attack, configured_is_big_skill, configured_skill_type, global,
 };
 #[cfg(test)]
-use parse::{parse_i32_list, parse_target, rule_issue};
+use parse::{parse_i32_list, parse_target};
 
 #[cfg(test)]
 mod test;

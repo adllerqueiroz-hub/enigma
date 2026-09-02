@@ -1,7 +1,4 @@
-use super::super::{
-    BuffFanoutResult, BuffRemoveResult, BuffUpdateResult, emits_existing_layer_on_refresh,
-    wire_markers,
-};
+use super::super::{BuffDefinition, BuffFanoutResult, BuffRemoveResult, BuffUpdateResult};
 use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +11,7 @@ pub struct BuffChanges {
     pub refresh_wire: Vec<BuffRefreshWire>,
     pub state_snapshot_wire: Vec<BuffStateSnapshotWire>,
     pub shield_removed: Vec<BuffShieldRemoveResult>,
+    pub act_info_markers: Vec<BuffActInfoMarkerResult>,
     wire_visible: bool,
 }
 
@@ -29,26 +27,41 @@ pub struct BuffRefreshWire {
     pub markers: Vec<BuffMarkerResult>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuffStateSnapshotWire {
     pub refresh_index: usize,
     pub effect_type: i32,
+    pub effect_num: i32,
+    pub reserve_str: Option<String>,
 }
 
 impl BuffChanges {
-    pub(super) fn new(origin: CommandOrigin, change: BuffReplaceResult) -> Self {
-        Self::with_refresh_echo(origin, change, true)
+    pub(super) fn new(
+        catalog: crate::catalog::BattleCatalog,
+        origin: CommandOrigin,
+        change: BuffReplaceResult,
+    ) -> Self {
+        Self::with_refresh_echo(catalog, origin, change, true)
     }
 
-    pub(super) fn set_amount(origin: CommandOrigin, change: BuffReplaceResult) -> Self {
-        Self::without_refresh_echo(origin, change)
+    pub(super) fn set_amount(
+        catalog: crate::catalog::BattleCatalog,
+        origin: CommandOrigin,
+        change: BuffReplaceResult,
+    ) -> Self {
+        Self::without_refresh_echo(catalog, origin, change)
     }
 
-    pub(super) fn without_refresh_echo(origin: CommandOrigin, change: BuffReplaceResult) -> Self {
-        Self::with_refresh_echo(origin, change, false)
+    pub(super) fn without_refresh_echo(
+        catalog: crate::catalog::BattleCatalog,
+        origin: CommandOrigin,
+        change: BuffReplaceResult,
+    ) -> Self {
+        Self::with_refresh_echo(catalog, origin, change, false)
     }
 
     fn with_refresh_echo(
+        catalog: crate::catalog::BattleCatalog,
         origin: CommandOrigin,
         mut change: BuffReplaceResult,
         echo_existing_layer: bool,
@@ -62,30 +75,50 @@ impl BuffChanges {
         let refresh_wire = change
             .refreshed
             .iter()
-            .map(|refresh| BuffRefreshWire {
-                echo_before: echo_existing_layer
-                    && emits_existing_layer_on_refresh(refresh.after.buff_id.unwrap_or_default())
-                    && refresh.before.uid == refresh.after.uid
-                    && refresh.before.layer.unwrap_or_default() > 0,
-                markers: if !has_add && refresh_increases_effect_value(refresh) {
-                    crate::engine::buff::marker::refresh_markers(
-                        refresh.after.buff_id.unwrap_or_default(),
-                    )
-                    .into_iter()
-                    .map(|marker| BuffMarkerResult {
-                        target_uid: refresh.target_uid,
-                        effect_type: marker.effect_type,
-                        effect_num: crate::engine::buff::marker::effect_num(
-                            marker.effect_type,
-                            refresh.after.buff_id.unwrap_or_default(),
-                            refresh.after.act_common_params.as_deref(),
-                        ),
-                        buff_act_id: 0,
-                    })
-                    .collect()
+            .map(|refresh| {
+                let definition = BuffDefinition::configured(
+                    catalog.game_data(),
+                    refresh.after.buff_id.unwrap_or_default(),
+                );
+                let markers = if !has_add
+                    && (refresh_increases_effect_value(refresh)
+                        || definition
+                            .as_ref()
+                            .is_some_and(BuffDefinition::refreshes_unchanged))
+                {
+                    definition
+                        .as_ref()
+                        .map(|definition| {
+                            definition
+                                .wire_markers(
+                                    crate::engine::skill::buff_act::wire::WirePhase::Refresh,
+                                )
+                                .into_iter()
+                                .map(|effect_type| BuffMarkerResult {
+                                    target_uid: refresh.target_uid,
+                                    effect_type,
+                                    effect_num: definition.marker_effect_num(
+                                        catalog.game_data(),
+                                        effect_type,
+                                        refresh.after.act_common_params.as_deref(),
+                                    ),
+                                    buff_act_id: 0,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 } else {
                     Vec::new()
-                },
+                };
+                BuffRefreshWire {
+                    echo_before: echo_existing_layer
+                        && definition
+                            .as_ref()
+                            .is_some_and(BuffDefinition::emits_existing_layer_on_refresh)
+                        && refresh.before.uid == refresh.after.uid
+                        && refresh.before.layer.unwrap_or_default() > 0,
+                    markers,
+                }
             })
             .collect();
         let mut fanout = std::mem::take(&mut change.fanout);
@@ -128,6 +161,7 @@ impl BuffChanges {
             refresh_wire,
             state_snapshot_wire: Vec::new(),
             shield_removed: Vec::new(),
+            act_info_markers: Vec::new(),
             wire_visible: true,
         }
     }
@@ -145,25 +179,44 @@ impl BuffChanges {
         self
     }
 
+    pub(super) fn with_act_info_marker(mut self, marker: BuffActInfoMarkerResult) -> Self {
+        self.act_info_markers.push(marker);
+        self
+    }
+
     pub fn is_wire_visible(&self) -> bool {
         self.wire_visible
     }
 
-    pub(super) fn with_state_snapshot_wire(mut self) -> Self {
+    pub(super) fn with_state_snapshot_wire(
+        mut self,
+        catalog: crate::catalog::BattleCatalog,
+    ) -> Self {
         self.state_snapshot_wire = self
             .change
             .refreshed
             .iter()
             .enumerate()
             .flat_map(|(refresh_index, refresh)| {
-                wire_markers(
+                BuffDefinition::configured(
+                    catalog.game_data(),
                     refresh.after.buff_id.unwrap_or_default(),
-                    crate::engine::skill::buff_act::wire::WirePhase::Refresh,
                 )
                 .into_iter()
-                .map(move |effect_type| BuffStateSnapshotWire {
-                    refresh_index,
-                    effect_type,
+                .flat_map(move |definition| {
+                    definition
+                        .state_snapshot_wire(refresh.after.act_common_params.as_deref())
+                        .into_iter()
+                        .map(move |(effect_type, reserve_str)| BuffStateSnapshotWire {
+                            refresh_index,
+                            effect_type,
+                            effect_num: definition.state_snapshot_effect_num(
+                                effect_type,
+                                refresh.before.act_common_params.as_deref(),
+                                refresh.after.act_common_params.as_deref(),
+                            ),
+                            reserve_str,
+                        })
                 })
             })
             .collect();

@@ -46,7 +46,11 @@ pub(super) fn shield_grant_ops(
         return None;
     }
     let buff_id = behavior.arg(0)?;
-    let (attr, rate) = crate::engine::skill::buff_act::shield::configured_attr_rate(buff_id)?;
+    let (attr, rate) = crate::engine::skill::buff_act::shield::configured_attr_rate(
+        buff_id,
+        context.source_uid,
+        &context.managers.buff,
+    )?;
     let origin = super::command_origin(behavior)?;
     Some(
         (0..context.transfer_count.max(0))
@@ -58,7 +62,7 @@ pub(super) fn shield_grant_ops(
                     buff_id,
                     amount_attr: attr,
                     amount_rate: rate,
-                    bonus: None,
+                    multiplier_bonus: None,
                     max_attr: attr,
                     max_rate: rate,
                     scope: crate::engine::manager::shield::ShieldScope::Entity,
@@ -80,7 +84,8 @@ pub(super) fn heat_scale_snapshot_grant_ops(
         return None;
     }
     let buff_id = behavior.arg(0)?;
-    let act_info = crate::engine::skill::buff_act::attr_by_heat_scale::snapshot(
+    let act_info = crate::engine::skill::buff_act::attr_by_heat_scale::definition_snapshot(
+        &context.managers.buff,
         buff_id,
         context.target.heat_scale_value,
     )?;

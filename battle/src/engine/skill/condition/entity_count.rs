@@ -52,6 +52,14 @@ pub fn enemies_with_special_at_least(
     )
 }
 
+pub fn enemies_with_special_equal(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {
+    entity_count(
+        EntityCountScope::AliveEnemiesIncludeSp,
+        ConditionCompare::Equal,
+        args,
+    )
+}
+
 pub fn enemies_with_special_at_most(
     _: i32,
     _: &str,
@@ -70,6 +78,14 @@ pub fn teammate_alive(_: i32, _: &str, _: &[String]) -> Option<ParsedConditionKi
         compare: ConditionCompare::GreaterThanOrEqual,
         count: 1,
     })
+}
+
+pub fn teammates_equal(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {
+    entity_count(
+        EntityCountScope::AliveOtherTeammates,
+        ConditionCompare::Equal,
+        args,
+    )
 }
 
 pub fn other_ally_damage_type(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {

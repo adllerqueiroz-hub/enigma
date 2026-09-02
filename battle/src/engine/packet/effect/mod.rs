@@ -1,12 +1,12 @@
 use sonettobuf::{
-    ActEffect, BuffActInfo, BuffInfo, CardInfo, EmitterInfo, EnhanceInfoBox, FightEntityInfo,
-    FightHurtInfo, FightStep, HeroAttribute, MagicCircleInfo, PowerInfo, SummonedInfo,
-    effect_type_enum::EffectType, fight_hurt_info, fight_step,
+    ActEffect, BuffActInfo, BuffInfo, CardInfo, EmitterInfo, FightEntityInfo, FightHurtInfo,
+    FightStep, MagicCircleInfo, PowerInfo, SummonedInfo, effect_type_enum::EffectType,
+    fight_hurt_info, fight_step,
 };
 
 use crate::engine::{
     buff::marker,
-    fight::versions::HurtInfoWireLayout,
+    fight::versions::{AbsorbHurtMapLayout, HurtInfoWireLayout},
     manager::{
         buff::{
             BuffApplyResult, BuffMarkerResult, BuffRejectResult, BuffRemoveResult, BuffUpdateResult,
@@ -33,6 +33,8 @@ impl EffectPacket {
             effect_type: Some(marker.effect_type),
             effect_num: Some(marker.effect_num),
             config_effect: Some(marker.config_effect),
+            reserve_id: marker.reserve_id,
+            reserve_str: marker.reserve_str,
             ..Default::default()
         }
     }

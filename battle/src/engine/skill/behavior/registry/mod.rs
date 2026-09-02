@@ -3,7 +3,7 @@ use crate::engine::round::modifier::RoundModifiers;
 use crate::engine::skill::{
     action::SkillPhase,
     behavior::{AttackModifierContext, BehaviorOpContext, classify::BehaviorKind},
-    effect::ParsedBehavior,
+    effect::{ParsedBehavior, SkillEffectCatalog},
     rule::{DefinitionKey, RuleReferences, SetupStage, output::RuleOp},
 };
 
@@ -90,7 +90,7 @@ pub struct BehaviorDefinition {
     pub target_emission_mode: TargetEmissionMode,
     pub skill_destination_mode: SkillDestinationMode,
     pub output_owner: OutputOwner,
-    pub output_owner_for: fn(&ParsedBehavior, usize) -> Option<OutputOwner>,
+    pub output_owner_for: fn(&ParsedBehavior, &RuleOp, usize) -> Option<OutputOwner>,
     pub references: fn(&ParsedBehavior) -> RuleReferences,
     pub card_play_role: CardPlayRole,
     pub condition_route_override: Option<ConditionRouteOverride>,
@@ -112,6 +112,14 @@ pub trait BehaviorHandler {
         None
     }
 
+    fn emit_runtime_ops(
+        context: BehaviorOpContext<'_>,
+        behavior: &ParsedBehavior,
+        _: &SkillEffectCatalog,
+    ) -> Option<Vec<RuleOp>> {
+        Self::emit_ops(context, behavior)
+    }
+
     fn collect_attack_modifier(
         context: AttackModifierContext<'_>,
         behavior: &ParsedBehavior,
@@ -127,7 +135,7 @@ pub trait BehaviorHandler {
         None
     }
 
-    fn output_owner(_: &ParsedBehavior, _: usize) -> Option<OutputOwner> {
+    fn output_owner(_: &ParsedBehavior, _: &RuleOp, _: usize) -> Option<OutputOwner> {
         None
     }
 
@@ -202,6 +210,10 @@ pub mod arguments {
 
     pub fn exactly_two(behavior: &ParsedBehavior) -> bool {
         behavior.args.len() == 2
+    }
+
+    pub fn exactly_three(behavior: &ParsedBehavior) -> bool {
+        behavior.args.len() == 3
     }
 
     pub fn exactly_four(behavior: &ParsedBehavior) -> bool {
@@ -392,6 +404,11 @@ macro_rules! behavior_definitions {
     ($([$opcode:expr] $type_name:literal => $handler:ty, $kind:ident, $phase:ident, $mode:ident $(, @route($route:expr))? $(, $supports:path)?);+ $(;)?) => {
         pub const DEFINITIONS: &[BehaviorDefinition] =
             &[$(behavior_definitions!(@maybe_support $mode, $handler, $opcode, $type_name, $kind, $phase $(, @route($route))? $(, $supports)?)),+];
+        const RUNTIME_EMITTERS: &[for<'a> fn(
+            BehaviorOpContext<'a>,
+            &ParsedBehavior,
+            &SkillEffectCatalog,
+        ) -> Option<Vec<RuleOp>>] = &[$(<$handler as BehaviorHandler>::emit_runtime_ops),+];
     };
     (@maybe_support $mode:ident, $handler:ty, $opcode:expr, $type_name:literal, $kind:ident, $phase:ident, @route($route:expr), $supports:path) => {
         $crate::engine::skill::behavior::registry::with_argument_parser(
@@ -461,45 +478,69 @@ macro_rules! behavior_definitions {
     };
 }
 
+pub(crate) fn emit_runtime_ops(
+    definition: &BehaviorDefinition,
+    context: BehaviorOpContext<'_>,
+    behavior: &ParsedBehavior,
+    catalog: &SkillEffectCatalog,
+) -> Option<Vec<RuleOp>> {
+    let index = DEFINITIONS
+        .iter()
+        .position(|candidate| std::ptr::eq(candidate, definition))?;
+    RUNTIME_EMITTERS[index](context, behavior, catalog)
+}
+
 behavior_definitions! {
     [20002] "AddExPoint" => super::resource::Handler, AddExPoint, AfterDamage, aggregated_destination, arguments::at_least_one;
-    [100004] "AddAdrenalineExPoint" => super::resource::Handler, AddAdrenalineExPoint, AfterDamage, destination;
+    [100004] "AddAdrenalineExPoint" => super::resource::Handler, AddAdrenalineExPoint, AfterDamage, destination, super::resource::supports_ex_point_gain;
     [100014] "EzioAddSynchronization" => super::resource::Handler, AddSynchronization, AfterDamage, destination;
     [10010] "AttrFixExPoint" => super::resource::Handler, AttrFixExPoint, Immediate, destination;
     [30001] "DelExPoint" => super::resource::Handler, DelExPoint, AfterDamage, destination, super::resource::supports_ex_point_loss;
     [30007] "DelExPoint" => super::resource::Handler, DelExPoint, AfterDamage, destination;
     [30013] "DelExPointNotImmunity" => super::resource::Handler, DelExPointNotImmunity, AfterDamage, destination;
     [30011] "AbsorbExPoint" => super::resource::Handler, AbsorbExPoint, Immediate, destination;
-    [20011] "AverageLife" => super::resource::Handler, AverageLife, Immediate, destination;
+    [20011] "AverageLife" => super::resource::Handler, AverageLife, Immediate, destination, super::resource::supports_average_life;
     [50017] "ChangePower" => super::resource::Handler, ChangePower, Immediate, destination, super::resource::supports_power_change;
     [50037] "ChangePower" => super::resource::Handler, ChangePower, Immediate, destination;
-    [60144] "RecoverPower" => super::resource::Handler, RecoverPower, Immediate, destination;
-    [60125] "RecoverPowerAndDelCardsUseSkill" => super::resource::Handler, RecoverPowerAndDelCardsUseSkill, Immediate, destination;
-    [60187] "AddPowerByCritCount" => super::resource::Handler, AddPowerByCritCount, Immediate, destination;
+    [60144] "RecoverPower" => super::resource::Handler, RecoverPower, Immediate, destination, super::resource::supports_recover_power;
+    [60125] "RecoverPowerAndDelCardsUseSkill" => super::resource::Handler, RecoverPowerAndDelCardsUseSkill, Immediate, destination, super::resource::supports_recover_power_and_cast_cards;
+    [60187] "AddPowerByCritCount" => super::resource::Handler, AddPowerByCritCount, Immediate, destination, super::resource::supports_power_by_critical_count;
     [60115] "TotalSkillRankToPower" => super::resource::Handler, TotalSkillRankToPower, Immediate, destination, super::resource::supports_total_skill_rank_power;
-    [60152] "AddEmitterEnergy" => super::resource::Handler, AddEmitterEnergy, Immediate, destination;
-    [60153] "AddTeamEnergy" => super::resource::Handler, AddTeamEnergy, Immediate, setup_parent_destination;
+    [60152] "AddEmitterEnergy" => super::resource::Handler, AddEmitterEnergy, Immediate, destination, super::resource::supports_emitter_energy;
+    [60153] "AddTeamEnergy" => super::resource::Handler, AddTeamEnergy, Immediate, setup_parent_destination, super::resource::supports_team_energy;
+    [60264] "PerTypeBuffAddEnergyToTeam" => super::resource::Handler, PerTypeBuffAddEnergyToTeam, Immediate, setup_parent_destination, super::resource::supports_per_type_buff_energy;
+    [60266] "PerTypeBuffAddEnergyToEmitter" => super::resource::Handler, PerTypeBuffAddEnergyToEmitter, Immediate, destination, super::resource::supports_per_type_buff_emitter_energy;
+    [60154] "AddRedOrBlueCount" => super::resource::Handler, AddRedOrBlueCount, Immediate, destination, super::resource::supports_red_or_blue_count;
+    [60298] "AddMeiLeiErCharge" => super::resource::Handler, AddBuffOwnedCharge, Immediate, destination, super::resource::supports_buff_owned_charge;
+    [60305] "ConsumeBuffMeiLeiEr" => super::resource::Handler, ConsumeBuffIntoChargeAndRewards, Immediate, destination, super::resource::supports_consume_buff_into_charge_and_rewards;
     [60291] "AddDevicePower" => super::resource::Handler, AddConduitPower, Immediate, destination, super::resource::supports_conduit_power;
-    [60292] "AddDeviceExPoint" => super::resource::Handler, AddConduitExPoint, Immediate, setup_parent_destination, super::resource::supports_conduit_ex_point;
+    [60292] "AddDeviceExPoint" => super::resource::Handler, AddConduitExPoint, Immediate, setup_parent_destination, super::resource::supports_ex_point_gain;
     [60293] "SetDeviceSkillIndex" => super::resource::Handler, SetConduitSkillGroup, Immediate, destination, super::resource::supports_conduit_skill_group;
+    [60294] "StopDeviceSkill" => super::resource::Handler, StopConduitSkill, Immediate, destination, arguments::none;
+    [60297] "AddDeviceCounter" => super::resource::Handler, AddConduitCounter, Immediate, destination, super::resource::supports_conduit_counter;
     [100034] "StopDeviceSkill" => super::resource::Handler, StopConduitSkill, Immediate, destination, arguments::none;
     [60231] "RaspberryAddCount" => super::resource::Handler, RaspberryAddCount, Immediate, destination, super::resource::supports_raspberry_add_count;
     [60233] "RaspberryBigSkill" => super::resource::Handler, RaspberryBigSkill, Immediate, destination, super::resource::supports_raspberry_big_skill;
-    [60189] "AddEnergyToCard" => super::card::Handler, AddEnergyToCard, Immediate, destination;
+    [60189] "AddEnergyToCard" => super::card::Handler, AddEnergyToCard, Immediate, destination, super::card::supports_basic_card_energy;
     [60041] "Enchant" => super::card::Handler, EnchantHand, Immediate, once_destination, super::card::supports_enchant_hand;
     [50023] "ChangeToTempCards" => super::card::Handler, ChangeHandToTemporary, Immediate, once_destination, super::card::supports_mark_hand_temporary;
     [60075] "AroundChangeRank" => super::card::Handler, AroundChangeRank, Immediate, queue_preparation, super::card::supports_around_change_rank;
     [50011] "CardLevelChange" => super::card::Handler, CardLevelChange, Immediate, destination, super::card::supports_card_level_change;
+    [60116] "CardDeckTopRankCorrect" => super::card::Handler, CardDeckTopRankCorrect, Immediate, destination, super::card::supports_deck_top_rank_correct;
     [50034] "ConsumePowerUpgradeSkillCard" => super::card::Handler, ConsumePowerUpgradeSkillCard, Immediate, destination, super::card::supports_power_card_upgrade;
     [60002] "AddUniversalCard" => super::card::Handler, AddUniversalCard, Immediate, destination;
     [60012] "RedealCardKeepStar2" => super::card::Handler, RedealCardKeepStar2, Immediate, destination;
     [60070] "AddUseSkillCard" => super::card::Handler, AddQueuedSkillCard, Immediate, destination, super::card::supports_queued_skill_card;
+    [50031] "AddSpTempCard" => super::card::Handler, AddSpTempCard, Immediate, destination, @route(ConditionRouteOverride::Trigger { key: DefinitionKey::new(19106, "HasBuffId"), event: EventKind::RoundStartCard, phase: None }), super::card::supports_temporary_skill_card;
+    [60300] "AddSpTempCard2" => super::card::Handler, AddSpTempCard2, Immediate, destination, super::card::supports_temporary_skill_card;
     [100018] "ConsumeBuffCreateTempCardOrder" => super::precast::Handler, ConsumeBuffCreatePrecast, Immediate, destination, super::precast::supports_arguments;
     [50036] "ConsumePowerDirectUseSkill" => super::use_skill::Handler, ConsumePowerDirectUseSkill, Immediate, destination, super::use_skill::supports_consume_power_direct_skill;
-    [60188] "ConsumePowerUseSkill" => super::use_skill::Handler, ConsumePowerUseSkill, Immediate, destination;
+    [60262] "PerConsumeExPointDirectUseSkill" => super::use_skill::Handler, PerConsumeExPointDirectUseSkill, Immediate, destination, super::use_skill::supports_per_consume_ex_point_direct_use_skill;
+    [60188] "ConsumePowerUseSkill" => super::use_skill::Handler, ConsumePowerUseSkill, Immediate, destination, super::use_skill::supports_consume_power_skill;
     [60121] "ConsumeBuffUseSkill" => super::use_skill::Handler, ConsumeBuffUseSkill, Immediate, once_destination, super::use_skill::supports_consume_buff_use_skill;
     [60311] "ConsumeBuffUseSkill3" => super::use_skill::Handler, ConsumeBuffUseSkill3, Immediate, once_destination, super::use_skill::supports_consume_buff_use_skill3;
     [100007] "EzioReuse" => super::use_skill::Handler, ConsumeTargetBuffUseSkill, Immediate, destination, super::use_skill::supports_consume_target_buff_use_skill;
+    [50018] "RemoveBuffUseSkill" => super::use_skill::Handler, RemoveBuffUseSkill, AfterDamage, destination, super::use_skill::supports_remove_buff_use_skill;
     [50008] "DirectUseSkill" => super::use_skill::Handler, DirectUseSkill, Immediate, unique_skill_destination, arguments::at_least_one;
     [60053] "DirectUseSkill2" => super::use_skill::Handler, DirectUseSkill2, Immediate, destination;
     [60014] "DirectUseSkillPrev" => super::use_skill::Handler, DirectUseSkillPrev, Immediate, destination, arguments::none;
@@ -508,52 +549,63 @@ behavior_definitions! {
     [50038] "DirectUseSkillNoAct2" => super::use_skill::Handler, DirectUseSkillNoAct2, Immediate, destination;
     [60223] "DirectUseSkillNotExtra" => super::use_skill::Handler, DirectUseSkillNotExtra, Immediate, plain;
     [60225] "RandomUseSkill" => super::use_skill::Handler, RandomUseSkill, Immediate, destination, super::use_skill::supports_random_skill;
+    [60172] "Drive" => super::use_skill::Handler, Drive, Immediate, destination, super::use_skill::supports_drive;
     [60175] "DirectUseBigSkill" => super::use_skill::Handler, DirectUseBigSkill, Immediate, parent_destination;
-    [50010] "DirectUseGroupAndStarSkill" => super::use_skill::Handler, DirectUseGroupAndStarSkill, Immediate, destination;
+    [50010] "DirectUseGroupAndStarSkill" => super::use_skill::Handler, DirectUseGroupAndStarSkill, Immediate, destination, super::use_skill::supports_group_and_star_skill;
     [50015] "UseExtraSkill" => super::use_skill::Handler, UseExtraSkill, Immediate, plain;
-    [60242] "CrystalReuse" => super::use_skill::Handler, CrystalReuse, Immediate, destination;
-    [60222] "ConsumeCardAddBuff" => super::buff::Handler, ConsumeCardAddBuff, Immediate, destination;
+    [60242] "CrystalReuse" => super::use_skill::Handler, CrystalReuse, Immediate, destination, super::use_skill::supports_crystal_reuse;
+    [60222] "ConsumeCardAddBuff" => super::buff::Handler, ConsumeCardAddBuff, Immediate, destination, super::buff::supports_consume_card_add_buff;
     [60112] "AddTargetBuffByPoison" => super::buff::Handler, AddTargetBuffByPoison, AfterDamage, destination;
-    [60142] "ConsumePowerAddBuff" => super::buff::Handler, ConsumePowerAddBuff, Immediate, destination;
-    [60150] "ConsumePowerAddMultiBuff1" => super::buff::Handler, ConsumePowerAddMultiBuff1, Immediate, destination;
+    [60142] "ConsumePowerAddBuff" => super::buff::Handler, ConsumePowerAddBuff, Immediate, destination, super::buff::supports_consume_power_add_buff;
+    [60150] "ConsumePowerAddMultiBuff1" => super::buff::Handler, ConsumePowerAddMultiBuff1, Immediate, destination, super::buff::supports_consume_power_add_multi_buff;
     [1] "AddBuff" => super::buff::Handler, AddBuff, AfterDamage, aggregated_destination, arguments::at_least_one;
     [2] "AddBuffPowerUse" => super::buff::Handler, AddBuffPowerUse, AfterDamage, aggregated_destination, arguments::at_least_one;
     [1210001] "AddBuff" => super::buff::Handler, AddBuff, AfterDamage, aggregated_destination;
     [1210002] "AddBuff" => super::buff::Handler, AddBuff, AfterDamage, aggregated_destination;
-    [20005] "AddBuffRound" => super::buff::Handler, AddBuffRound, AfterDamage, aggregated_destination;
+    [20005] "AddBuffRound" => super::buff::Handler, AddBuffRound, AfterDamage, aggregated_destination, super::buff::supports_duration_change;
     [20017] "AddBuffRound2" => super::buff::Handler, AddBuffRound2, AfterDamage, aggregated_destination;
-    [20021] "AddBuffRanId" => super::buff::Handler, AddBuffRanId, AfterDamage, destination;
+    [20021] "AddBuffRanId" => super::buff::Handler, AddBuffRanId, AfterDamage, destination, super::buff::supports_random_pool;
+    [20022] "AddBuffRanTypeId" => super::buff::Handler, AddBuffRanTypeId, AfterDamage, destination, super::buff::supports_random_pool;
     [100006] "AddBuffByHeroId" => super::buff::Handler, AddBuffByHeroId, AfterDamage, destination;
     [60029] "RemoveBuffToAddBuff" => super::buff::Handler, RemoveBuffToAddBuff, AfterDamage, destination, arguments::exactly_two;
     [60145] "AddBuffDuration" => super::buff::Handler, AddBuffDuration, Immediate, destination, arguments::exactly_two;
+    [60094] "ReduceCastChannelCount" => super::buff::Handler, ReduceCastChannelCount, AfterDamage, destination, super::buff::supports_channel_count_reduction;
     [50014] "ConsumeBuffByTypeId" => super::buff::Handler, ConsumeBuffByTypeId, AfterDamage, destination, arguments::exactly_two;
     [50016] "ConsumeBuffByTypeId2" => super::buff::Handler, ConsumeBuffByTypeId2, AfterDamage, destination, arguments::exactly_two;
     [60260] "ConsumeBuffLayerAndOtherAddBuff" => super::buff::Handler, ConsumeBuffLayerAndOtherAddBuff, AfterDamage, destination, arguments::exactly_four;
     [30003] "Disperse1" => super::buff::Handler, Disperse1, Immediate, destination, super::buff::supports_status_dispel;
     [30008] "Disperse1" => super::buff::Handler, Disperse1, Immediate, destination;
+    [30004] "Disperse2" => super::buff::Handler, Disperse2, Immediate, destination, super::buff::supports_exact_buff_dispel;
     [30009] "Disperse2" => super::buff::Handler, Disperse2, Immediate, destination, super::buff::supports_exact_buff_dispel;
+    [90002] "Disperse2" => super::buff::Handler, DisperseTypeId, Immediate, destination, super::buff::supports_type_family_dispel;
+    [60060] "DisperseExclude" => super::buff::Handler, DisperseExclude, Immediate, destination, super::buff::supports_excluded_dispel;
     [60010] "DisperseForce2" => super::buff::Handler, DisperseForce2, Immediate, destination, super::buff::supports_disperse_force;
+    [60252] "DisperseForce3" => super::buff::Handler, DisperseForce3, Immediate, destination, super::buff::supports_disperse_force3;
     [20003] "Purify1" => super::buff::Handler, Purify1, Immediate, destination, super::buff::supports_dispel;
     [20020] "PurifyX" => super::buff::Handler, PurifyX, Immediate, destination, super::buff::supports_dispel;
     [60064] "PurifyX" => super::buff::Handler, PurifyX, Immediate, destination, super::buff::supports_dispel;
-    [60085] "DistributeBuff" => super::buff::Handler, DistributeBuff, Immediate, destination;
+    [60085] "DistributeBuff" => super::buff::Handler, DistributeBuff, Immediate, destination, super::buff::supports_distribute;
     [60117] "SelfRandomCopyBuffs" => super::buff::Handler, SelfRandomCopyBuffs, Immediate, destination, super::buff::supports_status_copy;
     [60241] "BuffSortByHp" => super::buff::Handler, BuffSortByHp, Immediate, destination, arguments::at_least_one;
     [60248] "BuffSpread" => super::buff::Handler, BuffSpread, AfterDamage, destination, arguments::exactly_two;
+    [60022] "BuffCountMulti" => super::buff::Handler, BuffCountMulti, AfterDamage, destination, super::buff::supports_count_multiplier;
     [50032] "ReplaceBuff" => super::buff::Handler, ReplaceBuff, Immediate, destination, arguments::exactly_four;
     [60176] "ReplaceBuff2" => super::buff::Handler, ReplaceBuff2, Immediate, destination;
     [50035] "AddBuffBasedOnEnemyBurnUseCount" => super::buff::Handler, AddBuffBasedOnEnemyBurnUseCount, Immediate, destination, arguments::exactly_two;
-    [60124] "AddBuffByBuffLayerRange" => super::buff::Handler, AddBuffByBuffLayerRange, Immediate, destination;
-    [60205] "AddBuffAndAddSpecialCount" => super::special_count::Handler, AddBuffAndAddSpecialCount, Immediate, transfer;
-    [60204] "AddBuffSpecialCount" => super::special_count::Handler, AddBuffSpecialCount, Immediate, transfer;
-    [60202] "AddSkillRateBySpecialCount" => super::special_count::Handler, AddSkillRateBySpecialCount, Immediate, modifier;
+    [60059] "AddBurnBySkillAddBurnCount" => super::buff::Handler, AddBuffBySkillBuffAdditions, Immediate, destination, arguments::at_least_one;
+    [60068] "AddBuffByBuffLayer" => super::buff::Handler, AddBuffByBuffLayer, Immediate, destination, arguments::exactly_three;
+    [60124] "AddBuffByBuffLayerRange" => super::buff::Handler, AddBuffByBuffLayerRange, Immediate, destination, super::buff::supports_layer_range;
+    [60205] "AddBuffAndAddSpecialCount" => super::special_count::Handler, AddBuffAndAddSpecialCount, Immediate, transfer, super::special_count::supports_add_buff_and_count;
+    [60204] "AddBuffSpecialCount" => super::special_count::Handler, AddBuffSpecialCount, Immediate, transfer, super::special_count::supports_add_count;
+    [60202] "AddSkillRateBySpecialCount" => super::special_count::Handler, AddSkillRateBySpecialCount, Immediate, modifier, super::special_count::supports_rate;
     [60190] "BloodPoolMaxChange" => super::gauge::Handler, BloodPoolMaxChange, Immediate, parent_destination, super::gauge::supports_shared_pool_mutation;
     [60191] "BloodPoolValueChange" => super::gauge::Handler, BloodPoolValueChange, AfterDamage, parent_destination, super::gauge::supports_shared_pool_mutation;
     [60210] "ConsumeBloodAddBuff" => super::gauge::Handler, ConsumeBloodAddBuff, Immediate, destination, @route(ConditionRouteOverride::Setup { key: DefinitionKey::new(57104, "NoBuffId"), stage: SetupStage::RoundStart, priority: 3 }), super::gauge::supports_consume_blood_add_buff;
     [60211] "ConsumeBloodAddBuff2" => super::gauge::Handler, ConsumeBloodAddBuff2, Immediate, destination, @route(ConditionRouteOverride::Setup { key: DefinitionKey::new(57104, "NoBuffId"), stage: SetupStage::RoundStart, priority: 3 }), super::gauge::supports_consume_blood_add_buff;
     [50019] "AddMagicCircle" => super::magic_circle::Handler, AddMagicCircle, Immediate, destination;
-    [60076] "MagicCircleAttr" => super::magic_circle::Handler, MagicCircleAttr, Immediate, plain;
-    [60195] "ElectricTransform" => super::electric::Handler, ElectricTransform, Immediate, destination;
+    [50021] "RemoveMagicCircleById" => super::magic_circle::Handler, RemoveMagicCircleById, Immediate, destination;
+    [60076] "MagicCircleAttr" => super::magic_circle::Handler, MagicCircleAttr, Immediate, destination;
+    [60195] "ElectricTransform" => super::electric::Handler, ElectricTransform, Immediate, destination, super::electric::supports;
     [100000] "EzioProps" => super::synchronization::Handler, EzioProps, Immediate, destination;
     [100001] "EzioBigSkillTyp1" => super::synchronization::Handler, EzioBigSkillType1, AfterDamage, destination;
     [100002] "EzioBigSkillTyp2" => super::synchronization::Handler, EzioBigSkillType2, AfterDamage, destination;
@@ -567,18 +619,23 @@ behavior_definitions! {
     [60008] "Summon" => super::summon::Handler, Summon, Immediate, destination, super::summon::supports_combatant;
     [60056] "SummonSp2" => super::summon::Handler, SummonSp2, AfterDamage, destination;
     [60015] "Kill" => super::kill::Handler, Kill, Immediate, destination, super::kill::supports;
+    [60018] "Kill" => super::kill::Handler, LethalHpLoss, Immediate, destination, super::kill::supports;
     [60019] "KillTargets" => super::kill::Handler, KillTargets, AfterDamage, destination;
     [40006] "MonsterChange" => super::monster_change::Handler, MonsterChange, Immediate, destination, super::monster_change::supports;
     [60074] "CatapultBuff" => super::poison::Handler, CatapultBuff, AfterDamage, destination;
     [60110] "PoisonConvertToTargetBuff" => super::poison::Handler, PoisonConvertToTargetBuff, AfterDamage, destination;
+    [60284] "PoisonConvertToPowerfulPoisonBuff" => super::poison::Handler, PoisonConvertToPowerfulPoisonBuff, AfterDamage, destination, super::poison::supports_conversion;
     [60111] "ConsumePoisonSettleDeadlyPoison" => super::poison::Handler, ConsumePoisonSettleDeadlyPoison, AfterDamage, destination;
-    [100005] "Assassinate" => super::general::AssassinateHandler, Assassinate, Immediate, destination;
+    [100005] "Assassinate" => super::general::AssassinateHandler, Assassinate, Immediate, destination, arguments::none;
     [60037] "NotifyUpgradeHero" => super::general::Handler, NotifyUpgradeHero, Immediate, destination;
+    [60092] "NotifyHeroContract" => super::contract::Handler, NotifyHeroContract, Immediate, destination;
+    [60093] "ContractEndClearBuff" => super::contract::EndHandler, ContractEndClearBuff, Immediate, destination;
     [60198] "ClientEffect" => super::general::Handler, ClientEffect, Immediate, destination, arguments::at_least_one;
     [60268] "ChangeScene" => super::scene::Handler, ChangeScene, Immediate, destination;
     [60058] "CareerRatioFix" => super::career::Handler, CareerRatioFix, Immediate, modifier;
     [100036] "SkillChangeAttackCareer" => super::career::Handler, ChangeAttackCareer, Immediate, modifier;
     [40003] "AddAct" => super::action_point::Handler, AddAct, Immediate, round_modifier_only;
+    [50006] "AddActHero" => super::action_point::Handler, AddActHero, Immediate, round_modifier_only;
     [40007] "AddActAndCardLimit" => super::card_limit::Handler, AddActAndCardLimit, AfterDamage, round_modifier_with_output;
     [60221] "IgnoreSkillConfigDamageRate" => super::general::DamageRateMarkerHandler, IgnoreSkillConfigDamageRate, Immediate, destination, arguments::none;
     [100017] "IgnoreSkillConfigDamageRate" => super::general::DamageRateMarkerHandler, IgnoreSkillConfigDamageRate, Immediate, destination, arguments::none;
@@ -592,6 +649,7 @@ behavior_definitions! {
     [10004] "AttrFix" => super::rate::Handler, AttrFix, Immediate, modifier, super::rate::supports_attr_fix;
     [10001] "SkillRateUp" => super::rate::Handler, SkillRateUp, Immediate, modifier, arguments::at_least_one;
     [10002] "SkillRateUp1" => super::rate::Handler, SkillRateUp1, Immediate, modifier, super::rate::supports_status_skill_rate;
+    [10003] "SkillRateUp2" => super::rate::Handler, SkillRateUp2, Immediate, modifier, super::rate::supports_status_skill_rate;
     [60067] "SkillRateUpCardLevel" => super::rate::Handler, SkillRateUpCardLevel, Immediate, modifier, super::rate::supports_card_rank_skill_rate;
     [60234] "AddSkillRateByTargetCount" => super::rate::Handler, AddSkillRateByTargetCount, Immediate, modifier, super::rate::supports_target_count_rate;
     [60182] "SkillRateUpBySelfBuffType" => super::rate::Handler, SkillRateUpBySelfBuffType, Immediate, modifier, super::rate::supports_self_buff_type_rate;
@@ -599,14 +657,16 @@ behavior_definitions! {
     [60255] "HeatScaleAddSkillRate" => super::rate::Handler, HeatScaleAddSkillRate, Immediate, modifier, super::rate::supports_heat_scale_rate;
     [100030] "TwinsUpByCounter" => super::rate::Handler, ConduitRateByConsumedPower, Immediate, modifier, super::rate::supports_conduit_rate;
     [100031] "TwinsPowerUp" => super::rate::Handler, ConduitPowerUp, Immediate, modifier, super::rate::supports_conduit_power_up;
-    [60243] "CrystalAddSkillRate" => super::rate::Handler, CrystalAddSkillRate, Immediate, destination;
+    [60243] "CrystalAddSkillRate" => super::rate::Handler, CrystalAddSkillRate, Immediate, destination, super::rate::supports_crystal_skill_rate;
     [60244] "CrystalAddCardRank" => super::rate::Handler, CrystalAddCardRank, Immediate, destination;
-    [60086] "BulletCritRateAlter" => super::rate::Handler, BulletCritRateAlter, Immediate, modifier;
+    [60086] "BulletCritRateAlter" => super::rate::Handler, BulletCritRateAlter, Immediate, modifier, super::rate::supports_bullet_crit_rate;
     [40001] "CritRateAlter" => super::rate::Handler, CritRateAlter, Immediate, modifier, super::rate::supports_crit_rate_alter;
     [100023] "CritRateAlter2" => super::rate::Handler, CritRateAlter2, Immediate, modifier, super::rate::supports_crit_rate_alter;
     [60228] "CritRateAlter2" => super::rate::Handler, CritRateAlter2, Immediate, modifier, super::rate::supports_crit_rate_alter;
     [60069] "MustCrit" => super::skill_modifier::Handler, MustCrit, Immediate, modifier, arguments::none;
-    [10006] "Damage" => crate::engine::damage::handler::Handler, Damage, Immediate, plain;
+    [60054] "IgnoreBeatBack" => super::skill_modifier::Handler, IgnoreBeatBack, Immediate, modifier, arguments::none;
+    [60271] "SetExtraType" => super::general::SetExtraTypeHandler, SetExtraType, Immediate, destination, super::general::supports_extra_type;
+    [10006] "Damage" => crate::engine::damage::handler::Handler, Damage, Immediate, destination, crate::engine::damage::handler::supports_attribute_damage;
     [10008] "Damage2" => crate::engine::damage::handler::Handler, Damage2, Immediate, plain;
     [30014] "OriginDamage" => crate::engine::damage::handler::Handler, OriginDamage, AfterDamage, destination, crate::engine::damage::handler::supports_origin_damage;
     [30015] "OriginDamageCanCrit" => crate::engine::damage::handler::Handler, OriginDamageCanCrit, AfterDamage, destination, crate::engine::damage::handler::supports_origin_damage;
@@ -622,7 +682,7 @@ behavior_definitions! {
     [30006] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
     [30018] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
     [60288] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
-    [60310] "LostLife" => crate::engine::damage::handler::Handler, LostLife, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
+    [60310] "LostLife" => crate::engine::damage::handler::Handler, ToughnessOverflowDamage, Immediate, destination, crate::engine::damage::handler::supports_lost_life;
     [60212] "LostAllLifeByAttr" => crate::engine::damage::handler::Handler, LostAllLifeByAttr, Immediate, destination, crate::engine::damage::handler::supports_lost_all_life_by_attr;
     [60216] "DamageRealLostLife" => crate::engine::damage::handler::Handler, DamageRealLostLife, Immediate, destination, crate::engine::damage::handler::supports_damage_real_lost_life;
     [60038] "OriginDamageFromInjuryBankBuff" => super::injury_bank::Handler, OriginDamageFromInjuryBankBuff, AfterDamage, destination;
@@ -632,16 +692,19 @@ behavior_definitions! {
     [20009] "Detonate2" => super::detonate::Handler, Detonate2, AfterDamage, destination;
     [60183] "SupplyShield2" => super::shield::ChildUidHandler, SupplyShield2, Immediate, destination;
     [60259] "SupplyShield2" => super::shield::Handler, SupplyShield2, Immediate, destination;
+    [60263] "FocusAllEntityBuff" => super::focus_all_entity_buff::Handler, FocusAllEntityBuff, Immediate, destination, super::focus_all_entity_buff::supports_arguments;
     [60290] "SupplyTeamShareShield" => super::shield::Handler, SupplyTeamShareShield, Immediate, setup_parent_destination;
-    [60133] "ShellAssign" => super::shell::Handler, ShellAssign, AfterDamage, destination;
-    [60134] "ShellRecycle" => super::shell::Handler, ShellRecycle, AfterDamage, destination;
-    [60135] "ShellUseSkill" => super::shell::Handler, ShellUseSkill, Immediate, destination;
+    [60133] "ShellAssign" => super::shell::Handler, ShellAssign, AfterDamage, destination, super::shell::supports_assign;
+    [60134] "ShellRecycle" => super::shell::Handler, ShellRecycle, AfterDamage, destination, super::shell::supports_recycle;
+    [60135] "ShellUseSkill" => super::shell::Handler, ShellUseSkill, Immediate, destination, super::shell::supports_use_skill;
     [60245] "CrystalAddCard" => super::crystal_card::Handler, CrystalAddCard, Immediate, destination, super::crystal_card::supports_arguments;
+    [60065] "AttrFixByBurnLayerAndExtraBurnHurt" => super::attr_fix_by_burn_layer::Handler, AttrFixByBurnLayerAndExtraBurnHurt, Immediate, modifier;
     [60033] "AttrFixByLoseHp" => super::attr_fix_by_lost_hp::Handler, AttrFixByLoseHp, Immediate, modifier;
     [60246] "HeatScaleUseSkillAddCount" => crate::engine::mechanic::heat_scale::Handler, HeatScaleUseSkillAddCount, Immediate, destination, arguments::at_least_one;
     [60247] "AddCardRankNext" => crate::engine::mechanic::heat_scale::Handler, AddCardRankNext, Immediate, queue_preparation, arguments::exactly_two;
     [60281] "AddCardRankByEffectTag" => super::card::Handler, AddCardRankByEffectTag, Immediate, queue_preparation, super::card::supports_rank_by_effect_tag;
     [60283] "BufferflyRecordSkill" => super::card::Handler, BufferflyRecordSkill, Immediate, destination, arguments::none;
+    [60287] "ToughnessRecover" => super::toughness::Handler, ToughnessRecover, Immediate, destination;
     [60254] "AddHeatScaleFromBuff" => crate::engine::mechanic::heat_scale::Handler, AddHeatScaleFromBuff, Immediate, destination, arguments::none;
 }
 

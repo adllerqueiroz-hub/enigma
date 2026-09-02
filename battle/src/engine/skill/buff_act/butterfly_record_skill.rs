@@ -3,7 +3,7 @@ use crate::engine::{
     manager::{
         BattleManagers,
         buff::{BuffCommand, BuffSetState},
-        card::{CardAddPrecast, CardCommand, precast_card},
+        card::{CardAddPrecast, CardCommand, temp::runtime_precast_card},
     },
     skill::{
         rule::output::{BattleCommand, RuleOp},
@@ -18,43 +18,49 @@ pub fn rule_ops(
     subscriber: &BuffActSubscriber,
     event: &BattleEvent,
 ) -> Option<Vec<RuleOp>> {
+    println!("DEBUG BUTTERFLY: event={:?}", event);
     if !matches!(
         event,
         BattleEvent::Kind(crate::engine::event::kind::EventKind::RoundStartCard)
     ) {
         return None;
     }
-    let act_id = subscriber.key.definition.opcode;
-    let record = managers
-        .buff
-        .snapshot(subscriber.owner_uid, subscriber.buff_uid)
-        .and_then(|state| {
-            state
-                .act_info
-                .iter()
-                .find(|info| info.act_id == Some(act_id))
-                .and_then(parse_record)
-        });
-    let Some((count, skill_id)) = record else {
+
+    let count = subscriber.args.first().copied().unwrap_or(1);
+    println!("DEBUG BUTTERFLY: count={}", count);
+    if count <= 0 {
+        return Some(Vec::new());
+    }
+
+    let recorded = super::card_record::recorded_skill_ids(managers, subscriber.owner_uid);
+    println!("DEBUG BUTTERFLY: recorded skill_ids={:?}", recorded);
+    
+    let Some(skill_id) = recorded.last().copied() else {
+        println!("DEBUG BUTTERFLY: nenhuma skill gravada encontrada no AddCardRecordByRound!");
         return Some(Vec::new());
     };
-    let enchant_id = *subscriber.args.get(1)?;
+    println!("DEBUG BUTTERFLY: target skill_id={}", skill_id);
+
+    let enchant_id = subscriber.args.get(1).copied()?;
     let owner_uid = pool
         .allies(subscriber.owner_uid)
         .iter()
         .find(|entity| {
             entity.skill_group1.contains(&skill_id)
                 || entity.skill_group2.contains(&skill_id)
-                || crate::engine::mechanic::card::CardMechanic.is_ultimate_skill(skill_id, entity)
+                || crate::engine::mechanic::card::CardMechanic
+                    .is_ultimate_skill(managers, skill_id, entity)
         })?
         .uid;
+
     let origin = super::command_origin(subscriber)?;
-    let mut card = precast_card(owner_uid, skill_id);
+    let mut card = runtime_precast_card(managers, owner_uid, skill_id);
     card.enchants.push(sonettobuf::CardEnchant {
         enchant_id: Some(enchant_id),
         duration: Some(1),
         ex_info: Vec::new(),
     });
+
     let mut ops = (0..count)
         .map(|_| {
             RuleOp::Command(BattleCommand::Card(CardCommand::AddPrecast(
@@ -65,6 +71,7 @@ pub fn rule_ops(
             )))
         })
         .collect::<Vec<_>>();
+
     ops.push(RuleOp::Command(BattleCommand::Buff(BuffCommand::SetState(
         BuffSetState {
             origin,
@@ -73,20 +80,14 @@ pub fn rule_ops(
             ex_info: None,
             params: None,
             act_info: Some(vec![sonettobuf::BuffActInfo {
-                act_id: Some(act_id),
+                act_id: Some(subscriber.key.definition.opcode),
                 param: Vec::new(),
                 str_param: Some(String::new()),
             }]),
         },
     ))));
-    Some(ops)
-}
 
-fn parse_record(info: &sonettobuf::BuffActInfo) -> Option<(i32, i32)> {
-    let mut values = info.str_param.as_deref()?.split(',');
-    let count = values.next()?.parse::<i32>().ok()?;
-    let skill_id = values.next()?.parse::<i32>().ok()?;
-    (count > 0 && skill_id > 0 && values.next().is_none()).then_some((count, skill_id))
+    Some(ops)
 }
 
 #[cfg(test)]
@@ -96,15 +97,6 @@ mod tests {
         event::{kind::EventKind, subscription::SubscriptionKey},
         skill::rule::DefinitionKey,
     };
-
-    #[test]
-    fn record_state_requires_count_and_skill() {
-        let info = sonettobuf::BuffActInfo {
-            str_param: Some("5,31390111".into()),
-            ..Default::default()
-        };
-        assert_eq!(parse_record(&info), Some((5, 31390111)));
-    }
 
     #[test]
     fn empty_record_is_a_valid_round_start_noop() {

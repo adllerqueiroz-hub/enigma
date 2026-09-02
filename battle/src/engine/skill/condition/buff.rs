@@ -6,11 +6,15 @@ use crate::engine::{
     },
 };
 
+use super::parse::parse_fixed;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuffConditionMode {
     Present,
     PresentAndConsume,
     Absent,
+    ExactPresent,
+    ExactAbsent,
 }
 
 pub fn added_count_repeats(
@@ -65,6 +69,23 @@ pub fn buff_group(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditio
     Some(ParsedConditionKind::BuffGroup(parse_buff_ids(raw_args)?))
 }
 
+pub fn per_buff_group_count(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    let [group_id] = raw_args else {
+        return None;
+    };
+    let group_id = group_id.parse().ok()?;
+    (group_id > 0).then_some(ParsedConditionKind::PerBuffGroupCount { group_id })
+}
+
+pub fn per_bullet(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    let [divisor, max_count] = raw_args else {
+        return None;
+    };
+    let divisor = divisor.parse().ok()?;
+    let max_count = max_count.parse().ok()?;
+    (divisor > 0 && max_count > 0).then_some(ParsedConditionKind::PerBullet { divisor, max_count })
+}
+
 pub fn no_buff_group(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
     Some(ParsedConditionKind::NoBuffGroup(parse_buff_ids(raw_args)?))
 }
@@ -73,6 +94,17 @@ pub fn from_and_to_buff(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedCo
     Some(ParsedConditionKind::FromBuffAndToBuff {
         from_buff_id: raw_args.first()?.parse().ok()?,
         to_buff_id: raw_args.get(1)?.parse().ok()?,
+    })
+}
+
+pub fn self_buff_type_target_buff_types(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::SelfBuffTypeTargetBuffTypes {
+        self_type_id: raw_args.first()?.parse().ok()?,
+        target_type_ids: parse_buff_ids(raw_args.get(1..2)?)?,
     })
 }
 
@@ -99,6 +131,14 @@ pub fn any_status_present(_: i32, _: &str, raw_args: &[String]) -> Option<Parsed
 
 pub fn first_status_present(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
     status_count(parse_buff_ids(raw_args.get(..1)?)?, 1)
+}
+
+pub fn first_status_absent(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::BuffStatusCount {
+        status_ids: parse_buff_ids(raw_args.get(..1)?)?,
+        compare: ConditionCompare::Equal,
+        threshold: 0,
+    })
 }
 
 fn status_count(status_ids: Vec<i32>, threshold: i32) -> Option<ParsedConditionKind> {
@@ -131,8 +171,75 @@ pub fn team_added_count(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedCo
     })
 }
 
+pub fn per_buff_id(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::BuffIdCount {
+        buff_ids: parse_buff_ids(raw_args)?,
+        compare: ConditionCompare::GreaterThanOrEqual,
+        threshold: 1,
+    })
+}
+
+pub fn buff_id_at_least(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::BuffIdThreshold {
+        buff_ids: parse_buff_ids(raw_args.get(..1)?)?,
+        threshold: raw_args.get(1)?.parse().ok()?,
+    })
+}
+
+pub fn team_buff_presence(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    let [team, present, buff_id] = parse_fixed(raw_args)?;
+    Some(ParsedConditionKind::TeamBuffPresence {
+        team,
+        present: present != 0,
+        buff_id,
+    })
+}
+
+pub fn owner_added_count(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::AccBuffAddedCount {
+        buff_ids: parse_buff_ids(raw_args.get(..1)?)?,
+        threshold: raw_args.get(1)?.parse().ok()?,
+        scope: BuffAddedScope::Owner,
+    })
+}
+
 pub fn buff_type_at_least(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
     buff_type_count(raw_args, ConditionCompare::GreaterThanOrEqual)
+}
+
+pub fn any_target_buff_type_at_least(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::AnyTargetBuffTypeCount {
+        type_ids: parse_buff_ids(raw_args.get(..1)?)?,
+        threshold: raw_args.get(1)?.parse().ok()?,
+    })
+}
+
+pub fn buff_type_pair_at_least(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    if raw_args.len() != 2 {
+        return None;
+    }
+    buff_type_count(raw_args, ConditionCompare::GreaterThanOrEqual)
+}
+
+pub fn positive_buff_type_at_least(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    let [type_id, threshold] = parse_fixed(raw_args)?;
+    (type_id > 0 && threshold > 0).then_some(ParsedConditionKind::BuffTypeCount {
+        type_ids: vec![type_id],
+        compare: ConditionCompare::GreaterThanOrEqual,
+        threshold,
+    })
 }
 
 pub fn buff_type_at_most(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
@@ -166,6 +273,47 @@ pub fn buff_status_at_least(_: i32, _: &str, raw_args: &[String]) -> Option<Pars
     )
 }
 
+pub fn buff_status_at_most(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::BuffStatusCount {
+        status_ids: parse_buff_ids(raw_args.get(1..2)?)?,
+        compare: ConditionCompare::LessThanOrEqual,
+        threshold: raw_args.first()?.parse().ok()?,
+    })
+}
+
+pub fn per_team_status_type_count(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    let [divisor, max_count, status_ids] = raw_args else {
+        return None;
+    };
+    let divisor = divisor.parse().ok()?;
+    let max_count = max_count.parse().ok()?;
+    let status_ids = parse_buff_ids(std::slice::from_ref(status_ids))?;
+    if divisor <= 0 || max_count <= 0 || status_ids.iter().any(|status| *status <= 0) {
+        return None;
+    }
+    Some(ParsedConditionKind::PerTeamBuffStatusTypeCount {
+        divisor,
+        max_count,
+        status_ids,
+    })
+}
+
+pub fn per_distinct_status_type_count(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    Some(ParsedConditionKind::PerTeamBuffStatusTypeCount {
+        status_ids: parse_buff_ids(raw_args)?,
+        divisor: 1,
+        max_count: i32::MAX,
+    })
+}
+
 pub fn enemy_highest_buff_type_at_least(
     _: i32,
     _: &str,
@@ -191,6 +339,25 @@ pub fn master_halo(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditi
 
 pub fn buff_present(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
     buff_presence(raw_args, BuffConditionMode::Present)
+}
+
+pub fn rejected_buff_id_or_type(
+    _: i32,
+    _: &str,
+    raw_args: &[String],
+) -> Option<ParsedConditionKind> {
+    match raw_args {
+        [value] => value
+            .parse::<i32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .map(ParsedConditionKind::RejectedBuffIdOrType),
+        _ => None,
+    }
+}
+
+pub fn exact_buff_present(_: i32, _: &str, raw_args: &[String]) -> Option<ParsedConditionKind> {
+    buff_presence(raw_args, BuffConditionMode::ExactPresent)
 }
 
 pub fn buff_present_and_consume(

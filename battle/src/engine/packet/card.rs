@@ -1,6 +1,6 @@
 use sonettobuf::{ActEffect, CardInfo, effect_type_enum::EffectType};
 
-use crate::engine::manager::card::CardChange;
+use crate::engine::{fight::versions::RedealWireLayout, manager::card::CardChange};
 
 pub struct CardPacket;
 
@@ -136,6 +136,45 @@ impl CardPacket {
         }
     }
 
+    pub fn configured_skill3_card(card: CardInfo, team_type: i32) -> ActEffect {
+        let card = wire_card(card);
+        ActEffect {
+            target_id: card.uid,
+            effect_type: Some(EffectType::Addhandcard as i32),
+            effect_num: Some(0),
+            config_effect: Some(0),
+            buff_act_id: Some(0),
+            reserve_id: Some(0),
+            card_info: Some(card),
+            team_type: Some(team_type),
+            effect_num1: Some(0),
+            ..Default::default()
+        }
+    }
+
+    pub fn convert_owner_skill_card(
+        owner_uid: i64,
+        hand_index: usize,
+        card: CardInfo,
+        team_type: i32,
+    ) -> ActEffect {
+        let card = wire_card(card);
+        ActEffect {
+            target_id: Some(owner_uid),
+            effect_type: Some(EffectType::Cardaconvertcardb as i32),
+            effect_num: Some(1),
+            config_effect: card.skill_id,
+            buff_act_id: Some(0),
+            reserve_id: i64::try_from(hand_index)
+                .ok()
+                .and_then(|index| index.checked_add(1)),
+            card_info: Some(card),
+            team_type: Some(team_type),
+            effect_num1: Some(0),
+            ..Default::default()
+        }
+    }
+
     pub fn universal_card(skill_id: i32) -> ActEffect {
         ActEffect {
             target_id: Some(0),
@@ -146,11 +185,45 @@ impl CardPacket {
         }
     }
 
-    pub fn redeal_keep_ranks() -> ActEffect {
+    pub(crate) fn redeal_keep_ranks(
+        cards: Vec<CardInfo>,
+        config_effect: i32,
+        layout: RedealWireLayout,
+    ) -> ActEffect {
+        match layout {
+            RedealWireLayout::Version6 => ActEffect {
+                target_id: Some(0),
+                effect_type: Some(EffectType::Redealcard as i32),
+                config_effect: Some(config_effect),
+                team_type: Some(0),
+                ..Default::default()
+            },
+            RedealWireLayout::Version7 => ActEffect {
+                target_id: Some(0),
+                effect_type: Some(EffectType::Afterredealcard as i32),
+                effect_num: Some(0),
+                config_effect: Some(0),
+                buff_act_id: Some(0),
+                reserve_id: Some(0),
+                card_info_list: wire_cards(cards),
+                team_type: Some(1),
+                effect_num1: Some(0),
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(crate) fn redeal_hand_sync(cards: Vec<CardInfo>) -> ActEffect {
         ActEffect {
             target_id: Some(0),
-            effect_type: Some(EffectType::Redealcard as i32),
-            team_type: Some(1),
+            effect_type: Some(EffectType::Cardspush as i32),
+            effect_num: Some(0),
+            config_effect: Some(0),
+            buff_act_id: Some(0),
+            reserve_id: Some(0),
+            card_info_list: wire_cards(cards),
+            team_type: Some(0),
+            effect_num1: Some(0),
             ..Default::default()
         }
     }
@@ -166,6 +239,17 @@ impl CardPacket {
             effect_type: Some(EffectType::Spcardadd as i32),
             effect_num: Some(skill_id),
             reserve_id: Some(reserve_id),
+            team_type: Some(team_type),
+            ..Default::default()
+        }
+    }
+
+    pub fn hero_temp_card(card: CardInfo, team_type: i32) -> ActEffect {
+        let card = wire_card(card);
+        ActEffect {
+            target_id: card.uid,
+            effect_type: Some(EffectType::Spcardadd as i32),
+            card_info: Some(card),
             team_type: Some(team_type),
             ..Default::default()
         }
@@ -365,6 +449,39 @@ mod tests {
         assert_eq!(compose.effect_type, Some(EffectType::Cardscompose as i32));
         assert_eq!(compose.team_type, Some(0));
         assert_eq!(deal.effect_type, Some(EffectType::Dealcard1 as i32));
+    }
+
+    #[test]
+    fn configured_skill3_packet_matches_the_captured_single_card_shape() {
+        let effect = CardPacket::configured_skill3_card(
+            CardInfo {
+                uid: Some(237352626),
+                skill_id: Some(312451036),
+                temp_card: Some(true),
+                card_type: Some(sonettobuf::card_info::CardType::Skill3 as i32),
+                hero_id: Some(3124),
+                ..Default::default()
+            },
+            1,
+        );
+
+        assert_eq!(effect.target_id, Some(237352626));
+        assert_eq!(effect.effect_type, Some(EffectType::Addhandcard as i32));
+        assert_eq!(effect.effect_num, Some(0));
+        assert_eq!(effect.config_effect, Some(0));
+        assert_eq!(effect.reserve_id, Some(0));
+        assert_eq!(effect.team_type, Some(1));
+        assert!(effect.card_info_list.is_empty());
+        let card = effect.card_info.unwrap();
+        assert_eq!(card.uid, Some(237352626));
+        assert_eq!(card.skill_id, Some(312451036));
+        assert_eq!(card.temp_card, Some(true));
+        assert_eq!(
+            card.card_type,
+            Some(sonettobuf::card_info::CardType::Skill3 as i32)
+        );
+        assert_eq!(card.hero_id, Some(3124));
+        assert_eq!(card.energy, Some(0));
     }
 
     #[test]

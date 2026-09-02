@@ -90,31 +90,32 @@ impl EffectPacket {
         }
     }
 
-    pub fn conduit_skill_began(
+    pub fn conduit_skill_began(team: i32, power_id: i32, spent: i32) -> ActEffect {
+        ActEffect {
+            target_id: Some(0),
+            effect_type: Some(EffectType::Devicepowerchange as i32),
+            effect_num: Some(-1),
+            config_effect: Some(0),
+            buff_act_id: Some(0),
+            reserve_id: Some(0),
+            reserve_str: Some(format!("{power_id}#{}", -spent)),
+            team_type: Some(team),
+            effect_num1: Some(0),
+            ..Default::default()
+        }
+    }
+
+    pub fn conduit_skill_cost_committed(
         source_uid: i64,
         team: i32,
-        power_id: i32,
-        spent: i32,
         consumed_this_round: i32,
-    ) -> Vec<ActEffect> {
-        if spent == 0 {
-            return Vec::new();
-        }
-        vec![
-            ActEffect {
-                target_id: Some(0),
-                effect_type: Some(EffectType::Devicepowerchange as i32),
-                effect_num: Some(-1),
-                config_effect: Some(0),
-                buff_act_id: Some(0),
-                reserve_id: Some(0),
-                reserve_str: Some(format!("{power_id}#{}", -spent)),
-                team_type: Some(team),
-                effect_num1: Some(0),
-                ..Default::default()
-            },
-            Self::conduit_counter(source_uid, team, 62, consumed_this_round),
-        ]
+    ) -> ActEffect {
+        Self::conduit_counter_changed(
+            source_uid,
+            team,
+            crate::engine::manager::conduit::ConduitCounterKind::EnergyAccumulation,
+            consumed_this_round,
+        )
     }
 
     pub fn conduit_powers_cleared(source_uid: i64, team: i32, config_effect: i32) -> ActEffect {
@@ -146,7 +147,21 @@ impl EffectPacket {
     }
 
     pub fn conduit_skill_finished(source_uid: i64, team: i32, uses_this_round: i32) -> ActEffect {
-        Self::conduit_counter(source_uid, team, 63, uses_this_round)
+        Self::conduit_counter_changed(
+            source_uid,
+            team,
+            crate::engine::manager::conduit::ConduitCounterKind::Activation,
+            uses_this_round,
+        )
+    }
+
+    pub fn conduit_counter_changed(
+        source_uid: i64,
+        team: i32,
+        kind: crate::engine::manager::conduit::ConduitCounterKind,
+        value: i32,
+    ) -> ActEffect {
+        Self::conduit_counter(source_uid, team, kind.wire_id(), value)
     }
 
     pub fn conduit_running(running: bool) -> ActEffect {
@@ -287,10 +302,26 @@ impl EffectPacket {
         }
     }
 
+    pub fn magic_circle_delete(target_uid: i64, circle_id: i32) -> ActEffect {
+        ActEffect {
+            target_id: Some(target_uid),
+            effect_type: Some(EffectType::Magiccircledelete as i32),
+            effect_num: Some(0),
+            reserve_id: Some(circle_id as i64),
+            ..Default::default()
+        }
+    }
+
     pub fn magic_circle_update(change: &MagicCircleApplyResult) -> ActEffect {
         let mut effect = Self::magic_circle_add(change);
         effect.effect_type = Some(EffectType::Magiccircleupdate as i32);
         effect.reserve_str = Some("0".to_owned());
+        effect
+    }
+
+    pub fn magic_circle_upgrade(change: &MagicCircleApplyResult) -> ActEffect {
+        let mut effect = Self::magic_circle_add(change);
+        effect.effect_type = Some(EffectType::Magiccircleupgrade as i32);
         effect
     }
 

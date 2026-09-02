@@ -2,6 +2,32 @@ use super::update::special_count_value;
 use super::*;
 use crate::engine::skill::buff_act::registry::BuffActKind;
 
+pub(super) fn fixed_attribute_value(active: &ActiveBuff, attr_id: AttrId) -> Option<i32> {
+    let act_id = active
+        .definition
+        .as_ref()?
+        .features()
+        .iter()
+        .find_map(|feature| {
+            (feature.arguments_supported
+                && feature.kind == Some(BuffActKind::EachChangeAttrOneWay)
+                && feature.values.get(1).copied() == Some(attr_id.id()))
+            .then(|| feature.values.first().copied())
+            .flatten()
+        })?;
+    active
+        .buff
+        .act_info
+        .iter()
+        .filter(|info| info.act_id == Some(act_id))
+        .filter_map(|info| info.str_param.as_deref()?.split_once('#'))
+        .find_map(|(raw_attr, value)| {
+            (raw_attr.parse::<i32>().ok() == Some(attr_id.id()))
+                .then(|| value.parse::<i32>().ok())
+                .flatten()
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecialCountOutput {
     pub source_uid: i64,
@@ -91,7 +117,12 @@ impl BuffManager {
                         .as_ref()
                         .is_some_and(|definition| definition.status == status)
             })
-            .filter_map(|active| Some((active.buff.buff_id?, super::count_or_layer(&active.buff))))
+            .filter_map(|active| {
+                Some((
+                    active.buff.buff_id?,
+                    super::count_or_layer_from(&active.buff, active.definition.as_ref()),
+                ))
+            })
             .collect()
     }
 
@@ -115,24 +146,116 @@ impl BuffManager {
                     definition
                         .features()
                         .iter()
-                        .any(|feature| feature.kind == Some(kind))
+                        .any(|feature| feature.kind == Some(kind) && feature.arguments_supported)
                 })
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_buff_features_for_test(&mut self, owner_uid: i64, raw: &str) {
+        if let Some(definition) = self
+            .buffs
+            .iter_mut()
+            .find(|active| active.owner_uid == owner_uid)
+            .and_then(|active| active.definition.as_mut())
+        {
+            definition.replace_features_for_test(super::feature::resolve_features(raw));
+        }
+    }
+
+    pub fn buff_act_source_uid(&self, owner_uid: i64, kind: BuffActKind) -> Option<i64> {
+        self.buffs.iter().find_map(|active| {
+            (active.owner_uid == owner_uid
+                && active.definition.as_ref().is_some_and(|definition| {
+                    definition
+                        .features()
+                        .iter()
+                        .any(|feature| feature.kind == Some(kind) && feature.arguments_supported)
+                }))
+            .then_some(active.buff.from_uid)
+            .flatten()
+            .filter(|source_uid| *source_uid != 0)
+        })
+    }
+
     pub fn buff_act_scalar(&self, owner_uid: i64, kind: BuffActKind) -> i32 {
+        self.buff_act_argument_scalar(owner_uid, kind, 0)
+    }
+
+    pub fn buff_act_argument_scalar(
+        &self,
+        owner_uid: i64,
+        kind: BuffActKind,
+        argument: usize,
+    ) -> i32 {
         self.buffs
             .iter()
             .filter(|active| active.owner_uid == owner_uid)
             .filter_map(|active| {
-                let amount = count_or_layer(&active.buff).max(1);
+                let amount = count_or_layer_from(&active.buff, active.definition.as_ref()).max(1);
                 active.definition.as_ref().map(|definition| {
                     definition
                         .features()
                         .iter()
-                        .filter(|feature| feature.kind == Some(kind))
-                        .filter_map(|feature| feature.values.get(1))
+                        .filter(|feature| feature.kind == Some(kind) && feature.arguments_supported)
+                        .filter_map(|feature| feature.values.get(argument.saturating_add(1)))
                         .map(|value| value.saturating_mul(amount))
+                        .sum::<i32>()
+                })
+            })
+            .sum()
+    }
+
+    pub(crate) fn grant_duration_delta(
+        &self,
+        hp: &HpManager,
+        owner_uid: i64,
+        status: BuffStatus,
+    ) -> i32 {
+        if hp.current(owner_uid) <= 0 {
+            return 0;
+        }
+        self.buffs
+            .iter()
+            .filter(|active| active.owner_uid == owner_uid)
+            .filter_map(|active| active.definition.as_ref())
+            .flat_map(BuffDefinition::features)
+            .map(|feature| {
+                crate::engine::skill::buff_act::buff_round_add::duration_delta(
+                    feature.kind,
+                    &feature.values,
+                    status,
+                )
+            })
+            .sum()
+    }
+
+    pub(crate) fn grant_type_duration_delta(
+        &self,
+        hp: &HpManager,
+        source_uid: i64,
+        type_id: i32,
+    ) -> i32 {
+        if hp.current(source_uid) <= 0 {
+            return 0;
+        }
+        self.buffs
+            .iter()
+            .filter(|active| active.owner_uid == source_uid)
+            .filter_map(|active| {
+                let amount = count_or_layer_from(&active.buff, active.definition.as_ref()).max(1);
+                active.definition.as_ref().map(|definition| {
+                    definition
+                        .features()
+                        .iter()
+                        .map(|feature| {
+                            crate::engine::skill::buff_act::buff_round_add::type_duration_delta(
+                                feature.kind,
+                                &feature.values,
+                                type_id,
+                            )
+                            .saturating_mul(amount)
+                        })
                         .sum::<i32>()
                 })
             })
@@ -151,7 +274,7 @@ impl BuffManager {
                         .any(|feature| feature.kind == Some(kind))
                 })
             })
-            .map(|active| count_or_layer(&active.buff).max(1))
+            .map(|active| count_or_layer_from(&active.buff, active.definition.as_ref()).max(1))
             .sum()
     }
 
@@ -236,7 +359,9 @@ impl BuffManager {
             let [_, target_lane, output_buff_id, _] = channel else {
                 continue;
             };
-            let Some(output_definition) = BuffDefinition::get(*output_buff_id) else {
+            let Some(output_definition) =
+                BuffDefinition::configured(self.catalog().game_data(), *output_buff_id)
+            else {
                 continue;
             };
             let Some(output) = output_definition
@@ -315,7 +440,7 @@ impl BuffManager {
     }
 
     pub(crate) fn buff_family_carrier_uid(&self, uid: i64, buff_id: i32) -> Option<i64> {
-        let incoming = BuffDefinition::get(buff_id);
+        let incoming = BuffDefinition::configured(self.catalog().game_data(), buff_id);
         self.buffs
             .iter()
             .find(|active| {
@@ -369,10 +494,21 @@ impl BuffManager {
         })
     }
 
+    pub fn has_active_buff_id(&self, uid: i64, buff_id: i32) -> bool {
+        self.buffs.iter().any(|active| {
+            active.owner_uid == uid
+                && active.definition.as_ref().is_none_or(|definition| {
+                    definition.duration <= 0 || active.buff.duration.unwrap_or_default() > 0
+                })
+                && active.buff.buff_id == Some(buff_id)
+        })
+    }
+
     pub fn buff_id_amount(&self, uid: i64, buff_id: i32) -> i32 {
-        self.active_for(uid)
-            .filter(|buff| buff.buff_id == Some(buff_id))
-            .map(count_or_layer)
+        self.buffs
+            .iter()
+            .filter(|active| active.owner_uid == uid && active.buff.buff_id == Some(buff_id))
+            .map(|active| count_or_layer_from(&active.buff, active.definition.as_ref()))
             .sum()
     }
 
@@ -384,7 +520,7 @@ impl BuffManager {
                     && (active.buff.buff_id == Some(buff_id_or_type_id)
                         || active.type_id == buff_id_or_type_id)
             })
-            .map(|active| count_or_layer(&active.buff))
+            .map(|active| count_or_layer_from(&active.buff, active.definition.as_ref()))
             .sum()
     }
 
@@ -407,16 +543,42 @@ impl BuffManager {
     }
 
     pub fn stack_limit(&self, buff_id: i32) -> i32 {
-        BuffDefinition::get(buff_id)
+        self.try_catalog()
+            .or_else(crate::catalog::BattleCatalog::try_global)
+            .and_then(|catalog| BuffDefinition::configured(catalog.game_data(), buff_id))
             .map(|definition| definition.stack_max_layer())
             .unwrap_or_default()
+    }
+
+    pub fn grant_overflow(
+        &self,
+        source_uid: i64,
+        target_uid: i64,
+        buff_id: i32,
+        amount: i32,
+    ) -> i32 {
+        let Some(definition) = self
+            .try_catalog()
+            .or_else(crate::catalog::BattleCatalog::try_global)
+            .and_then(|catalog| BuffDefinition::configured(catalog.game_data(), buff_id))
+        else {
+            return 0;
+        };
+        let limit =
+            self.grant_stack_limit(BuffRoute::new(source_uid, target_uid, buff_id), &definition);
+        if limit <= 0 {
+            return 0;
+        }
+        self.buff_id_amount(target_uid, buff_id)
+            .saturating_add(amount.max(0))
+            .saturating_sub(limit)
     }
 
     pub fn buff_type_amount(&self, uid: i64, type_id: i32) -> i32 {
         self.buffs
             .iter()
             .filter(|active| active.owner_uid == uid && active.type_id == type_id)
-            .map(|active| count_or_layer(&active.buff))
+            .map(|active| count_or_layer_from(&active.buff, active.definition.as_ref()))
             .sum()
     }
 
@@ -446,7 +608,7 @@ impl BuffManager {
                         .as_ref()
                         .is_some_and(|definition| definition.group == group_id)
             })
-            .map(|active| count_or_layer(&active.buff))
+            .map(|active| count_or_layer_from(&active.buff, active.definition.as_ref()))
             .sum()
     }
 
@@ -462,6 +624,41 @@ impl BuffManager {
                     })
             })
             .count() as i32
+    }
+
+    pub fn team_buff_status_type_count(&self, uids: &[i64], status_ids: &[i32]) -> i32 {
+        let mut type_ids = Vec::new();
+        for active in self.buffs.iter().filter(|active| {
+            uids.contains(&active.owner_uid)
+                && active.definition.as_ref().is_some_and(|definition| {
+                    status_ids
+                        .iter()
+                        .any(|status_id| definition.matches_type_category(*status_id))
+                })
+        }) {
+            if !type_ids.contains(&active.type_id) {
+                type_ids.push(active.type_id);
+            }
+        }
+        type_ids.len() as i32
+    }
+
+    pub fn buff_act_type_count(&self, uids: &[i64], kind: BuffActKind) -> i32 {
+        let mut type_ids = Vec::new();
+        for active in self.buffs.iter().filter(|active| {
+            uids.contains(&active.owner_uid)
+                && active.definition.as_ref().is_some_and(|definition| {
+                    (!definition.has_effect_count() || active.buff.count.unwrap_or_default() > 0)
+                        && definition.features().iter().any(|feature| {
+                            feature.arguments_supported && feature.kind == Some(kind)
+                        })
+                })
+        }) {
+            if !type_ids.contains(&active.type_id) {
+                type_ids.push(active.type_id);
+            }
+        }
+        type_ids.len() as i32
     }
 
     pub fn buff_type_layer(&self, uid: i64, type_id: i32) -> i32 {
@@ -509,6 +706,21 @@ impl BuffManager {
                                     &feature.values,
                                     active.buff.layer.unwrap_or_default(),
                                     attr_id,
+                                )
+                            })
+                            .sum::<i32>()
+                        + definition
+                            .features()
+                            .iter()
+                            .filter(|feature| {
+                                feature.arguments_supported
+                                    && feature.kind == Some(BuffActKind::Rouge2AttrToRole)
+                            })
+                            .map(|feature| {
+                                crate::engine::skill::buff_act::rouge2_attr_to_role::attribute_delta(
+                                    &feature.values,
+                                    attr_id,
+                                    self,
                                 )
                             })
                             .sum::<i32>();
@@ -565,6 +777,31 @@ impl BuffManager {
             return parts.into_iter().map(|(_, delta)| delta).sum();
         }
         deltas().map(|(_, delta)| delta).sum()
+    }
+
+    pub fn fixed_attribute_value(&self, buff_uid: i64, attr_id: AttrId) -> Option<i32> {
+        let active = self
+            .buffs
+            .iter()
+            .find(|active| active.buff.uid == Some(buff_uid))?;
+        fixed_attribute_value(active, attr_id)
+    }
+
+    pub fn fixed_attribute_delta(&self, uid: i64, attr_id: AttrId) -> i32 {
+        self.buffs
+            .iter()
+            .filter(|active| active.owner_uid == uid)
+            .filter(|active| {
+                active.definition.as_ref().is_some_and(|definition| {
+                    definition.features().iter().any(|feature| {
+                        feature.arguments_supported
+                            && feature.kind == Some(BuffActKind::EachChangeAttrOneWay)
+                            && feature.values.get(1).copied() == Some(attr_id.id())
+                    })
+                })
+            })
+            .filter_map(|active| self.fixed_attribute_value(active.buff.uid?, attr_id))
+            .sum()
     }
 
     pub fn configured_attribute_deltas(buff_id: i32) -> Vec<(AttrId, i32)> {
@@ -629,6 +866,7 @@ impl BuffManager {
                 let root_buff_id = active.buff.buff_id.unwrap_or_default();
                 let materialized = &materialized;
                 active_feature(
+                    Some(self.catalog().game_data()),
                     owner_uid,
                     active.team_type,
                     owner_alive,
@@ -659,6 +897,7 @@ impl BuffManager {
                     *selector == active.type_id || active.buff.buff_id == Some(*selector)
                 });
                 active_feature(
+                    Some(self.catalog().game_data()),
                     active.owner_uid,
                     active.team_type,
                     hp.current(active.owner_uid) > 0,
@@ -680,18 +919,24 @@ impl BuffManager {
 
     pub fn configured_features(buff_id: i32) -> Vec<ActiveBuffFeature> {
         let definition = BuffDefinition::get(buff_id);
-        active_feature(
-            0,
-            0,
-            true,
-            &BuffInfo {
-                buff_id: Some(buff_id),
-                count: Some(1),
-                layer: Some(1),
-                ..Default::default()
-            },
+        configured_features(
+            crate::catalog::BattleCatalog::try_global()
+                .map(crate::catalog::BattleCatalog::game_data),
+            buff_id,
             definition.as_ref(),
         )
+    }
+
+    pub(crate) fn definition_features(&self, buff_id: i32) -> Vec<ActiveBuffFeature> {
+        let Some(catalog) = self
+            .try_catalog()
+            .or_else(crate::catalog::BattleCatalog::try_global)
+        else {
+            return Vec::new();
+        };
+        let game = catalog.game_data();
+        let definition = BuffDefinition::configured(game, buff_id);
+        configured_features(Some(game), buff_id, definition.as_ref())
     }
 
     pub fn passive_skill_links_for(&self, uid: i64) -> Vec<BuffPassiveSkillLink> {
@@ -700,10 +945,18 @@ impl BuffManager {
             .filter(|active| active.owner_uid == uid)
             .flat_map(|active| {
                 let owner_uid = passive_skill_owner(active);
+                let amount = count_or_layer_from(&active.buff, active.definition.as_ref());
                 active
                     .definition
                     .as_ref()
-                    .map(|definition| passive_skill_links(owner_uid, definition.features()))
+                    .map(|definition| {
+                        passive_skill_links(
+                            Some(self.catalog().game_data()),
+                            owner_uid,
+                            definition.features(),
+                            amount,
+                        )
+                    })
                     .unwrap_or_default()
             })
             .collect()
@@ -713,7 +966,7 @@ impl BuffManager {
         self.buffs
             .iter()
             .flat_map(|active| {
-                let amount = count_or_layer(&active.buff);
+                let amount = count_or_layer_from(&active.buff, active.definition.as_ref());
                 active
                     .definition
                     .as_ref()
@@ -734,7 +987,7 @@ impl BuffManager {
         self.buffs
             .iter()
             .flat_map(|active| {
-                let amount = count_or_layer(&active.buff);
+                let amount = count_or_layer_from(&active.buff, active.definition.as_ref());
                 active
                     .definition
                     .as_ref()
@@ -750,6 +1003,26 @@ impl BuffManager {
             })
             .collect()
     }
+}
+
+fn configured_features(
+    game: Option<&config::GameDB>,
+    buff_id: i32,
+    definition: Option<&BuffDefinition>,
+) -> Vec<ActiveBuffFeature> {
+    active_feature(
+        game,
+        0,
+        0,
+        true,
+        &BuffInfo {
+            buff_id: Some(buff_id),
+            count: Some(1),
+            layer: Some(1),
+            ..Default::default()
+        },
+        definition,
+    )
 }
 
 fn passive_skill_owner(active: &ActiveBuff) -> i64 {

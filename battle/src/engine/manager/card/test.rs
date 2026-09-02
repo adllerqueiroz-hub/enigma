@@ -3,7 +3,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use sonettobuf::{Fight, FightEntityInfo, FightTeam};
 
 #[test]
-fn enemy_ai_uses_ready_ultimates_and_falls_back_to_basic_skills() {
+fn enemy_ai_selects_ultimates_from_current_resource_state() {
     let fight = |ex_point, ex_skill| Fight {
         attacker: Some(FightTeam {
             entitys: vec![FightEntityInfo {
@@ -29,17 +29,160 @@ fn enemy_ai_uses_ready_ultimates_and_falls_back_to_basic_skills() {
         ..Default::default()
     };
 
+    let resources = |fight: &Fight| {
+        let mut ex_point = crate::engine::manager::ex_point::ExPointManager::default();
+        ex_point.seed(fight);
+        let mut eureka = crate::engine::manager::eureka::EurekaManager::default();
+        eureka.seed(fight);
+        (ex_point, eureka)
+    };
+
+    let ready = fight(5, Some(900));
+    let (ready_ex_point, ready_eureka) = resources(&ready);
     let mut ready_rng = StdRng::seed_from_u64(1);
     assert_eq!(
-        ai::generate_ai_deck(&fight(5, Some(900)), &mut ready_rng)[0].skill_id,
+        ai::generate_ai_deck(&ready, &ready_ex_point, &ready_eureka, &mut ready_rng,)[0].skill_id,
         Some(900)
     );
+    let mut extra_action_rng = StdRng::seed_from_u64(1);
+    assert_eq!(
+        ai::generate_ai_deck_with_extra_actions(
+            &ready,
+            &ready_ex_point,
+            &ready_eureka,
+            1,
+            &mut extra_action_rng,
+        )
+        .len(),
+        2
+    );
+    let mut reduced_action_rng = StdRng::seed_from_u64(1);
+    assert!(
+        ai::generate_ai_deck_with_extra_actions(
+            &ready,
+            &ready_ex_point,
+            &ready_eureka,
+            -1,
+            &mut reduced_action_rng,
+        )
+        .is_empty()
+    );
+    let mut no_skill = ready.clone();
+    let enemy = &mut no_skill.defender.as_mut().unwrap().entitys[0];
+    enemy.skill_group1.clear();
+    enemy.skill_group2.clear();
+    enemy.ex_skill = None;
+    let (no_skill_ex_point, no_skill_eureka) = resources(&no_skill);
+    let mut no_skill_rng = StdRng::seed_from_u64(1);
+    assert!(
+        ai::generate_ai_deck_with_extra_actions(
+            &no_skill,
+            &no_skill_ex_point,
+            &no_skill_eureka,
+            1,
+            &mut no_skill_rng,
+        )
+        .is_empty()
+    );
 
+    let mut mixed = ready.clone();
+    mixed
+        .defender
+        .as_mut()
+        .unwrap()
+        .entitys
+        .push(FightEntityInfo {
+            uid: Some(-2),
+            model_id: Some(200),
+            current_hp: Some(100),
+            ..Default::default()
+        });
+    let (mixed_ex_point, mixed_eureka) = resources(&mixed);
+    let mut mixed_rng = StdRng::seed_from_u64(1);
+    assert_eq!(
+        ai::generated_ai_action_count(&mixed, &mixed_ex_point, &mixed_eureka, 1),
+        2
+    );
+    assert_eq!(
+        ai::generate_ai_deck_with_extra_actions(
+            &mixed,
+            &mixed_ex_point,
+            &mixed_eureka,
+            1,
+            &mut mixed_rng,
+        )
+        .len(),
+        2
+    );
+
+    let fallback = fight(5, None);
+    let (fallback_ex_point, fallback_eureka) = resources(&fallback);
     let mut fallback_rng = StdRng::seed_from_u64(1);
     assert_eq!(
-        ai::generate_ai_deck(&fight(5, None), &mut fallback_rng)[0].skill_id,
+        ai::generate_ai_deck(
+            &fallback,
+            &fallback_ex_point,
+            &fallback_eureka,
+            &mut fallback_rng,
+        )[0]
+        .skill_id,
         Some(100)
     );
+
+    let stale_fight = fight(5, Some(900));
+    let (spent_ex_point, spent_eureka) = resources(&fight(0, Some(900)));
+    let mut spent_rng = StdRng::seed_from_u64(1);
+    assert_eq!(
+        ai::generate_ai_deck(&stale_fight, &spent_ex_point, &spent_eureka, &mut spent_rng,)[0]
+            .skill_id,
+        Some(100)
+    );
+}
+
+#[test]
+fn enemy_ai_selects_boss_ultimate_from_full_named_power() {
+    let fight = |power| Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(1),
+                current_hp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(100),
+                ex_point: Some(0),
+                ex_skill: Some(900),
+                skill_group1: vec![100],
+                power_infos: vec![sonettobuf::PowerInfo {
+                    power_id: Some(
+                        crate::engine::manager::eureka::PowerType::ZongMaoBossEnergy.id(),
+                    ),
+                    num: Some(power),
+                    max: Some(3),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    for (power, expected) in [(2, 100), (3, 900)] {
+        let fight = fight(power);
+        let mut ex_point = crate::engine::manager::ex_point::ExPointManager::default();
+        ex_point.seed(&fight);
+        let mut eureka = crate::engine::manager::eureka::EurekaManager::default();
+        eureka.seed(&fight);
+        let mut rng = StdRng::seed_from_u64(1);
+        assert_eq!(
+            ai::generate_ai_deck(&fight, &ex_point, &eureka, &mut rng)[0].skill_id,
+            Some(expected)
+        );
+    }
 }
 
 #[test]
@@ -259,6 +402,8 @@ fn rewritten_choice_keeps_consumed_card_and_resolved_caster_distinct() {
 fn wire_temp_card_uid_does_not_erase_its_manager_owned_caster() {
     let source = precast_card(10, 900);
     let wire = temp_card(900);
+    assert_eq!(source.card_effect, None);
+    assert_eq!(wire.card_effect, None);
     let mut cards = CardManager::new(vec![source.clone()]);
 
     let played = cards
@@ -392,6 +537,37 @@ fn removing_an_owner_composes_the_new_ai_queue_neighbors() {
     assert_eq!(manager.ai_queue()[0].skill_id, Some(101));
     assert_eq!(manager.ai_queue()[0].temp_card, Some(false));
     assert_eq!(manager.ai_queue()[0].energy, Some(0));
+}
+
+#[test]
+fn removing_a_player_owner_clears_player_cards_without_touching_ai() {
+    let mut manager = CardManager::with_draw_pile(
+        vec![card(10, 100), card(11, 200)],
+        vec![card(10, 300), card(12, 400)],
+    );
+    manager.set_team_cards(vec![card(10, 500), card(13, 600)]);
+    manager.set_ai_queue(vec![card(-1, 700)]);
+    manager.add_temp_card_for(10, 800, None, 0, 1);
+
+    assert_eq!(manager.remove_owner_cards(10, 1), Some(Vec::new()));
+    assert!(manager.hand().iter().all(|card| card.uid != Some(10)));
+    assert!(manager.draw_pile().iter().all(|card| card.uid != Some(10)));
+    assert!(manager.generated().iter().all(|card| card.uid != Some(10)));
+    assert!(manager.team_cards().iter().all(|card| card.uid != Some(10)));
+    assert_eq!(manager.ai_queue(), &[card(-1, 700)]);
+    assert_eq!(manager.remove_owner_cards(10, 1), None);
+}
+
+#[test]
+fn reset_preserves_the_attached_catalog() {
+    crate::test_support::init_config();
+    let catalog = crate::catalog::BattleCatalog::new(crate::test_support::game_data());
+    let mut manager = CardManager::default();
+    manager.set_catalog(catalog);
+
+    manager.reset_with_draw_pile(vec![card(10, 100)], vec![card(11, 200)], 2);
+
+    assert_eq!(manager.deck.attached_catalog(), Some(catalog));
 }
 
 #[test]

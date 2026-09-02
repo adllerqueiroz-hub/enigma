@@ -54,6 +54,68 @@ fn status_skill_rate_counts_configured_statuses_up_to_its_limit() {
 }
 
 #[test]
+fn target_status_skill_rate_is_scoped_to_the_attacked_entity() {
+    crate::test_support::init_config();
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                buffs: vec![BuffInfo {
+                    uid: Some(1),
+                    buff_id: Some(301),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let pool = TargetPool::from_fight(&fight);
+    let behavior = ParsedBehavior::from_spec(
+        crate::engine::skill::behavior::classify::BehaviorSpec::new(10003, "SkillRateUp2"),
+        vec![400, 1],
+        vec!["400".into(), "1".into(), "2,4,6".into()],
+    );
+    let mut determinism = RoundDeterminism::default();
+    let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+    let mut target = TargetContext {
+        runtime_target_uid: -1,
+        ..Default::default()
+    };
+
+    assert!(matches!(
+        crate::engine::skill::behavior::rule_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 1163855041,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        ),
+        Some(ops) if ops.is_empty()
+    ));
+    assert_eq!(modifiers.rates[0].fixed_value(), Some(400));
+    assert_eq!(modifiers.rates[0].target_uid, -1);
+}
+
+#[test]
 fn self_buff_type_rate_scales_by_the_configured_buff_amount() {
     crate::test_support::init_config();
     let fight = Fight {
@@ -165,7 +227,7 @@ fn heat_scale_rate_uses_the_configured_scale_and_limit() {
 }
 
 #[test]
-fn purple_crystal_resolves_raw_lingering_glow_when_damage_is_planned() {
+fn purple_crystal_resolves_visible_lingering_glow_when_damage_is_planned() {
     use crate::engine::{
         manager::gauge::{GaugeCommand, GaugeManager, GaugeOperation},
         mechanic::lingering_glow,
@@ -188,7 +250,7 @@ fn purple_crystal_resolves_raw_lingering_glow_when_damage_is_planned() {
     let modifier = SkillRateModifier::new(
         0,
         60243,
-        crate::engine::skill::action::SkillRateAmount::gauge_raw(key, 1_000_000, 4, 1, 1000),
+        crate::engine::skill::action::SkillRateAmount::gauge_current(key, 1_000, 4, 1),
         true,
     );
 
@@ -214,6 +276,19 @@ fn purple_crystal_resolves_raw_lingering_glow_when_damage_is_planned() {
             },
         ))
         .unwrap();
+    assert_eq!(modifier.amount.resolve(&gauges), 600);
+
+    gauges
+        .execute_command(GaugeCommand::new(
+            origin,
+            key,
+            GaugeOperation::AccumulateRawValue {
+                amount: 500,
+                stream: 60243,
+            },
+        ))
+        .unwrap();
+    assert_eq!(gauges.raw_value(key), Some(150_500));
     assert_eq!(modifier.amount.resolve(&gauges), 600);
 }
 
@@ -307,6 +382,96 @@ fn per_hp_passive_repeats_exact_attack_attributes_for_the_current_target() {
         ]
         .concat()
     );
+}
+
+#[test]
+fn bullet_types_repeat_each_configured_attack_attribute() {
+    crate::test_support::init_config();
+    let effects = SkillEffectCatalog::from_game_db(config::configs::get());
+    let fight = Fight {
+        attacker: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(10),
+                current_hp: Some(1_000),
+                buffs: vec![
+                    BuffInfo {
+                        buff_id: Some(722501),
+                        uid: Some(1),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(722502),
+                        uid: Some(2),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(31020111),
+                        uid: Some(3),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                    BuffInfo {
+                        buff_id: Some(31020112),
+                        uid: Some(4),
+                        count: Some(1),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        defender: Some(FightTeam {
+            entitys: vec![FightEntityInfo {
+                uid: Some(-1),
+                current_hp: Some(1_000),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let managers = BattleManagers::seeded(&fight);
+    let pool = TargetPool::from_fight(&fight);
+    let mut modifiers = crate::engine::skill::action::SkillModifiers::default();
+
+    emit_passive_attack_attributes(
+        &mut modifiers,
+        10,
+        310201361,
+        &[310201621],
+        RateRuntime {
+            effects: &effects,
+            managers: &managers,
+            pool: &pool,
+            context: TargetContext {
+                active_skill_source_uid: 10,
+                hit_source_uid: 10,
+                hit_target_uid: -1,
+                runtime_target_uid: -1,
+                ..Default::default()
+            },
+        },
+        &mut RoundDeterminism::default(),
+    );
+
+    for attr in [
+        AttrId::DmgBonus,
+        AttrId::IncantationMight,
+        AttrId::UltimateMight,
+    ] {
+        assert_eq!(
+            modifiers
+                .attack_attributes
+                .iter()
+                .filter(|(actual, _)| *actual == attr)
+                .map(|(_, delta)| delta)
+                .sum::<i32>(),
+            150
+        );
+    }
 }
 
 #[test]
@@ -423,7 +588,7 @@ fn target_count_rate_is_global_and_scales_with_living_enemies() {
 }
 
 #[test]
-fn conduit_rate_uses_the_selected_skills_committed_round_cost() {
+fn conduit_rate_survives_a_later_group_switch() {
     crate::test_support::init_config();
     let fight = Fight {
         attacker: Some(FightTeam {
@@ -464,6 +629,24 @@ fn conduit_rate_uses_the_selected_skills_committed_round_cost() {
                 source_uid: 10,
                 skill_id: 31490121,
                 cost_reduction: 0,
+            },
+        )
+        .unwrap();
+    managers
+        .conduit
+        .execute(
+            crate::engine::manager::conduit::ConduitCommand::CommitSkillCost {
+                source_uid: 10,
+                skill_id: 31490121,
+            },
+        )
+        .unwrap();
+    managers
+        .conduit
+        .execute(
+            crate::engine::manager::conduit::ConduitCommand::SelectGroup {
+                source_uid: 10,
+                group: 2,
             },
         )
         .unwrap();
@@ -581,6 +764,8 @@ fn conduit_unique_skill_uses_all_energy_and_its_documented_thresholds() {
         vec![(AttrId::CriticalRate, 1000), (AttrId::Penetration, 700)]
     );
     assert_eq!(modifiers.excess_crit_conversion_rate, 1000);
+    assert_eq!(modifiers.attack_career, Some(1));
+    assert_eq!(modifiers.additional_attack_career, Some(2));
     assert!(matches!(
         ops.as_slice(),
         [

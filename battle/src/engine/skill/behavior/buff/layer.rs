@@ -1,5 +1,74 @@
 use super::*;
 
+pub(super) fn multiply_buff_count_ops(
+    context: &BehaviorOpContext<'_>,
+    behavior: &ParsedBehavior,
+) -> Option<Vec<RuleOp>> {
+    let [buff_id, multiplier] = behavior.args.as_slice() else {
+        return None;
+    };
+    let additions = context
+        .managers
+        .buff
+        .buff_id_amount(context.target_uid, *buff_id)
+        .saturating_mul(multiplier.saturating_sub(1));
+    let origin = super::command_origin(behavior)?;
+    Some(
+        (0..additions)
+            .map(|_| {
+                RuleOp::Command(BattleCommand::Buff(BuffCommand::Accumulate(BuffGrant {
+                    origin,
+                    source_uid: context.source_uid,
+                    target_uid: context.target_uid,
+                    buff_id: *buff_id,
+                    amount: None,
+                    occurrences: 1,
+                    child_uid_reservations: 0,
+                })))
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn add_buff_by_layer_ops(
+    context: &mut BehaviorOpContext<'_>,
+    behavior: &ParsedBehavior,
+) -> Option<Vec<RuleOp>> {
+    let [source_buff_id, output_buff_id, multiplier] = behavior.args.as_slice() else {
+        return None;
+    };
+    if *source_buff_id <= 0 || *output_buff_id <= 0 || *multiplier <= 0 {
+        return None;
+    }
+    let amount = context
+        .managers
+        .buff
+        .buff_id_or_type_amount(context.source_uid, *source_buff_id)
+        .saturating_mul(*multiplier);
+    if amount <= 0 {
+        return Some(Vec::new());
+    }
+    if context.target_uid == context.target.runtime_target_uid {
+        context.target.buff_overflow_amount = context.managers.buff.grant_overflow(
+            context.source_uid,
+            context.target_uid,
+            *output_buff_id,
+            amount,
+        );
+    }
+    Some(vec![RuleOp::Command(BattleCommand::Buff(
+        BuffCommand::Grant(BuffGrant {
+            origin: super::command_origin(behavior)?,
+            source_uid: context.source_uid,
+            target_uid: context.target_uid,
+            buff_id: *output_buff_id,
+            amount: Some(amount),
+            occurrences: 1,
+            child_uid_reservations: 0,
+        }),
+    ))])
+}
+
 pub(super) fn add_buff_by_layer_range_ops(
     context: &BehaviorOpContext<'_>,
     behavior: &ParsedBehavior,
@@ -114,11 +183,12 @@ pub(super) fn add_buff_from_enemy_burn_ops(
             .iter()
             .filter(|change| {
                 context.managers.buff.team_type(change.target_uid) != Some(context.source_team)
-                    && crate::engine::manager::buff::BuffManager::configured_features(
-                        change.buff_id,
-                    )
-                    .iter()
-                    .any(|feature| is_kind(feature, BuffActKind::Burn))
+                    && context
+                        .managers
+                        .buff
+                        .definition_features(change.buff_id)
+                        .iter()
+                        .any(|feature| is_kind(feature, BuffActKind::Burn))
             })
             .map(|change| change.before_amount - change.after_amount)
             .max()

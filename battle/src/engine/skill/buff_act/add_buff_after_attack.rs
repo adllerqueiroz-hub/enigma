@@ -90,9 +90,11 @@ mod tests {
             skill_type: 0,
             effect_tag: 2,
             assassinate: false,
+            ignore_riposte: false,
             damage_amount: 100,
             kill_count: 0,
             crit_count: 1,
+            guard_break_count: 0,
             additional_moxie: 0,
             extra_skill_kind: 0,
             mode: SkillExecutionMode::Nested,
@@ -100,6 +102,7 @@ mod tests {
             teammate_injury_count_not_reset: 0,
             team_injury_count_round: 0,
             card_enchants: Vec::new(),
+            buff_additions: Vec::new(),
         })
     }
 

@@ -14,6 +14,8 @@ pub fn rule_op(target_uid: i64, behavior: &ParsedBehavior) -> Option<RuleOp> {
             effect_type: sonettobuf::effect_type_enum::EffectType::Clienteffect as i32,
             effect_num: behavior.arg(0)?,
             config_effect: behavior.spec.key.opcode,
+            reserve_id: None,
+            reserve_str: None,
         });
     }
     if behavior.spec.kind != BehaviorKind::NotifyUpgradeHero {
@@ -32,6 +34,22 @@ pub(super) struct Handler;
 
 impl BehaviorHandler for Handler {
     fn emit_ops(context: BehaviorOpContext<'_>, behavior: &ParsedBehavior) -> Option<Vec<RuleOp>> {
+        if behavior.spec.kind == BehaviorKind::NotifyUpgradeHero {
+            let upgrade_id = behavior.arg(0)?;
+            let entity = context.managers.entity_snapshot(context.target_uid)?;
+            let selected = entity
+                .enhance_info_box
+                .as_ref()
+                .map(|info| info.upgraded_options.as_slice())
+                .unwrap_or_default();
+            if !context
+                .managers
+                .catalog()
+                .upgrade_has_available_option(upgrade_id, selected)?
+            {
+                return Some(Vec::new());
+            }
+        }
         rule_op(context.target_uid, behavior).map(|op| vec![op])
     }
 }
@@ -46,6 +64,20 @@ impl BehaviorHandler for AssassinateHandler {
         } else {
             None
         }
+    }
+}
+
+pub fn supports_extra_type(behavior: &ParsedBehavior) -> bool {
+    matches!(behavior.args.as_slice(), [1 | 3])
+}
+
+pub(super) struct SetExtraTypeHandler;
+
+impl BehaviorHandler for SetExtraTypeHandler {
+    fn emit_ops(context: BehaviorOpContext<'_>, behavior: &ParsedBehavior) -> Option<Vec<RuleOp>> {
+        context.target.extra_skill_kind =
+            super::super::condition::extra::skill_kind_from_is_extra(behavior.arg(0)?)?.id();
+        Some(Vec::new())
     }
 }
 
@@ -90,6 +122,58 @@ mod tests {
     }
 
     #[test]
+    fn notification_skips_exhausted_options_and_keeps_the_terminal_upgrade() {
+        crate::test_support::init_config();
+        let mut managers = BattleManagers::default();
+        managers.register_entity(&sonettobuf::FightEntityInfo {
+            uid: Some(10),
+            team_type: Some(1),
+            enhance_info_box: Some(sonettobuf::EnhanceInfoBox {
+                uid: Some(10),
+                upgraded_options: vec![3086515, 3086525, 3086535],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let pool = TargetPool::default();
+        let mut determinism = RoundDeterminism::default();
+        let mut modifiers = SkillModifiers::default();
+        let mut target = TargetContext::default();
+
+        let mut emit = |upgrade_id| {
+            behavior::rule_ops(
+                BehaviorOpContext {
+                    source_uid: 10,
+                    source_team: 1,
+                    target_uid: 10,
+                    active_skill_id: 30864156,
+                    transfer_count: 1,
+                    event: None,
+                    managers: &managers,
+                    pool: &pool,
+                    determinism: &mut determinism,
+                    modifiers: &mut modifiers,
+                    target: &mut target,
+                },
+                &ParsedBehavior::new(60037, "NotifyUpgradeHero", vec![upgrade_id]),
+            )
+            .unwrap()
+        };
+
+        assert!(emit(308665).is_empty());
+        assert!(matches!(
+            emit(308675).as_slice(),
+            [RuleOp::Command(BattleCommand::Upgrade(UpgradeCommand {
+                operation: UpgradeOperation::Offer {
+                    upgrade_id: 308675,
+                    ..
+                },
+                ..
+            }))]
+        ));
+    }
+
+    #[test]
     fn assassinate_marks_the_active_skill_without_emitting_a_packet_command() {
         let managers = BattleManagers::default();
         let pool = TargetPool::default();
@@ -122,6 +206,71 @@ mod tests {
 
         assert!(ops.is_empty());
         assert!(target.active_skill_assassinate);
+    }
+
+    #[test]
+    fn set_extra_type_changes_only_the_current_action_kind() {
+        let managers = BattleManagers::default();
+        let pool = TargetPool::default();
+        let mut determinism = RoundDeterminism::default();
+        let mut modifiers = SkillModifiers::default();
+        let mut target = TargetContext::default();
+        let behavior = ParsedBehavior::from_spec(
+            BehaviorSpec::new(60271, "SetExtraType"),
+            vec![1],
+            Vec::new(),
+        );
+
+        let ops = behavior::rule_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 31100531,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &behavior,
+        )
+        .unwrap();
+
+        assert!(ops.is_empty());
+        assert_eq!(
+            target.extra_skill_kind,
+            crate::engine::skill::condition::extra::ExtraSkillKind::ExtraAction.id()
+        );
+
+        let riposte = ParsedBehavior::from_spec(
+            BehaviorSpec::new(60271, "SetExtraType"),
+            vec![3],
+            Vec::new(),
+        );
+        behavior::rule_ops(
+            BehaviorOpContext {
+                source_uid: 10,
+                source_team: 1,
+                target_uid: 10,
+                active_skill_id: 30941111,
+                transfer_count: 1,
+                event: None,
+                managers: &managers,
+                pool: &pool,
+                determinism: &mut determinism,
+                modifiers: &mut modifiers,
+                target: &mut target,
+            },
+            &riposte,
+        )
+        .unwrap();
+        assert_eq!(
+            target.extra_skill_kind,
+            crate::engine::skill::condition::extra::ExtraSkillKind::Riposte.id()
+        );
     }
 
     #[test]

@@ -4,14 +4,27 @@ use sonettobuf::{CardEnchant, CardInfo, card_info::CardType};
 
 use super::{EnchantedType, precast_card, temp_card};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CardDeck {
+    catalog_data: Option<crate::catalog::BattleCatalog>,
     hand: Vec<CardInfo>,
     // In-place card mutations preserve identity; structural replacements allocate a new one.
     hand_ids: Vec<CardInstanceId>,
     next_hand_id: u64,
     draw_pile: Vec<CardInfo>,
+    discard_pile: Vec<CardInfo>,
     generated: Vec<CardInfo>,
+}
+
+impl PartialEq for CardDeck {
+    fn eq(&self, other: &Self) -> bool {
+        self.hand == other.hand
+            && self.hand_ids == other.hand_ids
+            && self.next_hand_id == other.next_hand_id
+            && self.draw_pile == other.draw_pile
+            && self.discard_pile == other.discard_pile
+            && self.generated == other.generated
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,10 +39,12 @@ impl Default for CardDeck {
 impl CardDeck {
     pub fn new(hand: Vec<CardInfo>) -> Self {
         let mut deck = Self {
+            catalog_data: None,
             hand: Vec::new(),
             hand_ids: Vec::new(),
             next_hand_id: 1,
             draw_pile: Vec::new(),
+            discard_pile: Vec::new(),
             generated: Vec::new(),
         };
         for card in hand {
@@ -40,16 +55,32 @@ impl CardDeck {
 
     pub fn with_draw_pile(hand: Vec<CardInfo>, draw_pile: Vec<CardInfo>) -> Self {
         let mut deck = Self {
+            catalog_data: None,
             hand: Vec::new(),
             hand_ids: Vec::new(),
             next_hand_id: 1,
             draw_pile,
+            discard_pile: Vec::new(),
             generated: Vec::new(),
         };
         for card in hand {
             deck.push_hand(card);
         }
         deck
+    }
+
+    pub(crate) fn with_catalog(mut self, catalog: crate::catalog::BattleCatalog) -> Self {
+        self.catalog_data = Some(catalog);
+        self
+    }
+
+    pub(super) fn catalog(&self) -> Option<crate::catalog::BattleCatalog> {
+        self.catalog_data
+            .or_else(crate::catalog::BattleCatalog::try_global)
+    }
+
+    pub(super) fn attached_catalog(&self) -> Option<crate::catalog::BattleCatalog> {
+        self.catalog_data
     }
 
     pub fn hand(&self) -> &[CardInfo] {
@@ -72,16 +103,50 @@ impl CardDeck {
         &self.draw_pile
     }
 
+    pub(super) fn draw_pile_mut(&mut self) -> &mut [CardInfo] {
+        &mut self.draw_pile
+    }
+
     pub fn consume_draw_card(&mut self, card: &CardInfo) -> bool {
-        let Some(index) = self.draw_pile.iter().position(|candidate| {
-            candidate.uid == card.uid
-                && candidate.skill_id == card.skill_id
-                && candidate.temp_card == card.temp_card
-        }) else {
+        let Some(index) = self
+            .draw_pile
+            .iter()
+            .position(|candidate| same_card(candidate, card))
+        else {
             return false;
         };
-        self.draw_pile.remove(index);
+        self.discard_pile.push(self.draw_pile.remove(index));
         true
+    }
+
+    pub(super) fn deal_from_draw_pile(&mut self, cards: &[CardInfo]) -> bool {
+        let mut remaining = self.draw_pile.clone();
+        for card in cards {
+            let Some(index) = remaining
+                .iter()
+                .position(|candidate| same_card(candidate, card))
+            else {
+                return false;
+            };
+            remaining.remove(index);
+        }
+        for card in cards {
+            self.consume_draw_card(card);
+            self.push_hand(card.clone());
+        }
+        true
+    }
+
+    pub(super) fn recycle_draw_pile(&mut self) -> bool {
+        if !self.can_recycle_draw_pile() {
+            return false;
+        }
+        std::mem::swap(&mut self.draw_pile, &mut self.discard_pile);
+        true
+    }
+
+    pub(super) fn can_recycle_draw_pile(&self) -> bool {
+        self.draw_pile.is_empty() && !self.discard_pile.is_empty()
     }
 
     pub fn move_card(&mut self, from_index: usize, to_index: usize) -> bool {
@@ -108,6 +173,7 @@ impl CardDeck {
             .hand
             .iter_mut()
             .chain(&mut self.draw_pile)
+            .chain(&mut self.discard_pile)
             .chain(&mut self.generated)
             .filter(|card| card.uid == Some(owner_uid))
         {
@@ -130,9 +196,21 @@ impl CardDeck {
         }
     }
 
+    pub(super) fn remove_owner_cards(&mut self, owner_uid: i64) {
+        for index in (0..self.hand.len()).rev() {
+            if self.hand[index].uid == Some(owner_uid) {
+                self.remove_card(index);
+            }
+        }
+        self.draw_pile.retain(|card| card.uid != Some(owner_uid));
+        self.discard_pile.retain(|card| card.uid != Some(owner_uid));
+        self.generated.retain(|card| card.uid != Some(owner_uid));
+    }
+
     pub fn draw(&mut self, count: usize) -> Vec<CardInfo> {
         let take = count.min(self.draw_pile.len());
         let drawn: Vec<_> = self.draw_pile.drain(..take).collect();
+        self.discard_pile.extend(drawn.iter().cloned());
         for card in drawn.iter().cloned() {
             self.push_hand(card);
         }
@@ -147,11 +225,12 @@ impl CardDeck {
     pub fn compose_adjacent(&mut self, rank_up: &HashMap<(i64, i32), i32>) -> Vec<i64> {
         let mut owners = Vec::new();
         let mut index = 0;
+        let catalog = self.catalog();
         while index + 1 < self.hand.len() {
             let left = &self.hand[index];
             let right = &self.hand[index + 1];
             let owner_uid = left.uid.unwrap_or_default();
-            let Some(next_skill_id) = composable_next(left, right, rank_up) else {
+            let Some(next_skill_id) = composable_next(catalog, left, right, rank_up) else {
                 index += 1;
                 continue;
             };
@@ -165,7 +244,7 @@ impl CardDeck {
                     .unwrap_or_default()
                     .saturating_add(right.energy.unwrap_or_default()),
             );
-            merge_enchants(&mut self.hand[index].enchants, &right.enchants);
+            merge_enchants(catalog, &mut self.hand[index].enchants, &right.enchants);
             self.remove_card(index + 1);
             owners.push(owner_uid);
             index = index.saturating_sub(1);
@@ -173,8 +252,27 @@ impl CardDeck {
         owners
     }
 
-    pub fn add_temp_card(&mut self, owner_uid: i64, skill_id: i32) -> CardInfo {
-        let card = precast_card(owner_uid, skill_id);
+    pub fn add_temp_card(
+        &mut self,
+        owner_uid: i64,
+        skill_id: i32,
+        hero_id: Option<i32>,
+    ) -> CardInfo {
+        let card = hero_id.map_or_else(
+            || {
+                if owner_uid == 0 {
+                    temp_card(skill_id)
+                } else {
+                    precast_card(owner_uid, skill_id)
+                }
+            },
+            |hero_id| CardInfo {
+                uid: Some(owner_uid),
+                hero_id: Some(hero_id),
+                card_type: Some(CardType::Skill3 as i32),
+                ..temp_card(skill_id)
+            },
+        );
         self.push_hand(card.clone());
         self.generated.push(card.clone());
         card
@@ -213,11 +311,13 @@ impl CardDeck {
             duration: Some(duration),
             ..Default::default()
         };
+        let catalog = self.catalog();
         Some(
             indices
                 .iter()
                 .map(|index| {
                     merge_enchants(
+                        catalog,
                         &mut self.hand[*index].enchants,
                         std::slice::from_ref(&enchant),
                     );
@@ -341,6 +441,7 @@ impl CardDeck {
 }
 
 fn composable_next(
+    catalog: Option<crate::catalog::BattleCatalog>,
     left: &CardInfo,
     right: &CardInfo,
     rank_up: &HashMap<(i64, i32), i32>,
@@ -355,11 +456,15 @@ fn composable_next(
         || has_non_combine_enchant(right)
         || (left.card_type != Some(CardType::Skill3 as i32)
             && right.card_type != Some(CardType::Skill3 as i32)
-            && crate::engine::skill::effect::catalog::configured_is_big_skill(skill_id))
+            && catalog.is_some_and(|catalog| catalog.skill_is_big(skill_id)))
     {
         return None;
     }
     rank_up.get(&(owner_uid, skill_id)).copied()
+}
+
+fn same_card(left: &CardInfo, right: &CardInfo) -> bool {
+    left.uid == right.uid && left.skill_id == right.skill_id && left.temp_card == right.temp_card
 }
 
 fn is_universal(skill_id: i32) -> bool {
@@ -380,15 +485,21 @@ pub(crate) fn has_enchant_type(card: &CardInfo, enchanted_type: EnchantedType) -
         .any(|enchant| enchant.enchant_id == Some(enchanted_type.id()))
 }
 
-fn merge_enchants(target: &mut Vec<CardEnchant>, source: &[CardEnchant]) {
+fn merge_enchants(
+    catalog: Option<crate::catalog::BattleCatalog>,
+    target: &mut Vec<CardEnchant>,
+    source: &[CardEnchant],
+) {
     for enchant in source {
         let Some(enchant_id) = enchant.enchant_id else {
             continue;
         };
-        if !can_add_enchant(target, enchant_id) {
+        if !can_add_enchant(catalog, target, enchant_id) {
             continue;
         }
-        let excluded = enchant_ids(enchant_id, |row| &row.exclude_types);
+        let excluded = catalog
+            .map(|catalog| catalog.card_enchant_excluded_ids(enchant_id))
+            .unwrap_or_default();
         target.retain(|current| !current.enchant_id.is_some_and(|id| excluded.contains(&id)));
         if let Some(current) = target
             .iter_mut()
@@ -404,8 +515,14 @@ fn merge_enchants(target: &mut Vec<CardEnchant>, source: &[CardEnchant]) {
     }
 }
 
-fn can_add_enchant(current: &[CardEnchant], target_id: i32) -> bool {
-    let excluded = enchant_ids(target_id, |row| &row.exclude_types);
+fn can_add_enchant(
+    catalog: Option<crate::catalog::BattleCatalog>,
+    current: &[CardEnchant],
+    target_id: i32,
+) -> bool {
+    let excluded = catalog
+        .map(|catalog| catalog.card_enchant_excluded_ids(target_id))
+        .unwrap_or_default();
     let mut check_limit = true;
     for enchant in current {
         let Some(id) = enchant.enchant_id else {
@@ -414,7 +531,11 @@ fn can_add_enchant(current: &[CardEnchant], target_id: i32) -> bool {
         if id == target_id {
             return true;
         }
-        if enchant_ids(id, |row| &row.reject_types).contains(&target_id) {
+        if catalog
+            .map(|catalog| catalog.card_enchant_rejected_ids(id))
+            .unwrap_or_default()
+            .contains(&target_id)
+        {
             return false;
         }
         if excluded.contains(&id) {
@@ -422,19 +543,6 @@ fn can_add_enchant(current: &[CardEnchant], target_id: i32) -> bool {
         }
     }
     !check_limit || current.len() < 6
-}
-
-fn enchant_ids(
-    enchant_id: i32,
-    field: impl FnOnce(&config::card_enchant::CardEnchant) -> &str,
-) -> Vec<i32> {
-    config::try_get()
-        .and_then(|db| db.card_enchant.get(enchant_id))
-        .map(field)
-        .into_iter()
-        .flat_map(|raw| raw.split('#'))
-        .filter_map(|id| id.parse().ok())
-        .collect()
 }
 
 #[cfg(test)]
@@ -453,7 +561,7 @@ mod tests {
             vec![Some(11), Some(10)]
         );
 
-        let temp = deck.add_temp_card(10, 999);
+        let temp = deck.add_temp_card(10, 999, None);
         assert_eq!(temp.temp_card, Some(true));
         assert_eq!(deck.generated().len(), 1);
 
@@ -481,6 +589,25 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_ultimate_cards_require_the_skill_three_lane() {
+        crate::test_support::init_config();
+        let catalog = crate::catalog::BattleCatalog::new(crate::test_support::game_data());
+        let hand = vec![card(10, 30020131), card(10, 30020131)];
+        let rank_up = HashMap::from([((10, 30020131), 30020132)]);
+        let mut legacy = CardDeck::new(hand.clone());
+        let mut explicit = CardDeck::new(hand).with_catalog(catalog);
+
+        assert!(legacy.compose_adjacent(&rank_up).is_empty());
+        assert!(explicit.compose_adjacent(&rank_up).is_empty());
+
+        legacy.hand[0].card_type = Some(CardType::Skill3 as i32);
+        explicit.hand[0].card_type = Some(CardType::Skill3 as i32);
+        assert_eq!(legacy.compose_adjacent(&rank_up), vec![10]);
+        assert_eq!(explicit.compose_adjacent(&rank_up), vec![10]);
+        assert_eq!(explicit, legacy);
+    }
+
+    #[test]
     fn temporary_lifetime_follows_a_card_when_the_hand_moves() {
         let mut deck = CardDeck::new(vec![card(10, 100), card(11, 200)]);
         let marked = deck.mark_temporary(&[0]).unwrap();
@@ -493,18 +620,41 @@ mod tests {
     }
 
     #[test]
+    fn removing_an_owner_clears_every_deck_zone_without_composing() {
+        let mut deck = CardDeck::with_draw_pile(
+            vec![card(10, 100), card(11, 200), card(10, 100)],
+            vec![card(10, 300), card(12, 400)],
+        );
+        assert!(deck.consume_draw_card(&card(10, 300)));
+        deck.add_temp_card(10, 500, None);
+
+        deck.remove_owner_cards(10);
+
+        assert_eq!(deck.hand, vec![card(11, 200)]);
+        assert_eq!(deck.hand_ids.len(), 1);
+        assert_eq!(deck.draw_pile, vec![card(12, 400)]);
+        assert!(deck.discard_pile.is_empty());
+        assert!(deck.generated.is_empty());
+    }
+
+    #[test]
     fn adjacent_compose_respects_non_combine_enchants_and_merges_card_state() {
         crate::test_support::init_config();
+        let catalog = crate::catalog::BattleCatalog::new(crate::test_support::game_data());
         let mut blocked = card(10, 100);
         blocked.enchants.push(CardEnchant {
             enchant_id: Some(10_010),
             duration: Some(1),
             ..Default::default()
         });
-        let mut deck = CardDeck::new(vec![blocked, card(10, 100)]);
+        let blocked_hand = vec![blocked, card(10, 100)];
+        let mut deck = CardDeck::new(blocked_hand.clone());
+        let mut explicit = CardDeck::new(blocked_hand).with_catalog(catalog);
         let rank_up = HashMap::from([((10, 100), 101)]);
 
         assert!(deck.compose_adjacent(&rank_up).is_empty());
+        assert_eq!(explicit.compose_adjacent(&rank_up), Vec::<i64>::new());
+        assert_eq!(explicit, deck);
         assert_eq!(deck.hand().len(), 2);
 
         let mut left = card(10, 100);
@@ -518,12 +668,37 @@ mod tests {
             duration: Some(2),
             ..Default::default()
         });
-        let mut deck = CardDeck::new(vec![left, right]);
+        let merge_hand = vec![left, right];
+        let mut deck = CardDeck::new(merge_hand.clone());
+        let mut explicit = CardDeck::new(merge_hand).with_catalog(catalog);
 
         assert_eq!(deck.compose_adjacent(&rank_up), vec![10]);
+        assert_eq!(explicit.compose_adjacent(&rank_up), vec![10]);
+        assert_eq!(explicit, deck);
         assert_eq!(deck.hand()[0].temp_card, Some(false));
         assert_eq!(deck.hand()[0].energy, Some(5));
         assert_eq!(deck.hand()[0].enchants[0].enchant_id, Some(10_006));
+    }
+
+    #[test]
+    fn attached_catalog_preserves_enchant_rejection() {
+        crate::test_support::init_config();
+        let catalog = crate::catalog::BattleCatalog::new(crate::test_support::game_data());
+        let mut enchanted = card(10, 100);
+        enchanted.enchants.push(CardEnchant {
+            enchant_id: Some(EnchantedType::Chaos.id()),
+            duration: Some(1),
+            ..Default::default()
+        });
+        let mut legacy = CardDeck::new(vec![enchanted.clone()]);
+        let mut explicit = CardDeck::new(vec![enchanted]).with_catalog(catalog);
+
+        assert_eq!(
+            explicit.enchant(&[0], EnchantedType::Precision, 2),
+            legacy.enchant(&[0], EnchantedType::Precision, 2)
+        );
+        assert_eq!(explicit.hand(), legacy.hand());
+        assert_eq!(explicit.hand()[0].enchants.len(), 1);
     }
 
     fn card(uid: i64, skill_id: i32) -> CardInfo {

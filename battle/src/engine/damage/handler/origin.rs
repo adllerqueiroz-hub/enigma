@@ -33,13 +33,18 @@ pub(super) fn amount(
         let technique = pool
             .entity(source_uid)
             .zip(pool.entity(target_uid))
-            .map(|(source, target)| critical_technique_bonus(source, target.level, 12))
+            .map(|(source, target)| {
+                critical_technique_bonus(managers.catalog(), source, target.level, 12)
+            })
             .unwrap_or_default();
         let transient_crit = attack_attributes
             .iter()
             .filter_map(|(attr_id, delta)| (*attr_id == AttrId::CriticalDmg).then_some(*delta))
             .sum::<i32>();
         let multiplier = managers.attribute.get(source_uid, AttrId::CriticalDmg)
+            + managers
+                .buff
+                .fixed_attribute_delta(source_uid, AttrId::CriticalDmg)
             + technique
             + modifiers::dynamic_attribute_delta(
                 &managers.buff,

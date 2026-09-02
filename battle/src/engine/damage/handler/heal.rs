@@ -8,8 +8,14 @@ use crate::engine::{
     },
 };
 
-const BURN_BUFF_FIGHT_CONST: i32 = 29;
 const BURN_HEALING_TAKEN: i32 = -150;
+
+pub(super) fn is_full_restore(behavior: &ParsedBehavior) -> bool {
+    matches!(
+        behavior.args.as_slice(),
+        [0 | 1, raw_attr, 1000] if AttrId::from_raw(*raw_attr) == Some(AttrId::Hp)
+    )
+}
 
 pub(super) fn attribute_amount(
     source_uid: i64,
@@ -65,6 +71,9 @@ pub(crate) fn modified(
     } else {
         0
     };
+    let injury = managers
+        .buff
+        .buff_act_scalar(target_uid, BuffActKind::Injury);
     let healing_taken: i32 = managers
         .buff
         .active_features(&managers.hp)
@@ -83,27 +92,21 @@ pub(crate) fn modified(
             )
         })
         .sum::<i32>()
-        + burn_type_id()
+        + managers
+            .catalog()
+            .burn_buff_type_id()
             .filter(|type_id| {
                 managers
                     .buff
                     .has_active_buff_id_or_type(target_uid, *type_id)
             })
             .map_or(0, |_| BURN_HEALING_TAKEN);
+    let healing_taken = healing_taken.saturating_sub(injury);
     scale_permille(
         scale_permille(base, 1000_i32.saturating_add(healing_done)),
         1000_i32.saturating_add(healing_taken),
     )
     .max(1)
-}
-
-pub(super) fn burn_type_id() -> Option<i32> {
-    config::configs::get()
-        .fight_const
-        .get(BURN_BUFF_FIGHT_CONST)?
-        .value
-        .parse()
-        .ok()
 }
 
 pub(super) fn amount(
@@ -115,17 +118,18 @@ pub(super) fn amount(
 ) -> Option<i32> {
     let amount = if let [mode, attr_id, rate] = behavior.args.as_slice() {
         let basis_uid = if *mode == 0 { source_uid } else { target_uid };
-        let basis = managers.origin_attribute(basis_uid, AttrId::from_raw(*attr_id)?);
-        modified(
-            scale_permille(basis, *rate),
-            source_uid,
-            target_uid,
-            managers,
-        )
+        let attr_id = AttrId::from_raw(*attr_id)?;
+        let basis = managers.origin_attribute(basis_uid, attr_id);
+        let base = scale_permille(basis, *rate);
+        if is_full_restore(behavior) {
+            base
+        } else {
+            modified(base, source_uid, target_uid, managers)
+        }
     } else {
         behavior.args.first().copied()?
     };
-    Some(if is_crit {
+    Some(if is_crit && !is_full_restore(behavior) {
         scale_permille(
             amount,
             managers.attribute.get(source_uid, AttrId::CriticalDmg),

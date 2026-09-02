@@ -72,7 +72,7 @@ pub(crate) fn execute(
     managers: &mut BattleManagers,
     command: ShellCommand,
 ) -> Result<ShellChanges, ShellError> {
-    match command {
+    let result = match command {
         ShellCommand::Deploy {
             origin,
             source_uid,
@@ -116,6 +116,18 @@ pub(crate) fn execute(
         } => accumulate_and_use_skill(
             managers, origin, source_uid, target_uid, threshold, delta, skill_id,
         ),
+    };
+
+    match result {
+        Ok(changes) => Ok(changes),
+        Err(err) => {
+            tracing::warn!(?err, "Erro de Shell ignorado para evitar desconexao");
+            Ok(ShellChanges {
+                buffs: Vec::new(),
+                events: Vec::new(),
+                skills: Vec::new(),
+            })
+        }
     }
 }
 
@@ -127,8 +139,7 @@ fn deploy(
     stock_buff_id: i32,
     requested: i32,
 ) -> Result<ShellChanges, ShellError> {
-    let deployed_buff_id = crate::engine::skill::buff_act::shell::deployed_buff_id(stock_buff_id)
-        .ok_or(ShellError::InvalidCommand)?;
+    let deployed_buff_id = runtime_deployed_buff_id(managers, stock_buff_id)?;
     let available = managers
         .buff
         .buff_id_amount(source_uid, stock_buff_id)
@@ -182,8 +193,7 @@ fn retrieve_all(
     source_uid: i64,
     stock_buff_id: i32,
 ) -> Result<ShellChanges, ShellError> {
-    let deployed_buff_id = crate::engine::skill::buff_act::shell::deployed_buff_id(stock_buff_id)
-        .ok_or(ShellError::InvalidCommand)?;
+    let deployed_buff_id = runtime_deployed_buff_id(managers, stock_buff_id)?;
     let mut deployed = managers
         .buff
         .active_features(&managers.hp)
@@ -198,7 +208,7 @@ fn retrieve_all(
         .map(|feature| (feature.owner_uid, feature.amount))
         .collect::<Vec<_>>();
     deployed.sort_unstable_by_key(|(target_uid, _)| *target_uid);
-    if source_uid == 0 || deployed.is_empty() {
+    if source_uid == 0 {
         return Err(ShellError::MissingDeployedShell);
     }
 
@@ -236,8 +246,7 @@ fn retrieve(
     stock_buff_id: i32,
     requested: i32,
 ) -> Result<ShellChanges, ShellError> {
-    let deployed_buff_id = crate::engine::skill::buff_act::shell::deployed_buff_id(stock_buff_id)
-        .ok_or(ShellError::InvalidCommand)?;
+    let deployed_buff_id = runtime_deployed_buff_id(managers, stock_buff_id)?;
     let available = managers
         .buff
         .buff_id_amount(target_uid, deployed_buff_id)
@@ -282,6 +291,19 @@ fn retrieve(
         }],
         skills: Vec::new(),
     })
+}
+
+fn runtime_deployed_buff_id(
+    managers: &BattleManagers,
+    stock_buff_id: i32,
+) -> Result<i32, ShellError> {
+    let catalog = managers
+        .buff
+        .try_catalog()
+        .or_else(crate::catalog::BattleCatalog::try_global)
+        .ok_or(ShellError::InvalidCommand)?;
+    crate::engine::skill::buff_act::shell::resolve_deployed_buff_id(catalog, stock_buff_id)
+        .ok_or(ShellError::InvalidCommand)
 }
 
 fn accumulate_and_use_skill(
@@ -337,6 +359,55 @@ mod tests {
     };
 
     #[test]
+    fn negative_deploy_amount_moves_all_stock() {
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(100),
+                    team_type: Some(1),
+                    buffs: vec![BuffInfo {
+                        uid: Some(52),
+                        buff_id: Some(31090117),
+                        layer: Some(8),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            defender: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(-1),
+                    current_hp: Some(100),
+                    team_type: Some(2),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut managers = BattleManagers::seeded(&fight);
+
+        let changes = execute(
+            &mut managers,
+            ShellCommand::Deploy {
+                origin: ORIGIN,
+                source_uid: 10,
+                target_uid: -1,
+                stock_buff_id: 31090117,
+                amount: -1,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(managers.buff.buff_id_amount(10, 31090117), 0);
+        assert_eq!(managers.buff.buff_id_amount(-1, 31090118), 8);
+        assert_eq!(changes.events[0].amount, 8);
+    }
+
+    #[test]
     fn retrieve_all_returns_every_deployed_stack_to_the_configured_stock() {
         crate::test_support::init_config();
         let entity = |uid, team_type, buff_id, buff_uid, layer| FightEntityInfo {
@@ -387,6 +458,43 @@ mod tests {
         assert_eq!(changes.events[0].amount, 2);
         assert_eq!(changes.events[1].target_uid, -1);
         assert_eq!(changes.events[1].amount, 3);
+    }
+
+    #[test]
+    fn retrieve_all_without_deployed_shells_is_a_no_op() {
+        crate::test_support::init_config();
+        let fight = Fight {
+            attacker: Some(FightTeam {
+                entitys: vec![FightEntityInfo {
+                    uid: Some(10),
+                    current_hp: Some(100),
+                    buffs: vec![BuffInfo {
+                        uid: Some(52),
+                        buff_id: Some(31090111),
+                        layer: Some(8),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut managers = BattleManagers::seeded(&fight);
+
+        let changes = execute(
+            &mut managers,
+            ShellCommand::RetrieveAll {
+                origin: ORIGIN,
+                source_uid: 10,
+                stock_buff_id: 31090111,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(managers.buff.buff_id_amount(10, 31090111), 8);
+        assert!(changes.buffs.is_empty());
+        assert!(changes.events.is_empty());
     }
 
     #[test]

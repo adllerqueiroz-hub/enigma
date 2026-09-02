@@ -131,8 +131,11 @@ mod tests {
             target_uid: 10,
             skill_id: 1,
             amount: 83,
+            shield_absorbed: 0,
+            career_restraint: false,
             damage_from: HurtDamageFromType::Skill,
             assassinate: false,
+            ignore_riposte: false,
         });
 
         let ops = rule_ops(&managers, &pool, &subscriber, &event).unwrap();

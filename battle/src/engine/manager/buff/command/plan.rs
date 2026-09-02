@@ -320,6 +320,12 @@ impl BuffManager {
                 }
                 (update.origin, BuffPlanAction::AccumulateActValue(update))
             }
+            BuffCommand::AccumulateCappedActState(update) => (
+                update.origin,
+                BuffPlanAction::AccumulateCappedActState(
+                    self.plan_accumulate_capped_act_state(update)?,
+                ),
+            ),
             BuffCommand::ChangeDuration(update) => {
                 let selector_valid = match update.selector {
                     BuffSelector::IdOrType(value)
@@ -347,6 +353,63 @@ impl BuffManager {
                                 .unwrap_or_default()
                                 .saturating_add(update.delta)
                                 .max(0),
+                        })
+                    })
+                    .collect();
+                (update.origin, BuffPlanAction::ChangeDuration(plans))
+            }
+            BuffCommand::RefreshDuration(update) => {
+                if update.target_uid == 0 || update.buff_uid == 0 || update.minimum_duration <= 0 {
+                    return Err(BuffCommandError::InvalidDurationChange);
+                }
+                let active = self
+                    .buffs
+                    .iter()
+                    .find(|active| {
+                        active.owner_uid == update.target_uid
+                            && active.buff.uid == Some(update.buff_uid)
+                    })
+                    .ok_or(BuffCommandError::InvalidDurationChange)?;
+                let duration = active
+                    .buff
+                    .duration
+                    .unwrap_or_default()
+                    .max(update.minimum_duration);
+                (
+                    update.origin,
+                    BuffPlanAction::ChangeDuration(vec![DurationChangePlan {
+                        target_uid: update.target_uid,
+                        buff_uid: update.buff_uid,
+                        duration,
+                    }]),
+                )
+            }
+            BuffCommand::RefreshDurationBySelector(update) => {
+                let selector_valid = match update.selector {
+                    BuffSelector::IdOrType(value)
+                    | BuffSelector::ExactId(value)
+                    | BuffSelector::TypeId(value) => value > 0,
+                    BuffSelector::Uid(value) => value > 0,
+                };
+                if update.target_uid == 0 || !selector_valid || update.minimum_duration <= 0 {
+                    return Err(BuffCommandError::InvalidDurationChange);
+                }
+                let plans = self
+                    .buffs
+                    .iter()
+                    .filter(|active| {
+                        active.owner_uid == update.target_uid
+                            && Self::matches_selector(active, update.selector)
+                    })
+                    .filter_map(|active| {
+                        let duration = active.buff.duration.unwrap_or_default();
+                        if duration <= 0 {
+                            return None;
+                        }
+                        Some(DurationChangePlan {
+                            target_uid: update.target_uid,
+                            buff_uid: active.buff.uid?,
+                            duration: duration.max(update.minimum_duration),
                         })
                     })
                     .collect();
@@ -388,7 +451,7 @@ impl BuffManager {
                 if reservation.target_uid == 0 || reservation.buff_id <= 0 {
                     return Err(BuffCommandError::InvalidUidReservation);
                 }
-                BuffDefinition::get(reservation.buff_id)
+                BuffDefinition::configured(self.catalog().game_data(), reservation.buff_id)
                     .ok_or(BuffCommandError::MissingDefinition(reservation.buff_id))?;
                 let uid = super::uid_policy::children(self, reservation.target_uid, 1)[0];
                 (
@@ -398,6 +461,21 @@ impl BuffManager {
                         buff_id: reservation.buff_id,
                         uid,
                     }),
+                )
+            }
+            BuffCommand::FanoutMasterHalo(fanout) => {
+                if fanout.origin.domain != RuleDomain::Lifecycle
+                    || fanout.origin.key != WAVE_ENTRY_MASTER_HALO_KEY
+                    || fanout.target_uids.is_empty()
+                    || fanout.target_uids.contains(&0)
+                {
+                    return Err(BuffCommandError::InvalidLifecycle);
+                }
+                (
+                    fanout.origin,
+                    BuffPlanAction::FanoutMasterHalo(
+                        self.master_halo_fanout_plans(hp, &fanout.target_uids),
+                    ),
                 )
             }
             BuffCommand::AdvanceDuration(advance) => {
@@ -428,17 +506,6 @@ impl BuffManager {
                     BuffPlanAction::SyncRoundStartDuration(
                         self.plan_round_start_duration_sync(&sync.owner_uids),
                     ),
-                )
-            }
-            BuffCommand::CleanupRoundStart(cleanup) => {
-                if cleanup.origin.domain != RuleDomain::Lifecycle
-                    || cleanup.origin.key != ROUND_START_CLEANUP_KEY
-                {
-                    return Err(BuffCommandError::InvalidLifecycle);
-                }
-                (
-                    cleanup.origin,
-                    BuffPlanAction::CleanupRoundStart(self.plan_round_start_cleanup()),
                 )
             }
         };
@@ -476,8 +543,30 @@ impl BuffManager {
         {
             return Err(BuffCommandError::InvalidGrant);
         }
-        let definition = BuffDefinition::get(request.buff_id)
-            .ok_or(BuffCommandError::MissingDefinition(request.buff_id))?;
+        let mut definition =
+            BuffDefinition::configured(self.catalog().game_data(), request.buff_id)
+                .ok_or(BuffCommandError::MissingDefinition(request.buff_id))?;
+        let semantic_grant_allowed = definition.features().iter().all(|feature| {
+            feature.kind
+                != Some(crate::engine::skill::buff_act::registry::BuffActKind::Rouge2AttrToRole)
+                || (feature.arguments_supported
+                    && crate::engine::skill::buff_act::rouge2_attr_to_role::hp_delta_fits(
+                        &feature.values,
+                        self,
+                        hp,
+                        request.target_uid,
+                    ))
+        });
+        let duration_delta = self.grant_duration_delta(hp, request.target_uid, definition.status)
+            + self.grant_type_duration_delta(
+                hp,
+                request.source_uid,
+                definition.effective_type_id(),
+            );
+        definition.duration = crate::engine::skill::buff_act::buff_round_add::extend_duration(
+            definition.duration,
+            duration_delta,
+        );
         let occurrences = i32::try_from(request.occurrences)
             .map_err(|_| BuffCommandError::UnsupportedOccurrences(request.occurrences))?;
         let args = match request.input {
@@ -532,8 +621,9 @@ impl BuffManager {
             }
         };
         let route = BuffRoute::new(request.source_uid, request.target_uid, request.buff_id);
-        let policy = BuffPolicy::try_for_buff_id(request.buff_id)
+        let mut policy = BuffPolicy::configured(self.catalog().game_data(), request.buff_id)
             .map_err(BuffCommandError::InvalidPolicy)?;
+        policy.lifetime.duration = definition.duration;
         let unconditional = matches!(
             request.input,
             GrantInput::IndependentInstance { .. }
@@ -544,12 +634,12 @@ impl BuffManager {
         let configured_blocker = (!unconditional)
             .then(|| self.blocking_buff_id(request.target_uid, request.buff_id, &definition))
             .flatten();
-        let immunity = (!unconditional && configured_blocker.is_none())
+        let immunity = (!unconditional && semantic_grant_allowed && configured_blocker.is_none())
             .then(|| self.immunity_blocker(request.target_uid, definition.status))
             .flatten();
         let blocker =
             configured_blocker.or_else(|| immunity.as_ref().map(|(buff_id, _, _)| *buff_id));
-        let blocked = blocker.is_some();
+        let blocked = blocker.is_some() || !semantic_grant_allowed;
         let mut excluded_uids = if blocked || unconditional {
             Vec::new()
         } else {
@@ -590,12 +680,18 @@ impl BuffManager {
         } else {
             0
         };
-        let configured_reserve = i32::try_from(request.child_uid_reservations).map_err(|_| {
-            BuffCommandError::UnsupportedOccurrences(request.child_uid_reservations)
-        })?;
+        let configured_reserve = if semantic_grant_allowed {
+            i32::try_from(request.child_uid_reservations).map_err(|_| {
+                BuffCommandError::UnsupportedOccurrences(request.child_uid_reservations)
+            })?
+        } else {
+            0
+        };
         let mut reserve_before = configured_reserve
             .checked_add(
-                if matches!(request.input, GrantInput::TriggeredChildInstance { .. }) {
+                if semantic_grant_allowed
+                    && matches!(request.input, GrantInput::TriggeredChildInstance { .. })
+                {
                     1
                 } else {
                     stack_reserve_before
@@ -604,7 +700,8 @@ impl BuffManager {
             .ok_or(BuffCommandError::UnsupportedOccurrences(
                 request.child_uid_reservations,
             ))?;
-        if args.layer_specified
+        if semantic_grant_allowed
+            && args.layer_specified
             && stack_layer > 0
             && !repeated_stack
             && policy.uid.reserve_before_explicit_layer_apply
@@ -629,7 +726,9 @@ impl BuffManager {
         } else {
             typed_count_repeat(&definition, args.layer, args.layer_specified, args.count)
         };
-        let action = if unconditional {
+        let action = if !semantic_grant_allowed {
+            GrantAction::KeepExisting
+        } else if unconditional {
             GrantAction::Add
         } else if let Some(blocker) = blocker {
             GrantAction::Reject(blocker)
@@ -643,27 +742,40 @@ impl BuffManager {
                 action
             }
         };
-        let capacity_eviction_uids = if matches!(action, GrantAction::Add)
-            && let Some(capacity) = policy.shared_group_capacity
-        {
-            let mut uids = self
-                .buffs
-                .iter()
-                .filter(|active| active.owner_uid == route.target_uid)
-                .filter(|active| {
-                    active.definition.as_ref().is_some_and(|resident| {
-                        resident
-                            .shared_group_capacity()
-                            .is_some_and(|(group_id, _)| group_id == capacity.group_id)
-                    })
-                })
-                .filter_map(|active| active.buff.uid)
-                .collect::<Vec<_>>();
+        let capacity_eviction_uids = if matches!(action, GrantAction::Add) {
+            let (limit, mut uids) = if let Some(capacity) = policy.shared_group_capacity {
+                (
+                    capacity.max_instances,
+                    self.buffs
+                        .iter()
+                        .filter(|active| active.owner_uid == route.target_uid)
+                        .filter(|active| {
+                            active.definition.as_ref().is_some_and(|resident| {
+                                resident
+                                    .shared_group_capacity()
+                                    .is_some_and(|(group_id, _)| group_id == capacity.group_id)
+                            })
+                        })
+                        .filter_map(|active| active.buff.uid)
+                        .collect::<Vec<_>>(),
+                )
+            } else if let Some(capacity) = policy.same_type_capacity {
+                (
+                    capacity,
+                    self.buffs
+                        .iter()
+                        .filter(|active| {
+                            active.owner_uid == route.target_uid
+                                && active.type_id == policy.effective_type_id
+                        })
+                        .filter_map(|active| active.buff.uid)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                (0, Vec::new())
+            };
             uids.sort_unstable();
-            let remove_count = uids
-                .len()
-                .saturating_add(1)
-                .saturating_sub(capacity.max_instances as usize);
+            let remove_count = uids.len().saturating_add(1).saturating_sub(limit as usize);
             uids.into_iter().take(remove_count).collect()
         } else {
             Vec::new()
@@ -836,6 +948,24 @@ impl BuffManager {
                     )
                 })
                 .unwrap_or_default(),
+            _ if action == GrantAction::RefreshExisting => self
+                .buffs
+                .iter()
+                .find(|active| {
+                    active.owner_uid == route.target_uid
+                        && active.buff.buff_id == Some(route.buff_id)
+                })
+                .and_then(|active| {
+                    Some(self.fanout_refresh_specs(
+                        hp,
+                        route.target_uid,
+                        route.buff_id,
+                        active.buff.uid?,
+                        active.buff.layer.unwrap_or(stack_layer),
+                        active.buff.duration.unwrap_or(policy.lifetime.duration),
+                    ))
+                })
+                .unwrap_or_default(),
             _ => Vec::new(),
         };
         let reserve_after_add = repeated_stack
@@ -877,7 +1007,7 @@ impl BuffManager {
         let dot_snapshots =
             Self::plan_grant_snapshots(&definition, route.source_uid, source_attack, args);
         let grant_values = self.plan_grant_values(&definition, route.source_uid);
-        let initial_act_info = definition.initial_grant_value_act_info(&grant_values);
+        let initial_act_info = definition.initial_planned_act_info(source_attack, &grant_values);
         let initial_params = self.plan_grant_params(&definition, route.source_uid);
         let replacement_uids = if action == GrantAction::ReplaceExisting {
             self.buffs
@@ -888,6 +1018,30 @@ impl BuffManager {
         } else {
             Vec::new()
         };
+        let transition_progress = (policy.storage == BuffStorage::Single
+            && !unconditional
+            && BuffManager::tracks_single_transition(&definition)
+            && matches!(
+                action,
+                GrantAction::Add | GrantAction::ReplaceExisting | GrantAction::RefreshExisting
+            ))
+        .then(|| {
+            let current = self
+                .transition_progress
+                .get(&(route.target_uid, route.buff_id))
+                .copied()
+                .or_else(|| {
+                    self.buffs.iter().find_map(|active| {
+                        (active.owner_uid == route.target_uid
+                            && active.buff.buff_id == Some(route.buff_id))
+                        .then(|| {
+                            count_or_layer_from(&active.buff, active.definition.as_ref()).max(1)
+                        })
+                    })
+                })
+                .unwrap_or_default();
+            current.saturating_add(args.layer.max(args.count).max(1))
+        });
 
         let mut plan = GrantPlan {
             route,
@@ -912,6 +1066,7 @@ impl BuffManager {
             dot_snapshots,
             grant_values,
             immunity_action: immunity.map(|(_, owner_uid, action)| (owner_uid, action)),
+            transition_progress,
             transition: None,
         };
         if crate::engine::diagnostics::enabled(crate::engine::diagnostics::TraceArea::Buff) {
@@ -938,14 +1093,22 @@ impl BuffManager {
         {
             let mut projected = self.clone();
             projected.commit_grant_plan(hp, plan.clone());
-            let reached = projected
-                .buffs
-                .iter()
-                .find(|active| {
-                    active.owner_uid == route.target_uid
-                        && active.buff.buff_id == Some(route.buff_id)
-                })
-                .is_some_and(|active| super::count_or_layer(&active.buff) >= threshold);
+            let reached = plan.transition_progress.map_or_else(
+                || {
+                    projected
+                        .buffs
+                        .iter()
+                        .find(|active| {
+                            active.owner_uid == route.target_uid
+                                && active.buff.buff_id == Some(route.buff_id)
+                        })
+                        .is_some_and(|active| {
+                            super::count_or_layer_from(&active.buff, active.definition.as_ref())
+                                >= threshold
+                        })
+                },
+                |progress| progress >= threshold,
+            );
             if reached {
                 plan.transition = Some(Box::new(projected.plan_replace_ids(
                     hp,
@@ -973,7 +1136,7 @@ impl BuffManager {
             BuffSelector::TypeId(value) => value > 0,
             BuffSelector::Uid(value) => value > 0,
         };
-        if consume.target_uid == 0 || !selector_valid || consume.amount <= 0 {
+        if consume.target_uid == 0 || !selector_valid || consume.amount < 0 {
             return Err(BuffCommandError::InvalidConsume);
         }
         let actions = if coalesced {
@@ -988,7 +1151,9 @@ impl BuffManager {
                     if remaining <= 0 {
                         return None;
                     }
-                    let consumed = remaining.min(super::count_or_layer(&active.buff).max(0));
+                    let consumed = remaining.min(
+                        super::count_or_layer_from(&active.buff, active.definition.as_ref()).max(0),
+                    );
                     if consumed <= 0 {
                         return None;
                     }
@@ -1140,6 +1305,10 @@ impl BuffManager {
             .iter()
             .filter(|active| {
                 active.owner_uid == dispel.target_uid
+                    && !dispel
+                        .excluded_ids_or_types
+                        .iter()
+                        .any(|id| active.buff.buff_id == Some(*id) || active.type_id == *id)
                     && active
                         .definition
                         .as_ref()
@@ -1195,6 +1364,59 @@ impl BuffManager {
         })
     }
 
+    fn plan_accumulate_capped_act_state(
+        &self,
+        update: BuffAccumulateCappedActState,
+    ) -> Result<AccumulateCappedActStatePlan, BuffCommandError> {
+        if update.target_uid == 0
+            || update.buff_uid <= 0
+            || update.act_id <= 0
+            || update.delta <= 0
+            || update.maximum <= 0
+        {
+            return Err(BuffCommandError::InvalidSetState);
+        }
+        let buff = self
+            .snapshot(update.target_uid, update.buff_uid)
+            .ok_or(BuffCommandError::InvalidSetState)?;
+        let mut act_info = buff.act_info;
+        let mut matching = act_info
+            .iter_mut()
+            .filter(|info| info.act_id == Some(update.act_id));
+        let info = matching.next().ok_or(BuffCommandError::InvalidSetState)?;
+        if matching.next().is_some() || info.str_param.as_deref() != Some("") {
+            return Err(BuffCommandError::InvalidSetState);
+        }
+        let [current] = info.param.as_slice() else {
+            return Err(BuffCommandError::InvalidSetState);
+        };
+        if !(0..=update.maximum).contains(current) {
+            return Err(BuffCommandError::InvalidSetState);
+        }
+        let next = current.saturating_add(update.delta).min(update.maximum);
+        let marker = (next != *current).then(|| BuffActInfoMarkerResult {
+            target_uid: update.target_uid,
+            buff_uid: update.buff_uid,
+            act_id: update.act_id,
+            params: vec![next],
+            str_param: Some(String::new()),
+            team_type: 0,
+        });
+        info.param = vec![next];
+        info.str_param = Some(String::new());
+        Ok(AccumulateCappedActStatePlan {
+            state: SetStatePlan {
+                target_uid: update.target_uid,
+                buff_uid: update.buff_uid,
+                ex_info: None,
+                params: None,
+                act_info: Some(act_info),
+                exists: true,
+            },
+            marker,
+        })
+    }
+
     pub(in crate::engine::manager::buff) fn resolve_consume_action(
         &self,
         target_uid: i64,
@@ -1228,6 +1450,13 @@ impl BuffManager {
         depleted: DepletedBuff,
         field: ConsumeField,
     ) -> ConsumeAction {
+        if amount == 0 {
+            return ConsumeAction::Update {
+                buff_uid: active.buff.uid.unwrap_or_default(),
+                layer: active.buff.layer,
+                count: active.buff.count,
+            };
+        }
         let uses_stack_layer = active
             .definition
             .as_ref()
@@ -1264,12 +1493,7 @@ impl BuffManager {
         {
             ConsumeAction::Remove {
                 buff_uid,
-                layer: layer.filter(|_| {
-                    active
-                        .definition
-                        .as_ref()
-                        .is_some_and(BuffDefinition::clears_layer_on_depletion)
-                }),
+                layer,
                 count,
             }
         } else {

@@ -4,7 +4,6 @@ use crate::engine::{
     manager::BattleManagers,
     runtime::determinism::RoundDeterminism,
     skill::{
-        buff_act,
         effect::SkillEffectCatalog,
         target::{TargetContext, TargetPool},
     },
@@ -28,13 +27,21 @@ pub struct RoundState {
 }
 
 impl RoundState {
-    pub fn start(fight: &Fight) -> Self {
+    pub fn start(game_data: &config::GameDB, fight: &Fight) -> Self {
+        Self::from_power(fight, ClothPower::initial(game_data, fight))
+    }
+
+    pub(crate) fn seeded(catalog: crate::catalog::BattleCatalog, fight: &Fight) -> Self {
+        Self::from_power(fight, ClothPower::seeded(catalog, fight))
+    }
+
+    fn from_power(fight: &Fight, power: i32) -> Self {
         Self {
             act_point: attacker_main_count(fight),
             move_num: 0,
             is_finish: fight.is_finish.unwrap_or(false),
             cur_round: fight.cur_round.unwrap_or(1),
-            power: ClothPower::initial(fight),
+            power,
             last_change_hero_uid: fight.last_change_hero_uid,
             ..Default::default()
         }
@@ -71,13 +78,7 @@ pub fn next_action_points(
                 .count() as i32
         })
         .unwrap_or(3);
-    let buff_bonus = managers
-        .buff
-        .active_features(&managers.hp)
-        .iter()
-        .filter(|feature| feature.team_type == 1)
-        .map(buff_act::add_action_point::bonus)
-        .sum::<i32>();
+    let buff_bonus = super::modifier::active_buff_action_bonus(managers, 1);
     let rule_bonus =
         super::modifier::action_point_bonus(pool, managers, catalog, determinism, context);
 
@@ -94,7 +95,7 @@ pub fn next_round_shell(
 ) -> FightRound {
     let attacker = fight.attacker.as_ref();
     let before_cards1 = if include_card_snapshots {
-        round_field_cards(current_hand)
+        round_before_cards1(current_hand)
     } else {
         Vec::new()
     };
@@ -116,7 +117,12 @@ pub fn next_round_shell(
         before_cards1,
         team_a_cards1,
         before_cards2: if include_card_snapshots {
-            state.before_cards2.clone()
+            state
+                .before_cards2
+                .iter()
+                .filter(|card| !card.temp_card.unwrap_or_default())
+                .cloned()
+                .collect()
         } else {
             Vec::new()
         },
@@ -138,6 +144,20 @@ pub(crate) fn round_field_cards(cards: &[CardInfo]) -> Vec<CardInfo> {
     cards.iter().map(round_field_card).collect()
 }
 
+fn round_before_cards1(cards: &[CardInfo]) -> Vec<CardInfo> {
+    cards
+        .iter()
+        .filter(|card| !is_owner_bound_generic_temp(card))
+        .map(round_field_card)
+        .collect()
+}
+
+fn is_owner_bound_generic_temp(card: &CardInfo) -> bool {
+    card.temp_card.unwrap_or_default()
+        && card.uid.unwrap_or_default() != 0
+        && card.card_type.unwrap_or_default() == 0
+}
+
 fn round_field_card(card: &CardInfo) -> CardInfo {
     CardInfo {
         energy: Some(0),
@@ -150,37 +170,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_projection_keeps_precast_cards_without_using_a_normal_slot() {
-        let temp = CardInfo {
-            skill_id: Some(2),
-            temp_card: Some(true),
+    fn round_projection_uses_field_specific_temporary_card_rules() {
+        let cards = vec![
+            CardInfo {
+                uid: Some(1),
+                skill_id: Some(1),
+                energy: Some(0),
+                ..Default::default()
+            },
+            CardInfo {
+                uid: Some(10),
+                skill_id: Some(2),
+                temp_card: Some(true),
+                card_type: Some(0),
+                hero_id: Some(3149),
+                energy: Some(0),
+                ..Default::default()
+            },
+            CardInfo {
+                uid: Some(10),
+                skill_id: Some(3),
+                temp_card: Some(true),
+                card_type: Some(sonettobuf::card_info::CardType::Skill3 as i32),
+                hero_id: Some(3149),
+                energy: Some(0),
+                ..Default::default()
+            },
+            CardInfo {
+                uid: Some(0),
+                skill_id: Some(4),
+                temp_card: Some(true),
+                energy: Some(0),
+                ..Default::default()
+            },
+        ];
+        let state = RoundState {
+            before_cards2: cards.clone(),
+            team_a_cards2: cards.clone(),
             ..Default::default()
         };
-        let current = CardInfo {
-            skill_id: Some(3),
-            ..Default::default()
-        };
-        let cards = vec![current, temp];
 
-        let round = next_round_shell(
-            &Fight::default(),
-            &RoundState::default(),
-            true,
-            &cards,
-            &[],
-            &[],
-        );
-
-        assert_eq!(
-            round
-                .before_cards1
+        let round = next_round_shell(&Fight::default(), &state, true, &cards, &cards, &[]);
+        let skills = |cards: &[CardInfo]| {
+            cards
                 .iter()
                 .filter_map(|card| card.skill_id)
-                .collect::<Vec<_>>(),
-            vec![3, 2]
-        );
-        assert!(round.team_a_cards1.is_empty());
-        assert_eq!(round_field_cards(&cards).len(), 2);
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(skills(&round.before_cards1), vec![1, 3, 4]);
+        assert_eq!(skills(&round.before_cards2), vec![1]);
+        assert_eq!(round.team_a_cards1, round_field_cards(&cards));
+        assert_eq!(round.team_a_cards2, cards);
+        assert_eq!(state.before_cards2, cards);
     }
 
     #[test]

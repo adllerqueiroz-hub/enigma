@@ -3,6 +3,24 @@ use sonettobuf::{FightTeam, HeroAttribute};
 use super::*;
 use crate::engine::skill::rule::{DefinitionKey, RuleDomain};
 
+fn catalog() -> crate::catalog::BattleCatalog {
+    crate::catalog::BattleCatalog::new(crate::test_support::game_data())
+}
+
+#[test]
+fn configured_seed_preserves_defender_uid_reservations() {
+    let fight = Fight {
+        battle_id: Some(9_000_161),
+        ..Default::default()
+    };
+
+    let configured = EntityManager::configured(catalog(), &fight);
+    let legacy = EntityManager::seed_with_game_data(crate::test_support::game_data(), &fight);
+
+    assert_eq!(configured.next_special_uid, -3);
+    assert_eq!(configured.next_special_uid, legacy.next_special_uid);
+}
+
 #[test]
 fn configured_ultimate_kind_applies_only_to_the_current_ultimate() {
     let fight = Fight {
@@ -66,6 +84,7 @@ fn special_summon_uses_a_uid_after_the_configured_wave_roster() {
 
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin,
                 source_uid: -2,
@@ -100,6 +119,7 @@ fn attacker_summon_keeps_its_registered_team_despite_negative_uid() {
     let mut manager = EntityManager::seed(&fight);
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin: CommandOrigin {
                     domain: RuleDomain::Behavior,
@@ -161,6 +181,42 @@ fn replacing_a_wave_roster_deactivates_the_previous_combatants() {
 }
 
 #[test]
+fn defeated_combatant_count_keeps_prior_waves_and_excludes_special_entities() {
+    let entity = |uid, current_hp, position| FightEntityInfo {
+        uid: Some(uid),
+        team_type: Some(2),
+        position: Some(position),
+        current_hp: Some(current_hp),
+        attr: Some(HeroAttribute {
+            hp: Some(100),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut fight = Fight {
+        defender: Some(FightTeam {
+            entitys: vec![entity(-1, 0, 1)],
+            sub_entitys: vec![entity(-2, 100, -1)],
+            sp_entitys: vec![entity(-9, 0, SPECIAL_POSITION)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut manager = EntityManager::seed(&fight);
+    let mut hp = HpManager::default();
+    hp.seed(&fight);
+
+    assert_eq!(manager.defeated_combatant_count(2, &hp), 1);
+
+    let next = entity(-3, 0, 1);
+    hp.register(&next);
+    manager.replace_team_roster(2, std::slice::from_ref(&next), &[]);
+    manager.sync_to_fight(&mut fight);
+
+    assert_eq!(manager.defeated_combatant_count(2, &hp), 2);
+}
+
+#[test]
 fn transform_replaces_identity_without_changing_uid_or_position() {
     crate::test_support::init_config();
     let mut original = Defender::build_monster_with_uid(251417, -7, 1, 2).unwrap();
@@ -179,6 +235,7 @@ fn transform_replaces_identity_without_changing_uid_or_position() {
 
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin: CommandOrigin {
                     domain: RuleDomain::Behavior,
@@ -239,6 +296,7 @@ fn transform_carries_encounter_attribute_scaling_into_the_new_form() {
 
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin: CommandOrigin {
                     domain: RuleDomain::Behavior,
@@ -288,6 +346,7 @@ fn transform_without_hp_restoration_preserves_current_hp_and_phase_marker() {
 
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin: CommandOrigin {
                     domain: RuleDomain::Behavior,
@@ -332,6 +391,7 @@ fn combatant_summon_joins_the_active_team_at_the_allocated_position() {
     let mut manager = EntityManager::seed(&fight);
     let changes = manager
         .execute_command(
+            catalog(),
             EntityCommand {
                 origin: CommandOrigin {
                     domain: RuleDomain::Behavior,

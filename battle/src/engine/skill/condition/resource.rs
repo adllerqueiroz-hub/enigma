@@ -17,6 +17,10 @@ pub fn ex_point_at_most(_: i32, _: &str, args: &[String]) -> Option<ParsedCondit
     ex_point(args, ConditionCompare::LessThanOrEqual)
 }
 
+pub fn ex_point_full(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {
+    args.is_empty().then_some(ParsedConditionKind::ExPointFull)
+}
+
 fn ex_point(args: &[String], compare: ConditionCompare) -> Option<ParsedConditionKind> {
     Some(ParsedConditionKind::ExPoint {
         compare,
@@ -103,6 +107,15 @@ pub fn power_compare(_: i32, _: &str, args: &[String]) -> Option<ParsedCondition
     })
 }
 
+pub fn power_ratio(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {
+    let [power_id, compare_code, threshold_permille] = parse_fixed(args)?;
+    Some(ParsedConditionKind::PowerRatio {
+        power_id,
+        compare_code,
+        threshold_permille,
+    })
+}
+
 pub fn power_increase(_: i32, _: &str, args: &[String]) -> Option<ParsedConditionKind> {
     let [power_id, compare_code, threshold] = parse_fixed(args)?;
     Some(ParsedConditionKind::PowerIncrChange {
@@ -162,6 +175,7 @@ pub(crate) enum ResourceEvent {
     Conduit {
         target_uid: i64,
         power_id: i32,
+        activation_cost: i32,
         spent: i32,
     },
 }
@@ -374,7 +388,9 @@ fn event_condition_count(
         }
         ParsedConditionKind::PerConduitCurrentCost { threshold } => {
             let ResourceEvent::Conduit {
-                target_uid, spent, ..
+                target_uid,
+                activation_cost,
+                ..
             } = event
             else {
                 return 0;
@@ -386,7 +402,7 @@ fn event_condition_count(
                 condition_target_code,
                 pool,
             ) {
-                spent.max(0) / (*threshold).max(1)
+                activation_cost.max(0) / (*threshold).max(1)
             } else {
                 0
             }
@@ -767,11 +783,22 @@ mod tests {
     }
 
     #[test]
-    fn conduit_cost_counts_each_consumed_energy_unit() {
+    fn conduit_cost_counts_each_configured_activation_cost_unit_for_allies() {
         let fight = Fight {
             attacker: Some(FightTeam {
+                entitys: vec![10, 11]
+                    .into_iter()
+                    .map(|uid| FightEntityInfo {
+                        uid: Some(uid),
+                        current_hp: Some(1),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            defender: Some(FightTeam {
                 entitys: vec![FightEntityInfo {
-                    uid: Some(10),
+                    uid: Some(-1),
                     current_hp: Some(1),
                     ..Default::default()
                 }],
@@ -782,23 +809,28 @@ mod tests {
         let managers = BattleManagers::seeded(&fight);
         let pool = TargetPool::from_fight(&fight);
         let condition = condition(ParsedConditionKind::PerConduitCurrentCost { threshold: 1 });
+        let event = |target_uid| ResourceEvent::Conduit {
+            target_uid,
+            power_id: 1,
+            activation_cost: 3,
+            spent: 2,
+        };
 
+        for target_uid in [10, 11] {
+            assert_eq!(
+                event_conditions_count(
+                    std::slice::from_ref(&condition),
+                    context(event(target_uid), 10, &[10, 11], &managers, &pool),
+                ),
+                3
+            );
+        }
         assert_eq!(
             event_conditions_count(
-                &[condition],
-                context(
-                    ResourceEvent::Conduit {
-                        target_uid: 10,
-                        power_id: 1,
-                        spent: 3,
-                    },
-                    10,
-                    &[10],
-                    &managers,
-                    &pool,
-                ),
+                std::slice::from_ref(&condition),
+                context(event(-1), 10, &[10, 11], &managers, &pool),
             ),
-            3
+            0
         );
     }
 }
